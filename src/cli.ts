@@ -8,5 +8,4 @@ export async function run(argv = process.argv): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await run();
-  process.exit(process.exitCode ?? 0);
 }
