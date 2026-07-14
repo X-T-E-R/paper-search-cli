@@ -99,7 +99,7 @@ export async function appendLifecycleEvent(
       await mkdir(path.dirname(filePath), { recursive: true });
       await appendFile(filePath, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
     },
-    { env, command: "event append" },
+    { env, command: "event append", timeoutMs: 10_000 },
   );
   return { event, path: filePath };
 }

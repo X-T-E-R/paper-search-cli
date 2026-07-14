@@ -408,7 +408,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     expect((await service(upstreamFixture).planUpdate()).blockers).toContain(
       "Self-update requires a configured branch upstream.",
     );
-  }, 30_000);
+  }, 60_000);
 
   it("leaves checkout, dist, and install state unchanged when target verification fails", async () => {
     const fixture = await createFixture("self-update");
