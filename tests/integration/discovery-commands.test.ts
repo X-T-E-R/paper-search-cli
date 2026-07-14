@@ -118,8 +118,10 @@ describe("discovery commands", () => {
     const patentDetailTool = tools.tools.find((entry: { name: string }) => entry.name === "patent_detail");
     const webSearchTool = tools.tools.find((entry: { name: string }) => entry.name === "web_search");
     const resourcePdfTool = tools.tools.find((entry: { name: string }) => entry.name === "resource_pdf");
-    expect(academicTool.inputSchema.properties.platform.enum).toContain("alpha");
-    expect(patentSearchTool.inputSchema.properties.platform.enum).toContain("patent-alpha");
+    expect(academicTool.inputSchema.properties.platform.enum).toBeUndefined();
+    expect(academicTool.inputSchema.properties.sources.items.enum).toBeUndefined();
+    expect(patentSearchTool.inputSchema.properties.platform.enum).toBeUndefined();
+    expect(patentSearchTool.inputSchema.properties.sources.items.enum).toBeUndefined();
     expect(patentDetailTool.inputSchema.properties.platform.enum).toEqual(["patent-alpha"]);
     expect(webSearchTool.inputSchema.properties.provider.enum).toContain("tavily");
     expect(resourcePdfTool.inputSchema.required).toEqual(["itemKey"]);
