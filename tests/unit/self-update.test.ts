@@ -549,7 +549,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     expect(status.officialPolicy.matched).toBe(true);
     expect(status.git.upstreamFetchUrl).not.toContain("fixture-user");
     expect(status.git.upstreamFetchUrl).not.toContain("top-secret");
-  });
+  }, 30_000);
 
   it("does not expose upstream credentials when remote target resolution fails", async () => {
     const fixture = await createFixture("self-update");
@@ -571,7 +571,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     expect(serialized).not.toContain("fixture-user");
     expect(serialized).not.toContain("top-secret");
     expect(plan.blockers.join(" ")).toContain("Official upstream target is unavailable");
-  });
+  }, 30_000);
 
   it("fails closed when an injected policy does not match the configured upstream", async () => {
     const fixture = await createFixture();

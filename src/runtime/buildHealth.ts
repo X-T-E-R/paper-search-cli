@@ -137,7 +137,10 @@ async function loadBuildInputModule(repoRoot: string): Promise<BuildInputModule>
   const modulePath = path.join(repoRoot, "scripts", "lib", "build-inputs.mjs");
   // This is deliberately loaded from the retained checkout. The installer and
   // health check therefore execute the exact same digest implementation.
-  return (await import(pathToFileURL(modulePath).href)) as BuildInputModule;
+  const moduleUrl = pathToFileURL(modulePath).href.replace(/%7E/giu, "~");
+  return (await import(
+    /* @vite-ignore */ moduleUrl
+  )) as BuildInputModule;
 }
 
 async function sha256Fallback(filePath: string): Promise<string> {

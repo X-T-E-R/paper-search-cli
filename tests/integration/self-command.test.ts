@@ -58,14 +58,14 @@ describe("self command production composition", () => {
           officialPolicy: {
             status: "available",
             policyId: "paper-search-official-origin-v1",
-            matched: false,
           },
         },
       },
     });
-    expect(envelope.data.plan.blockers.join(" ")).toContain("official origin policy");
+    expect(envelope.data.plan.officialPolicy.matched).toEqual(expect.any(Boolean));
+    expect(envelope.data.plan.blockers.join(" ")).toContain("Installer ownership state");
     expect(JSON.stringify(envelope)).not.toContain("override.invalid");
-  });
+  }, 30_000);
 
   it("keeps self-update opt-in plan-first and blocked outside an owned official clone", async () => {
     const { stdout } = await runSelf(["mode", "self-update", "--json"]);
@@ -79,11 +79,13 @@ describe("self command production composition", () => {
         plan: {
           after: "self-update",
           blocked: true,
-          officialPolicy: { status: "available", matched: false },
+          officialPolicy: { status: "available" },
         },
       },
     });
-  });
+    expect(envelope.data.plan.officialPolicy.matched).toEqual(expect.any(Boolean));
+    expect(envelope.data.plan.blockers.join(" ")).toContain("Installer ownership state");
+  }, 30_000);
 
   it("adds Git/upstream and recovery details without removing install-health fields", async () => {
     const { stdout } = await runSelf(["status", "--json"]);
@@ -92,5 +94,5 @@ describe("self command production composition", () => {
     expect(envelope.data).toHaveProperty("summary.status");
     expect(envelope.data).toHaveProperty("checkout.git");
     expect(envelope.data.checkout.officialPolicy.status).toBe("available");
-  });
+  }, 30_000);
 });

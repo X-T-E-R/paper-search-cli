@@ -100,7 +100,10 @@ async function createFixture(options: { git?: boolean } = {}): Promise<Fixture> 
     commit = git(repoRoot, ["rev-parse", "HEAD"]);
   }
 
-  const digestModule = (await import(pathToFileURL(digestModulePath).href)) as DigestModule;
+  const digestModuleUrl = pathToFileURL(digestModulePath).href.replace(/%7E/giu, "~");
+  const digestModule = (await import(
+    /* @vite-ignore */ digestModuleUrl
+  )) as DigestModule;
   const { buildInputs } = await digestModule.readPackageMetadata(repoRoot);
   const buildInputDigest = await digestModule.computeBuildInputDigest(repoRoot, buildInputs);
   const build: BuildIdentity = {
