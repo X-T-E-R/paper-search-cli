@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: X-T-E-R/resource-search-providers
-          ref: e8b26a5fc632db1372a38cf7e7eee5f9f8491cd7
+          ref: 1507c1931aad29cd82b4e75bb1fc9a2a70ac38a9
           path: resource-search-providers
           persist-credentials: false
 
@@ -45,7 +45,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: X-T-E-R/material-providers
-          ref: 144890bf76b4d7af3c413fb81f2cb822337a7bb0
+          ref: f1fedb696a8235a77e5d7021cf9c83871f6f273c
           path: material-providers
           persist-credentials: false
 
