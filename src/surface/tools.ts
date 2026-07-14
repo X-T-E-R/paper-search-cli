@@ -174,6 +174,10 @@ export const CLI_ONLY_COMMANDS = [
     purpose: "Inspect the aggregated provider catalog from enabled validated registry snapshots without refreshing them.",
   },
   {
+    command: "providers inventory",
+    purpose: "Report declared search entries, countable sources, views, aliases, service families, and retained entries from a search registry.",
+  },
+  {
     command: "providers install",
     purpose: "Plan or apply a subscription-bound provider install with pinned source, registry, and archive identities.",
   },

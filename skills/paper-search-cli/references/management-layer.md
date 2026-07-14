@@ -85,6 +85,22 @@ node scripts/paper-search.mjs config import-env ./.env
 node scripts/paper-search.mjs config import-env ./.env --apply
 ```
 
+Search-source aggregation uses the same layered configuration:
+
+```bash
+node scripts/paper-search.mjs config set search.selection.excludeDomains '["biomedicine"]'
+node scripts/paper-search.mjs config set search.selection.includeIds '["pubmed"]'
+node scripts/paper-search.mjs config set search.selection.mode allowlist
+```
+
+`platform.<id>.enabled` is the provider hard switch. `search.selection` only
+controls runnable sources selected by `platform=all`. Explicit provider ids and
+unique inventory aliases bypass the aggregate policy, but not installation,
+enablement, or required configuration. Views are always excluded from `all`.
+Profiles reuse explicit configuration directories such as
+`<config-root>/profiles/biomed/config.toml` with `--config
+<config-root>/profiles/biomed`; do not create another profile registry.
+
 `config import-env` is a plan unless `--apply` is present. It sends non-secret
 values to `config.toml`, secrets to ACL-restricted plaintext
 `credentials.toml`, and skips values already present in the shell environment.
@@ -137,6 +153,8 @@ changes:
 ```bash
 node scripts/paper-search.mjs providers available --json
 node scripts/paper-search.mjs providers available <query> --json
+node scripts/paper-search.mjs providers inventory --json
+node scripts/paper-search.mjs providers inventory ./registry.json --json
 node scripts/paper-search.mjs providers install <id> --json
 node scripts/paper-search.mjs providers install <id> --from <subscription-id> --apply --json
 node scripts/paper-search.mjs providers update --json
@@ -151,6 +169,14 @@ publisher's SHA-256 and pins its subscription identity, registry digest, archive
 digest, package identity, and installed-state precondition. Application rejects
 stale plans. Updates remain attached to the source recorded in the installed
 receipt; they do not switch to another publisher automatically.
+
+`providers inventory [source]` is search-registry-only. It reports declared
+entries, independently counted sources, source-backed views, aliases, service
+families, source types, domains, content kinds, access classes, default aggregate
+membership, retained-unpublished entries, and legacy published entries without
+an inventory classification. With no `source`, it reads the configured search
+registry URL. A view never increments the source count or enters `platform=all`,
+but the caller may select it explicitly.
 
 Bound installs live below the provider root as `search/<id>` or `material/<id>`.
 Ids are globally unique across both kinds. Flat legacy packages remain a read

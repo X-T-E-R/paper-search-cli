@@ -7,17 +7,27 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultProviderRoot = path.resolve(scriptDir, "..", "..", "resource-search-providers");
 const defaultProviderIds = [
+  "acm",
   "arxiv",
   "biorxiv",
+  "core",
   "crossref",
+  "dblp",
   "europepmc",
+  "iacr",
+  "ieee",
   "medrxiv",
+  "openaire",
   "openalex",
+  "openreview",
   "patentstar",
   "pmc",
   "pubmed",
+  "sciencedirect",
   "scopus",
   "semantic",
+  "springer",
+  "usenix",
   "wos",
   "zjusummon",
 ];
@@ -200,6 +210,230 @@ async function runCrossrefProbe() {
   };
 }
 
+async function runAcmProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("acm");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    providerConfig: { mailto: "compat@example.com" },
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            status: "ok",
+            message: {
+              "total-results": 7,
+              items: [
+                {
+                  DOI: "10.1145/compat.acm",
+                  title: ["Runtime Compatibility ACM View"],
+                  author: [{ family: "Doe", given: "Jane" }],
+                  type: "proceedings-article",
+                  URL: "https://doi.org/10.1145/compat.acm",
+                  "container-title": ["ACM Compatibility Conference"],
+                  published: { "date-parts": [[2024, 7, 14]] },
+                  "is-referenced-by-count": 5,
+                },
+              ],
+            },
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("systems security", {
+    maxResults: 2,
+    page: 2,
+    year: "2023-2024",
+    sortBy: "citations",
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (!loaded.inspection.hasSearch) {
+    throw new Error("ACM inspection did not expose search()");
+  }
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "10.1145/compat.acm"
+  ) {
+    throw new Error("ACM compatibility probe did not preserve view platform/source identity");
+  }
+  if (
+    item.url !== "https://dl.acm.org/doi/10.1145/compat.acm" ||
+    !item.extra?.includes("Backing source: Crossref")
+  ) {
+    throw new Error("ACM compatibility probe did not normalize the Crossref-backed view metadata");
+  }
+  if (
+    request?.options?.params?.query !== "systems security" ||
+    request.options.params.rows !== 20 ||
+    request.options.params.offset !== 2 ||
+    request.options.params.sort !== "is-referenced-by-count" ||
+    request.options.params.mailto !== "compat@example.com" ||
+    request.options.params.filter !==
+      "prefix:10.1145,from-pub-date:2023,until-pub-date:2024"
+  ) {
+    throw new Error("ACM compatibility probe observed an unexpected Crossref request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
+async function runCoreProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("core");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    providerConfig: { apiKey: "compat-core-key" },
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            totalHits: 13,
+            results: [
+              {
+                id: 4242,
+                title: "<b>Runtime</b> Compatibility CORE",
+                authors: [{ name: "Jane Doe" }],
+                abstract: "<p>Repository compatibility fixture.</p>",
+                doi: "https://doi.org/10.1234/core-compat",
+                publishedDate: "2024-07-14",
+                url: "https://core.ac.uk/works/4242",
+                downloadUrl: "https://core.ac.uk/download/4242.pdf",
+                subjects: ["Open Access"],
+                repository: { name: "Compatibility Repository" },
+                citationCount: 6,
+              },
+            ],
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("open repositories", {
+    maxResults: 5,
+    page: 3,
+    year: "2024",
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "4242"
+  ) {
+    throw new Error("CORE compatibility probe did not preserve platform/source identity");
+  }
+  if (item.title !== "Runtime Compatibility CORE" || item.DOI !== "10.1234/core-compat") {
+    throw new Error("CORE compatibility probe did not normalize title and DOI metadata");
+  }
+  if (
+    request?.options?.params?.q !== "open repositories" ||
+    request.options.params.limit !== 5 ||
+    request.options.params.offset !== 10 ||
+    request.options.params.year !== "2024" ||
+    request.options.headers.Authorization !== "Bearer compat-core-key"
+  ) {
+    throw new Error("CORE compatibility probe observed an unexpected request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
+async function runDblpProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("dblp");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            result: {
+              hits: {
+                "@total": "9",
+                hit: {
+                  "@id": "dblp-compat-hit",
+                  "@score": "2.5",
+                  info: {
+                    authors: { author: [{ text: "Jane Doe" }, { text: "John Roe" }] },
+                    title: "Runtime Compatibility DBLP",
+                    venue: "Compatibility Conference",
+                    year: "2024",
+                    type: "Conference and Workshop Papers",
+                    key: "conf/compat/Doe24",
+                    doi: "10.1234/dblp-compat",
+                    ee: "https://doi.org/10.1234/dblp-compat",
+                    url: "https://dblp.org/rec/conf/compat/Doe24",
+                  },
+                },
+              },
+            },
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("graph systems", {
+    maxResults: 3,
+    page: 2,
+    author: "Jane Doe",
+    year: "2024",
+    extra: { venue: "Compatibility Conference" },
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "conf/compat/Doe24"
+  ) {
+    throw new Error("DBLP compatibility probe did not preserve platform/source identity");
+  }
+  if (item.itemType !== "conferencePaper" || item.relevanceScore !== 2.5) {
+    throw new Error("DBLP compatibility probe did not normalize type and score metadata");
+  }
+  if (
+    request?.options?.params?.q !==
+      "graph systems author:Jane Doe Compatibility Conference 2024" ||
+    request.options.params.h !== 3 ||
+    request.options.params.f !== 3 ||
+    request.options.params.format !== "json"
+  ) {
+    throw new Error("DBLP compatibility probe observed an unexpected request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
 async function runArxivProbe() {
   const { providerId, manifest, bundleCode } = await loadOfficialProvider("arxiv");
   const seenRequests = [];
@@ -278,6 +512,167 @@ async function runArxivProbe() {
     request,
     result,
   };
+}
+
+async function runIacrProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("iacr");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: `<!doctype html>
+<html>
+  <head><title>IACR ePrint search</title></head>
+  <body>
+    <div class="mb-4">
+      <div class="d-flex">
+        <a class="paperlink" href="/2024/1234">2024/1234</a>
+        <small class="ms-auto">Submitted 2024-07-14</small>
+      </div>
+      <div class="ms-md-4">
+        <strong>Runtime Compatibility IACR</strong>
+        <span class="fst-italic">Jane Doe and John Roe</span>
+        <p class="search-abstract">An offline HTML compatibility fixture.</p>
+        <small class="badge">Public-key cryptography</small>
+      </div>
+      <a href="/2024/1234.pdf">PDF</a>
+    </div>
+  </body>
+</html>`,
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "text/html" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("threshold signatures", {
+    maxResults: 1,
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "2024/1234"
+  ) {
+    throw new Error("IACR compatibility probe did not preserve platform/source identity");
+  }
+  if (
+    item.date !== "2024-07-14" ||
+    item.url !== "https://eprint.iacr.org/2024/1234" ||
+    item.creators?.length !== 2
+  ) {
+    throw new Error("IACR compatibility probe did not normalize the HTML fixture");
+  }
+  if (
+    request?.url !== "https://eprint.iacr.org/search" ||
+    request.options?.params?.q !== "threshold signatures" ||
+    !String(request.options?.headers?.Accept).includes("text/html")
+  ) {
+    throw new Error("IACR compatibility probe observed an unexpected request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
+async function runIeeeProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("ieee");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    providerConfig: { apiKey: "compat-ieee-key" },
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            total_records: "15",
+            articles: [
+              {
+                article_number: "99887766",
+                title: "<b>Runtime</b> Compatibility IEEE",
+                authors: {
+                  authors: [
+                    { full_name: "John Roe", author_order: 2 },
+                    { full_name: "Jane Doe", author_order: 1 },
+                  ],
+                },
+                abstract: "<p>IEEE metadata compatibility fixture.</p>",
+                doi: "https://doi.org/10.1234/ieee-compat",
+                html_url: "https://ieeexplore.ieee.org/document/99887766",
+                publication_title: "IEEE Compatibility Journal",
+                publication_year: "2024",
+                publication_date: "14 July 2024",
+                citing_paper_count: "8",
+                index_terms: { ieee_terms: { terms: ["Compatibility"] } },
+              },
+            ],
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("graph accelerators", {
+    maxResults: 4,
+    page: 2,
+    author: "Jane Doe",
+    year: "2024",
+    sortBy: "citations",
+    extra: {
+      articleTitle: "Compatibility",
+      journal: "IEEE Compatibility Journal",
+      sortOrder: "asc",
+    },
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "99887766"
+  ) {
+    throw new Error("IEEE compatibility probe did not preserve platform/source identity");
+  }
+  if (
+    item.title !== "Runtime Compatibility IEEE" ||
+    item.DOI !== "10.1234/ieee-compat" ||
+    item.creators?.[0]?.lastName !== "Doe"
+  ) {
+    throw new Error("IEEE compatibility probe did not normalize title, DOI, and author order");
+  }
+  if (
+    request?.options?.params?.apikey !== "compat-ieee-key" ||
+    request.options.params.querytext !== "graph accelerators" ||
+    request.options.params.max_records !== 4 ||
+    request.options.params.start_record !== 5 ||
+    request.options.params.author !== "Jane Doe" ||
+    request.options.params.publication_year !== "2024" ||
+    request.options.params.article_title !== "Compatibility" ||
+    request.options.params.publication_title !== "IEEE Compatibility Journal" ||
+    request.options.params.sort_field !== "citing_paper_count" ||
+    request.options.params.sort_order !== "asc"
+  ) {
+    throw new Error("IEEE compatibility probe observed an unexpected request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
 }
 
 async function runPatentstarProbe() {
@@ -481,6 +876,169 @@ async function runPatentstarProbe() {
   } finally {
     globalThis.fetch = originalFetch;
   }
+}
+
+async function runOpenaireProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("openaire");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    providerConfig: { apiKey: "compat-openaire-key" },
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            header: { numFound: 8, page: 2, pageSize: 4 },
+            results: [
+              {
+                id: "openaire::compat-42",
+                mainTitle: "Runtime Compatibility OpenAIRE",
+                subTitle: "Graph API fixture",
+                type: "publication",
+                publicationDate: "2024-07-14",
+                descriptions: [{ value: "OpenAIRE JSON metadata compatibility fixture." }],
+                authors: [{ fullName: "Doe, Jane", rank: 1 }],
+                pids: [{ scheme: "doi", value: "10.1234/openaire-compat" }],
+                bestAccessRight: { label: "Open Access" },
+                container: { name: "OpenAIRE Compatibility Journal", sp: "1", ep: "9" },
+                instances: [
+                  {
+                    urls: [
+                      "https://openaire.eu/result/compat-42.pdf",
+                      "https://openaire.eu/result/compat-42",
+                    ],
+                  },
+                ],
+                indicators: { citationImpact: { citationCount: 7 } },
+              },
+            ],
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("open science graphs", {
+    maxResults: 4,
+    page: 2,
+    year: "2024",
+    sortBy: "citations",
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "openaire::compat-42"
+  ) {
+    throw new Error("OpenAIRE compatibility probe did not preserve platform/source identity");
+  }
+  if (
+    item.title !== "Runtime Compatibility OpenAIRE: Graph API fixture" ||
+    item.DOI !== "10.1234/openaire-compat" ||
+    item.creators?.[0]?.lastName !== "Doe" ||
+    item.citationCount !== 7
+  ) {
+    throw new Error("OpenAIRE compatibility probe did not normalize JSON metadata");
+  }
+  if (
+    request?.url !== "https://api.openaire.eu/graph/v3/research-products" ||
+    request.options?.params?.search !== "open science graphs" ||
+    request.options.params.type !== "publication" ||
+    request.options.params.page !== 2 ||
+    request.options.params.pageSize !== 4 ||
+    request.options.params.publicationYear !== "2024" ||
+    request.options.params.sortBy !== "citationCount DESC" ||
+    request.options.headers.Authorization !== "Bearer compat-openaire-key"
+  ) {
+    throw new Error("OpenAIRE compatibility probe observed an unexpected request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
+async function runOpenreviewProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("openreview");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            count: 6,
+            notes: [
+              {
+                id: "openreview-compat-note",
+                forum: "openreview-compat-forum",
+                invitation: "Compatibility.cc/2024/Conference/-/Submission",
+                domain: "compatibility.cc",
+                pdate: Date.UTC(2024, 6, 14),
+                content: {
+                  title: { value: "Runtime Compatibility OpenReview" },
+                  authors: { value: ["Jane Doe", "John Roe"] },
+                  authorids: { value: ["~Jane_Doe1", "~John_Roe1"] },
+                  abstract: { value: "OpenReview compatibility fixture." },
+                  venue: { value: "Compatibility Conference 2024" },
+                  pdf: { value: "/pdf?id=openreview-compat-note" },
+                  html: { value: "https://doi.org/10.1234/openreview-compat" },
+                },
+              },
+            ],
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("reviewed graph models", {
+    maxResults: 2,
+    page: 2,
+    year: "2024",
+    author: "Jane Doe",
+    extra: { venue: "Compatibility Conference" },
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "openreview-compat-note"
+  ) {
+    throw new Error("OpenReview compatibility probe did not preserve platform/source identity");
+  }
+  if (
+    item.DOI !== "10.1234/openreview-compat" ||
+    item.date !== "2024-07-14" ||
+    item.url !== "https://openreview.net/forum?id=openreview-compat-forum"
+  ) {
+    throw new Error("OpenReview compatibility probe did not normalize DOI, date, and forum URL");
+  }
+  if (
+    request?.options?.params?.term !== "reviewed graph models" ||
+    request.options.params.limit !== 2 ||
+    request.options.params.offset !== 2
+  ) {
+    throw new Error("OpenReview compatibility probe observed an unexpected request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
 }
 
 async function runOpenalexProbe() {
@@ -825,6 +1383,90 @@ async function runPubmedProbe() {
   return { ok: true, providerId, inspection: loaded.inspection, requests: seenRequests, result };
 }
 
+async function runSciencedirectProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("sciencedirect");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    providerConfig: { apiKey: "compat-sciencedirect-key" },
+    transport: {
+      async get() {
+        throw new Error("compat probe expects ScienceDirect to use PUT");
+      },
+      async post() {
+        throw new Error("compat probe expects ScienceDirect to use PUT");
+      },
+      async put(url, body, options) {
+        seenRequests.push({ method: "PUT", url, body, options });
+        return {
+          data: {
+            totalResults: "12",
+            results: [
+              {
+                pii: "S012345678900001X",
+                title: "Runtime Compatibility ScienceDirect",
+                authors: [
+                  { name: "Roe, John", order: 2 },
+                  { name: "Doe, Jane", order: 1 },
+                ],
+                publicationDate: "2024-07-14",
+                doi: "10.1234/sciencedirect-compat",
+                uri: "https://www.sciencedirect.com/science/article/pii/S012345678900001X",
+                sourceTitle: "Journal of Runtime Compatibility",
+                openAccess: true,
+                volumeIssue: "Volume 7, Issue 14",
+                pages: "1-12",
+              },
+            ],
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("retrieval systems", {
+    maxResults: 5,
+    page: 3,
+    year: "2020-2024",
+    author: "Jane Doe",
+    sortBy: "date",
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "S012345678900001X"
+  ) {
+    throw new Error("ScienceDirect compatibility probe did not preserve platform/source identity");
+  }
+  if (
+    item.DOI !== "10.1234/sciencedirect-compat" ||
+    item.creators?.[0]?.lastName !== "Doe" ||
+    !item.extra?.includes("Open Access: Yes")
+  ) {
+    throw new Error("ScienceDirect compatibility probe did not normalize DOI, authors, and OA metadata");
+  }
+  if (
+    request?.method !== "PUT" ||
+    request.body?.qs !== "retrieval systems" ||
+    request.body?.display?.offset !== 10 ||
+    request.body?.display?.show !== 5 ||
+    request.body?.display?.sortBy !== "date" ||
+    request.body?.date !== "2020-2024" ||
+    request.body?.authors !== "Jane Doe" ||
+    request.options?.headers?.["X-ELS-APIKey"] !== "compat-sciencedirect-key"
+  ) {
+    throw new Error("ScienceDirect compatibility probe observed an unexpected PUT request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
 async function runScopusProbe() {
   const { providerId, manifest, bundleCode } = await loadOfficialProvider("scopus");
   const seenRequests = [];
@@ -942,6 +1584,184 @@ async function runSemanticProbe() {
   return { ok: true, providerId, inspection: loaded.inspection, request, result };
 }
 
+async function runSpringerProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("springer");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    providerConfig: { apiKey: "compat-springer-key" },
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            result: [{ total: "18", start: "4", pageLength: "3", recordsDisplayed: "1" }],
+            records: [
+              {
+                identifier: "springer-compat-record",
+                title: "Runtime Compatibility Springer",
+                creators: [{ creator: "Doe, Jane" }, { creator: "John Roe" }],
+                publicationName: "Springer Compatibility Handbook",
+                publicationDate: "2024-07-14",
+                doi: "10.1234/springer-compat",
+                url: [
+                  { format: "html", value: "https://link.springer.com/chapter/compat" },
+                  { format: "pdf", value: "https://link.springer.com/content/pdf/compat.pdf" },
+                ],
+                abstract: "Springer metadata compatibility fixture.",
+                startingPage: "10",
+                endingPage: "24",
+                genre: "Book Chapter",
+                contentType: "Chapter",
+                openaccess: "true",
+              },
+            ],
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("graph learning", {
+    maxResults: 3,
+    page: 2,
+    author: "Jane Doe",
+    year: "2020-2024",
+    extra: {
+      journal: "Compatibility Handbook",
+      subject: "Computer Science",
+      type: "Chapter",
+    },
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "10.1234/springer-compat"
+  ) {
+    throw new Error("Springer compatibility probe did not preserve platform/source identity");
+  }
+  if (
+    item.itemType !== "bookSection" ||
+    item.pages !== "10-24" ||
+    !item.extra?.includes("PDF: https://link.springer.com/content/pdf/compat.pdf")
+  ) {
+    throw new Error("Springer compatibility probe did not normalize type, pages, and PDF metadata");
+  }
+  const query = String(request?.options?.params?.q);
+  if (
+    request?.url !== "https://api.springernature.com/meta/v2/json" ||
+    request.options.params.api_key !== "compat-springer-key" ||
+    request.options.params.s !== 4 ||
+    request.options.params.p !== 3 ||
+    !query.includes('name:"Jane Doe"') ||
+    !query.includes('pub:"Compatibility Handbook"') ||
+    !query.includes("year:2020 TO 2024") ||
+    !query.includes('subject:"Computer Science"') ||
+    !query.includes("type:Chapter")
+  ) {
+    throw new Error("Springer compatibility probe observed an unexpected request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
+async function runUsenixProbe() {
+  const { providerId, manifest, bundleCode } = await loadOfficialProvider("usenix");
+  const seenRequests = [];
+  const api = createCompatApi({
+    manifest,
+    transport: {
+      async get(url, options) {
+        seenRequests.push({ method: "GET", url, options });
+        return {
+          data: {
+            result: {
+              hits: {
+                "@total": "45",
+                hit: [
+                  {
+                    "@id": "usenix-compat-hit",
+                    info: {
+                      authors: { author: { text: "Jane Doe" } },
+                      title: "Runtime Compatibility at USENIX Security",
+                      venue: "USENIX Security Symposium",
+                      year: "2024",
+                      type: "Conference and Workshop Papers",
+                      key: "conf/uss/Doe24",
+                      doi: "10.1234/usenix-compat",
+                      ee: "https://www.usenix.org/conference/usenixsecurity24/presentation/doe",
+                      url: "https://dblp.org/rec/conf/uss/Doe24",
+                    },
+                  },
+                  {
+                    "@id": "non-usenix-hit",
+                    info: {
+                      title: "Unrelated Runtime Compatibility Paper",
+                      venue: "Other Conference",
+                      year: "2024",
+                      key: "conf/other/Roe24",
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+        };
+      },
+      async post() {
+        throw new Error("compat probe does not expect POST");
+      },
+    },
+  });
+
+  const loaded = await inspectProvider(bundleCode, manifest, api);
+  const result = await loaded.provider.search("filesystem security", {
+    maxResults: 2,
+    author: "Jane Doe",
+    year: "2024",
+    extra: { venue: "Security Symposium" },
+  });
+  const request = seenRequests[0];
+  const item = result.items[0];
+  if (
+    result.platform !== providerId ||
+    item?.source !== providerId ||
+    item?.sourceId !== "conf/uss/Doe24"
+  ) {
+    throw new Error("USENIX compatibility probe did not preserve view platform/source identity");
+  }
+  if (
+    result.items.length !== 1 ||
+    item.publicationTitle !== "USENIX Security Symposium" ||
+    !item.extra?.includes("Backing source: DBLP")
+  ) {
+    throw new Error("USENIX compatibility probe did not normalize the filtered DBLP-backed view");
+  }
+  if (
+    request?.options?.params?.q !==
+      "filesystem security USENIX author:Jane Doe Security Symposium 2024" ||
+    request.options.params.h !== 40 ||
+    request.options.params.f !== 0 ||
+    request.options.params.format !== "json"
+  ) {
+    throw new Error("USENIX compatibility probe observed an unexpected DBLP request mapping");
+  }
+
+  return { ok: true, providerId, inspection: loaded.inspection, request, result };
+}
+
 async function runWosProbe() {
   const { providerId, manifest, bundleCode } = await loadOfficialProvider("wos");
   const seenRequests = [];
@@ -1056,7 +1876,10 @@ function compatibilityConfig(providerId) {
   switch (providerId) {
     case "patentstar":
       return { loginName: "compat-user", password: "compat-password" };
+    case "ieee":
+    case "sciencedirect":
     case "scopus":
+    case "springer":
     case "wos":
       return { apiKey: "compat-api-key" };
     default:
@@ -1082,6 +1905,9 @@ async function runHttpFailureProbe(providerId) {
       async post() {
         return failureResponse;
       },
+      async put() {
+        return failureResponse;
+      },
     },
   });
   const loaded = await inspectProvider(bundleCode, manifest, api);
@@ -1103,17 +1929,27 @@ async function runHttpFailureProbe(providerId) {
 }
 
 const probes = {
+  acm: runAcmProbe,
   arxiv: runArxivProbe,
   biorxiv: runBiorxivProbe,
+  core: runCoreProbe,
   crossref: runCrossrefProbe,
+  dblp: runDblpProbe,
   europepmc: runEuropepmcProbe,
+  iacr: runIacrProbe,
+  ieee: runIeeeProbe,
   medrxiv: runMedrxivProbe,
+  openaire: runOpenaireProbe,
   openalex: runOpenalexProbe,
+  openreview: runOpenreviewProbe,
   patentstar: runPatentstarProbe,
   pmc: runPmcProbe,
   pubmed: runPubmedProbe,
+  sciencedirect: runSciencedirectProbe,
   scopus: runScopusProbe,
   semantic: runSemanticProbe,
+  springer: runSpringerProbe,
+  usenix: runUsenixProbe,
   wos: runWosProbe,
   zjusummon: runZjuSummonProbe,
 };

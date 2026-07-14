@@ -29,8 +29,9 @@ assets so previously published URLs keep working.
 
 ## Consequences
 
-- The Zotero-facing search registry keeps its existing schema and release
-  cadence.
+- Existing search-provider entry fields and release URLs stay compatible. The
+  search registry may add optional catalogue metadata, such as the source
+  inventory, without mixing in material-provider package kinds.
 - Material providers can evolve their capabilities without search-host
   compatibility risk.
 - Operators configure two subscription URLs, while the CLI presents one

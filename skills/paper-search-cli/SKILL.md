@@ -49,7 +49,7 @@ Before parameter-heavy work, read the matching reference:
 
 - Read `references/capability-routing.md` before mapping a request to the eight groups and current entrypoints.
 - Read `references/cli-contract.md` before touching working directory, build/probe, JSON output, `ResultEnvelope`, `run <canonical_tool>`, aliases, batch rows, dry-run/plan, local records, or secrets/config.
-- Read `references/management-layer.md` before using `status`, `doctor`, `config`, `migrate`, `registries`, subscription-bound `providers available|install|update`, `providers --kind search|material`, `material-providers`, `mcp serve`, `platform-status`, `help`, `tools`, or smoke gates.
+- Read `references/management-layer.md` before using `status`, `doctor`, `config`, `migrate`, `registries`, subscription-bound `providers available|install|update`, `providers inventory`, `providers --kind search|material`, `material-providers`, `mcp serve`, `platform-status`, `help`, `tools`, or smoke gates.
 - Read `references/management-layer.md` before planning or applying `self mode`
   or `self update`. These commands are plan-first. Production authority is
   source-sealed to the official HTTPS `main` origin and cannot be changed by

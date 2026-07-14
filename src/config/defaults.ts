@@ -32,6 +32,19 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "meta"> = {
     enabled: true,
     envVar: "PAPER_SEARCH_RUN_SMOKE",
   },
+  search: {
+    selection: {
+      mode: "defaults",
+      includeIds: [],
+      excludeIds: [],
+      includeDomains: [],
+      excludeDomains: [],
+      includeContentKinds: [],
+      excludeContentKinds: [],
+      includeAccess: [],
+      excludeAccess: [],
+    },
+  },
   platform: {},
   api: {},
 };

@@ -42,6 +42,106 @@ async function createProviderZip(outputPath: string, id: string, version: string
 }
 
 describe("provider registry commands", () => {
+  it("reports source, view, alias, service-family, and retained counts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-registry-inventory-"));
+    tempDirs.push(root);
+    const registryPath = path.join(root, "registry.json");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        providers: [
+          { id: "crossref", version: "1.0.0", downloadUrl: "./crossref.zip" },
+          { id: "acm", version: "1.0.0", downloadUrl: "./acm.zip" },
+        ],
+        inventory: [
+          {
+            id: "crossref",
+            kind: "search",
+            sourceType: "academic",
+            entryKind: "source",
+            sourceId: "org.crossref.works",
+            aliases: ["cross_ref"],
+            serviceFamily: "org.crossref.api",
+            transport: "api",
+            domains: ["multidisciplinary"],
+            contentKinds: ["journal-article"],
+            access: ["public"],
+            selection: { defaultInAll: true },
+            publication: { status: "published" },
+          },
+          {
+            id: "acm",
+            kind: "search",
+            sourceType: "academic",
+            entryKind: "view",
+            backingSourceIds: ["org.crossref.works"],
+            serviceFamily: "org.crossref.api",
+            transport: "api",
+            domains: ["computer-science"],
+            contentKinds: ["conference-paper"],
+            access: ["public"],
+            selection: { defaultInAll: false },
+            publication: { status: "published" },
+          },
+          {
+            id: "googlescholar",
+            kind: "search",
+            sourceType: "academic",
+            entryKind: "source",
+            sourceId: "com.google.scholar",
+            serviceFamily: "com.google.scholar-web",
+            transport: "html",
+            domains: ["multidisciplinary"],
+            contentKinds: ["journal-article"],
+            access: ["public"],
+            selection: { defaultInAll: false },
+            publication: {
+              status: "retained-unpublished",
+              blockers: ["fixture gate pending"],
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    let stdout = "";
+    let stderr = "";
+    await buildProgram({
+      stdout: { write(chunk: string) { stdout += chunk; } },
+      stderr: { write(chunk: string) { stderr += chunk; } },
+    }).parseAsync([
+      "node",
+      "paper-search",
+      "providers",
+      "inventory",
+      registryPath,
+      "--json",
+    ]);
+
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout)).toMatchObject({
+      ok: true,
+      tool: "provider_registry_inventory",
+      data: {
+        counts: {
+          entries: 3,
+          publishedEntries: 2,
+          publishedSearchSources: 1,
+          publishedViews: 1,
+          publishedDefaultInAll: 1,
+          retainedUnpublishedEntries: 1,
+          aliases: 1,
+          publishedServiceFamilies: 1,
+          unknownClassification: 0,
+        },
+        facets: {
+          domains: { "computer-science": 1, multidisciplinary: 2 },
+        },
+      },
+    });
+  });
+
   it("plans and applies registry actions through the CLI", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-registry-cli-"));
     tempDirs.push(root);

@@ -2,7 +2,7 @@
 system:
   project: paper-search
   name: paper-search-cli
-  version: 0.1.2
+  version: 0.2.0
   status: primary
   vcs: independent-git
   vcs_ref: "main"

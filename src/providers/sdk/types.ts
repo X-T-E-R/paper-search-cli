@@ -101,6 +101,12 @@ export interface ProviderHttpRequestOptions {
   withCredentials?: boolean;
 }
 
+export interface ProviderHttpBodyRequestOptions {
+  headers?: Record<string, string>;
+  timeout?: number;
+  withCredentials?: boolean;
+}
+
 export interface ProviderAPI {
   http: {
     get<T = unknown>(
@@ -110,11 +116,12 @@ export interface ProviderAPI {
     post<T = unknown>(
       url: string,
       body?: string | Record<string, unknown>,
-      options?: {
-        headers?: Record<string, string>;
-        timeout?: number;
-        withCredentials?: boolean;
-      },
+      options?: ProviderHttpBodyRequestOptions,
+    ): Promise<ProviderHttpResponse<T>>;
+    put<T = unknown>(
+      url: string,
+      body?: string | Record<string, unknown>,
+      options?: ProviderHttpBodyRequestOptions,
     ): Promise<ProviderHttpResponse<T>>;
   };
   xml: {
@@ -204,4 +211,43 @@ export interface ProviderManifest {
   searchTimeoutMs?: number;
   allowedGlobalPrefs?: string[];
   integrity?: { sha256?: string };
+  inventory?: ProviderInventoryEntry;
+}
+
+export interface ProviderInventoryEntry {
+  schemaVersion: 1;
+  id: string;
+  kind: "search";
+  sourceType: "academic" | "patent";
+  entryKind: "source" | "view";
+  sourceId?: string;
+  backingSourceIds?: string[];
+  aliases?: string[];
+  serviceFamily: string;
+  transport: "api" | "html";
+  domains: Array<
+    | "biomedicine"
+    | "computer-science"
+    | "cryptography"
+    | "engineering"
+    | "life-sciences"
+    | "multidisciplinary"
+    | "patents"
+  >;
+  contentKinds: Array<
+    | "book"
+    | "conference-paper"
+    | "journal-article"
+    | "patent"
+    | "preprint"
+    | "repository-record"
+  >;
+  access: Array<"credentialed" | "institutional" | "public" | "session-gated">;
+  selection: {
+    defaultInAll: boolean;
+  };
+  publication: {
+    status: "published" | "retained-unpublished";
+    blockers?: string[];
+  };
 }

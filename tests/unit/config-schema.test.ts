@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { SubscriptionsConfigFileSchema } from "../../src/config/schema.js";
+import {
+  SearchSelectionConfigSchema,
+  SubscriptionsConfigFileSchema,
+} from "../../src/config/schema.js";
 import {
   classifyConfigKey,
   parseCredentialsConfigDocument,
@@ -39,6 +42,19 @@ describe("strict split-config schemas", () => {
         subscriptions: {},
       }),
     ).toThrow();
+    expect(() =>
+      SearchSelectionConfigSchema.parse({
+        mode: "defaults",
+        includeIds: ["pubmed"],
+        excludeIds: ["pubmed"],
+        includeDomains: [],
+        excludeDomains: [],
+        includeContentKinds: [],
+        excludeContentKinds: [],
+        includeAccess: [],
+        excludeAccess: [],
+      }),
+    ).toThrow(/both included and excluded/);
   });
 
   it("rejects unknown config keys and non-secret credential entries", () => {
@@ -75,5 +91,21 @@ describe("strict split-config schemas", () => {
         metadata,
       ),
     ).toEqual({ platform: { fixture: { sessionCookie: "opaque" } } });
+  });
+
+  it("accepts partial search selection config and rejects conflicting ids", () => {
+    expect(
+      parseUserConfigDocument({
+        schemaVersion: 1,
+        search: { selection: { excludeDomains: ["biomedicine"] } },
+      }).data,
+    ).toEqual({ search: { selection: { excludeDomains: ["biomedicine"] } } });
+
+    expect(() =>
+      parseUserConfigDocument({
+        schemaVersion: 1,
+        search: { selection: { excludeDomains: ["not-a-domain"] } },
+      }),
+    ).toThrow();
   });
 });

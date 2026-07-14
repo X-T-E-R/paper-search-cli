@@ -32,6 +32,15 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "output.prettyJson",
   "smoke.enabled",
   "smoke.envVar",
+  "search.selection.mode",
+  "search.selection.includeIds",
+  "search.selection.excludeIds",
+  "search.selection.includeDomains",
+  "search.selection.excludeDomains",
+  "search.selection.includeContentKinds",
+  "search.selection.excludeContentKinds",
+  "search.selection.includeAccess",
+  "search.selection.excludeAccess",
 ] as const;
 
 export const CONFIGURABLE_DYNAMIC_KEY_PATTERNS = [

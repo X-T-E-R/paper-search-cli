@@ -4,6 +4,7 @@ import { listInstalledProviders, type InstalledProviderSummary } from "../provid
 import { getCanonicalToolNames } from "./toolCatalog.js";
 import { getWebProviderHealth } from "../web/router.js";
 import { resolveProviderAvailability } from "../providers/runtime/availability.js";
+import { evaluateProviderInAll } from "../search/selection.js";
 
 export interface PlatformStatusEntry {
   id: string;
@@ -13,6 +14,14 @@ export interface PlatformStatusEntry {
   enabled: boolean;
   configured: boolean;
   available: boolean;
+  runnable: boolean;
+  includedInAll: boolean;
+  selectionReason: string;
+  entryKind: "source" | "view";
+  aliases: string[];
+  domains: string[];
+  contentKinds: string[];
+  access: string[];
   missingConfigKeys: string[];
   summary?: string;
 }
@@ -45,6 +54,9 @@ function summarizeManifest(manifest: ProviderManifest): string | undefined {
 function toStatusEntry(config: ResolvedConfig, provider: InstalledProviderSummary): PlatformStatusEntry {
   const manifest = provider.manifest!;
   const availability = resolveProviderAvailability(config, manifest);
+  const selection = evaluateProviderInAll(config, manifest);
+  const runnable = provider.valid && availability.available;
+  const inventory = manifest.inventory;
   return {
     id: provider.id,
     name: manifest.name,
@@ -52,7 +64,19 @@ function toStatusEntry(config: ResolvedConfig, provider: InstalledProviderSummar
     sourceType: manifest.sourceType,
     enabled: availability.enabled,
     configured: availability.configured,
-    available: provider.valid && availability.available,
+    available: runnable,
+    runnable,
+    includedInAll: runnable && selection.included,
+    selectionReason: !availability.enabled
+      ? "provider disabled"
+      : !availability.configured
+        ? `missing required config: ${availability.missingConfigKeys.join(", ")}`
+        : selection.reason,
+    entryKind: inventory?.entryKind ?? "source",
+    aliases: inventory?.aliases ?? [],
+    domains: inventory?.domains ?? [],
+    contentKinds: inventory?.contentKinds ?? [],
+    access: inventory?.access ?? [],
     missingConfigKeys: availability.missingConfigKeys,
     summary: summarizeManifest(manifest),
   };
@@ -73,7 +97,17 @@ export async function createPlatformStatusSnapshot(
   const installed = await listInstalledProviders(config.providers.installDir);
   const validEntries = installed.filter((entry) => entry.valid && entry.manifest);
   const statusEntries = validEntries.map((entry) => toStatusEntry(config, entry));
-  const webEntries = getWebProviderHealth(config);
+  const webEntries: PlatformStatusEntry[] = getWebProviderHealth(config).map((entry) => ({
+    ...entry,
+    runnable: entry.available,
+    includedInAll: false,
+    selectionReason: "web backend is selected by web routing, not search.selection",
+    entryKind: "source",
+    aliases: [],
+    domains: [],
+    contentKinds: [],
+    access: [],
+  }));
   const invalidProviders = installed
     .filter((entry) => !entry.valid)
     .map((entry) => ({

@@ -150,6 +150,7 @@ interface ProviderSelectionOption extends ProviderKindOption {
 
 type ProviderToolBase =
   | "list_installed"
+  | "registry_inventory"
   | "validate_manifest"
   | "inspect_package"
   | "registry_plan"
@@ -349,6 +350,30 @@ function registerProviderManagementSubcommands(
         for (const candidate of candidates) {
           io.writeLine(`- ${candidate}`);
         }
+      });
+
+    providers
+      .command("inventory [source]")
+      .description(
+        "Report search entries, countable sources, views, aliases, service families, and retained entries from a registry.",
+      )
+      .option("--json", "emit machine-readable JSON")
+      .action(async (source: string | undefined, options: JsonOption, command: Command) => {
+        await runProviderAction({
+          io,
+          options,
+          command,
+          defaultKind: registration.defaultKind,
+          toolBase: "registry_inventory",
+          build: async (kind) => {
+            if (kind !== "search") {
+              throw new Error("providers inventory supports the search registry only");
+            }
+            const config = await loadCommandConfig(command);
+            return registryInventoryEnvelope(config, source);
+          },
+          writeHuman: (envelope) => writeRegistryInventoryHuman(io, envelope),
+        });
       });
   }
 
@@ -703,6 +728,74 @@ async function planRegistryEnvelope(
   });
 }
 
+async function registryInventoryEnvelope(
+  config: ResolvedConfig,
+  source: string | undefined,
+): Promise<ResultEnvelope<unknown>> {
+  const registrySource = source ?? config.providers.registryUrl;
+  const registry = await loadRegistryManifest(registrySource);
+  const inventory = registry.manifest.inventory;
+  const published = inventory.filter(
+    (entry) => entry.publication.status === "published",
+  );
+  const retained = inventory.filter(
+    (entry) => entry.publication.status === "retained-unpublished",
+  );
+  const sourceIds = new Set(
+    published.flatMap((entry) =>
+      entry.entryKind === "source" && entry.sourceId ? [entry.sourceId] : [],
+    ),
+  );
+  const countFacet = (key: "domains" | "contentKinds" | "access") => {
+    const values = new Map<string, number>();
+    for (const entry of inventory) {
+      for (const value of entry[key]) values.set(value, (values.get(value) ?? 0) + 1);
+    }
+    return Object.fromEntries([...values].sort(([left], [right]) => left.localeCompare(right)));
+  };
+  const counts = {
+    entries: inventory.length,
+    publishedEntries: published.length,
+    publishedSearchSources: sourceIds.size,
+    publishedViews: published.filter((entry) => entry.entryKind === "view").length,
+    publishedDefaultInAll: published.filter(
+      (entry) => entry.entryKind === "source" && entry.selection.defaultInAll,
+    ).length,
+    retainedUnpublishedEntries: retained.length,
+    aliases: inventory.reduce(
+      (total, entry) => total + (entry.aliases?.length ?? 0),
+      0,
+    ),
+    publishedServiceFamilies: new Set(
+      published.map((entry) => entry.serviceFamily),
+    ).size,
+    unknownClassification: registry.manifest.providers.filter(
+      (provider) => !inventory.some((entry) => entry.id === provider.id),
+    ).length,
+  };
+
+  return okEnvelope({
+    capability: "operate",
+    tool: providerToolName("search", "registry_inventory"),
+    data: {
+      registry: registry.resolvedFrom,
+      counts,
+      facets: {
+        domains: countFacet("domains"),
+        contentKinds: countFacet("contentKinds"),
+        access: countFacet("access"),
+      },
+      inventory,
+    },
+    diagnostics: counts,
+    provenance: {
+      providerIds: published.map((entry) => entry.id),
+      registrySource: registry.resolvedFrom,
+      policy: "provider-registry-inventory",
+    },
+  });
+}
+
 async function syncRegistryEnvelope(
   kind: ProviderKind,
   config: ResolvedConfig,
@@ -983,6 +1076,53 @@ function writeRegistryPlanHuman(io: Io, envelope: ResultEnvelope<unknown>, kind:
     };
   }>(envelope);
   writePlanEntries(io, payload.installDir, payload.plan.resolvedFrom, payload.plan.entries);
+}
+
+function writeRegistryInventoryHuman(io: Io, envelope: ResultEnvelope<unknown>): void {
+  const payload = requireEnvelopeData<{
+    registry: string;
+    counts: {
+      entries: number;
+      publishedEntries: number;
+      publishedSearchSources: number;
+      publishedViews: number;
+      publishedDefaultInAll: number;
+      retainedUnpublishedEntries: number;
+      aliases: number;
+      publishedServiceFamilies: number;
+      unknownClassification: number;
+    };
+    inventory: Array<{
+      id: string;
+      sourceType: "academic" | "patent";
+      entryKind: "source" | "view";
+      sourceId?: string;
+      backingSourceIds?: string[];
+      serviceFamily: string;
+      transport: string;
+      domains: string[];
+      contentKinds: string[];
+      access: string[];
+      selection: { defaultInAll: boolean };
+      publication: { status: string; blockers?: string[] };
+    }>;
+  }>(envelope);
+  io.writeLine(`registry: ${payload.registry}`);
+  io.writeLine(
+    `published: ${payload.counts.publishedSearchSources} sources / ${payload.counts.publishedEntries} entries / ${payload.counts.publishedViews} views`,
+  );
+  io.writeLine(
+    `default in all: ${payload.counts.publishedDefaultInAll}; service families: ${payload.counts.publishedServiceFamilies}; aliases: ${payload.counts.aliases}; retained: ${payload.counts.retainedUnpublishedEntries}; unknown: ${payload.counts.unknownClassification}`,
+  );
+  for (const entry of payload.inventory) {
+    const identity =
+      entry.entryKind === "source"
+        ? entry.sourceId
+        : `view of ${(entry.backingSourceIds ?? []).join(", ")}`;
+    io.writeLine(
+      `- ${entry.id}: ${entry.entryKind} (${identity}) [${entry.publication.status}; all=${entry.selection.defaultInAll ? "default" : "explicit"}; domains=${entry.domains.join(",")}; content=${entry.contentKinds.join(",")}; access=${entry.access.join(",")}]`,
+    );
+  }
 }
 
 function writeRegistrySyncHuman(

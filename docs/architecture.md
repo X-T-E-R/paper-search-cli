@@ -181,8 +181,15 @@ Distributable material packages are published from the separate
 [`material-providers`](https://github.com/X-T-E-R/material-providers)
 repository (see
 [ADR-0002](./decisions/ADR-0002-material-provider-distribution-channel.md)),
-keeping the
-`resource-search-providers` registry consumed by the Zotero plugin untouched.
+so search packages remain in the independent `resource-search-providers`
+registry. Its existing provider entries remain backward compatible, while an
+optional inventory section classifies countable sources, source-backed views,
+aliases, service families, source domains, content kinds, access classes,
+default aggregate membership, and retained-unpublished entries. Installed
+manifests freeze this metadata for runtime selection; a mutable registry can
+change catalogue display but cannot silently change the behavior of an already
+installed package. Provider enablement remains a hard runtime switch, while the
+layered `[search.selection]` policy controls only `platform=all`.
 Material `registry.json` entries carry `id`, `version`, `kind`, `downloadUrl`,
 `sha256`, and `minCliVersion`. The registry loader reads `minPluginVersion` as
 a compatibility alias mapped to the same min-version gate. The loader accepts

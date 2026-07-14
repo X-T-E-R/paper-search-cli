@@ -26,6 +26,9 @@ function successTransport(): ProviderHttpTransport {
     async post<T = unknown>() {
       return { data: {} as T, status: 200, statusText: "OK", headers: {} };
     },
+    async put<T = unknown>() {
+      return { data: {} as T, status: 200, statusText: "OK", headers: {} };
+    },
   };
 }
 
@@ -103,6 +106,31 @@ describe("provider HTTP runtime contract", () => {
       status: 302,
     });
     expect(requestInit?.redirect).toBe("manual");
+  });
+
+  it("sends JSON PUT requests through the same permission and failure contract", async () => {
+    let requestUrl = "";
+    let requestInit: RequestInit | undefined;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestInit = init;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const api = createNodeCompatibilityApi({ manifest: manifest() });
+
+    const response = await api.http.put<{ ok: boolean }>(
+      "https://allowed.example/search",
+      { query: "paper search" },
+    );
+
+    expect(response.data).toEqual({ ok: true });
+    expect(requestUrl).toBe("https://allowed.example/search");
+    expect(requestInit?.method).toBe("PUT");
+    expect(requestInit?.headers).toMatchObject({ "content-type": "application/json" });
+    expect(requestInit?.body).toBe(JSON.stringify({ query: "paper search" }));
   });
 
   it("exposes only manifest-allowlisted global preferences", () => {

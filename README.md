@@ -168,6 +168,41 @@ paper-search config import-env ./.env --apply
 Entries already set in the current shell are skipped, so importing a file does
 not silently override the environment that currently wins.
 
+### Search source selection
+
+Provider enablement and aggregate selection are separate. `platform.<id>.enabled`
+is a hard runtime switch. `[search.selection]` controls only which runnable
+sources participate in `--platform all`; an explicitly named source bypasses
+that aggregate policy but still must be installed, enabled, and configured.
+
+```toml
+[search.selection]
+mode = "defaults" # or "allowlist"
+includeIds = []
+excludeIds = []
+includeDomains = []
+excludeDomains = ["biomedicine"]
+includeContentKinds = []
+excludeContentKinds = []
+includeAccess = []
+excludeAccess = ["institutional"]
+```
+
+Specific ids override classification rules, with `excludeIds` taking final
+precedence. Arrays replace lower-precedence arrays rather than merging them.
+The same settings can be written with `config set`, for example:
+
+```bash
+paper-search config set search.selection.excludeDomains '["biomedicine"]'
+paper-search config set search.selection.includeIds '["pubmed"]'
+paper-search config explain search.selection.excludeDomains
+```
+
+Reusable profiles need no second configuration system. Put ordinary files at,
+for example, `<config-root>/profiles/general/config.toml` and
+`<config-root>/profiles/biomed/config.toml`, then select one with
+`paper-search --config <profile-directory> ...`.
+
 Legacy single-file configuration and flat provider directories are migration
 inputs, not a second supported write layout. `migrate` plans the config and
 provider-directory work together, uses the same config transactions and provider
@@ -276,6 +311,8 @@ updates:
 ```bash
 paper-search providers available --json
 paper-search providers available mineru --json
+paper-search providers inventory --json
+paper-search providers inventory ./registry.json --json
 paper-search providers install mineru --json
 paper-search providers install mineru --from official-material --apply --json
 paper-search providers update --json
@@ -291,6 +328,19 @@ archive digest, package identity, and installed-state precondition in the plan.
 Applying a stale plan is rejected. Updates follow the source recorded in the
 installed receipt rather than switching to another registry that happens to
 publish a newer version.
+
+`providers inventory [source]` reads a search registry and reports separately
+the number of selectable entries, independently counted sources, source-backed
+views, aliases, service families, retained-unpublished entries, source types,
+domains, content kinds, access classes, default aggregate membership, and legacy
+entries without classification. Without `source`, it uses the configured search
+registry URL. Views such as ACM over Crossref do not inflate the source count or
+enter `--platform all`, but remain available by explicit id.
+
+The catalogue describes endpoints and technical configuration; it does not make
+jurisdiction-specific legality, licence, entitlement, or authorization decisions.
+Users decide which sources to enable and which local laws, institutional agreements,
+provider terms, and copyright rules apply to their use.
 
 Bound packages use kind-separated directories under the configured provider
 root: `search/<id>` and `material/<id>`. Provider ids remain globally unique

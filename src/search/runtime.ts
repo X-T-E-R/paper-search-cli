@@ -14,6 +14,7 @@ import {
   getProviderConfig,
   resolveProviderAvailability,
 } from "../providers/runtime/availability.js";
+import { evaluateProviderInAll, resolveExplicitProvider } from "./selection.js";
 
 export interface ProviderSearchRequest extends SearchOptions {
   query: string;
@@ -189,8 +190,12 @@ export async function runProviderSearch(
   const requestedPlatform = request.platform ?? "all";
   const selected =
     requestedPlatform === "all"
-      ? providers
-      : providers.filter((entry) => entry.id === requestedPlatform);
+      ? providers.filter(
+          (entry) => entry.manifest && evaluateProviderInAll(config, entry.manifest).included,
+        )
+      : [resolveExplicitProvider(providers, requestedPlatform)].filter(
+          (entry): entry is InstalledProviderSummary => Boolean(entry),
+        );
 
   if (selected.length === 0) {
     return {
@@ -199,7 +204,10 @@ export async function runProviderSearch(
       totalResults: 0,
       items: [],
       page: request.page ?? 1,
-      error: `${sourceType} provider not installed, disabled, or unconfigured: ${requestedPlatform}`,
+      error:
+        requestedPlatform === "all"
+          ? `No runnable ${sourceType} providers are included by the current search selection`
+          : `${sourceType} provider not installed, disabled, or unconfigured: ${requestedPlatform}`,
     };
   }
 
@@ -237,7 +245,7 @@ export async function loadInstalledProviderRuntime(
   runtime: LoadedNodeProvider;
 }> {
   const providers = await getInstalledProvidersByType(config, sourceType);
-  const provider = providers.find((entry) => entry.id === providerId);
+  const provider = resolveExplicitProvider(providers, providerId);
   if (!provider) {
     throw new Error(`${sourceType} provider not installed, disabled, or unconfigured: ${providerId}`);
   }

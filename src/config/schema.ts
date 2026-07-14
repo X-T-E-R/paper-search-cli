@@ -44,6 +44,67 @@ export const SmokeConfigSchema = z.object({
   envVar: z.string().min(1),
 }).strict();
 
+export const SourceDomainSchema = z.enum([
+  "biomedicine",
+  "computer-science",
+  "cryptography",
+  "engineering",
+  "life-sciences",
+  "multidisciplinary",
+  "patents",
+]);
+
+export const ContentKindSchema = z.enum([
+  "book",
+  "conference-paper",
+  "journal-article",
+  "patent",
+  "preprint",
+  "repository-record",
+]);
+
+export const AccessClassSchema = z.enum([
+  "credentialed",
+  "institutional",
+  "public",
+  "session-gated",
+]);
+
+const ProviderIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{1,63}$/);
+
+const SearchSelectionFieldsSchema = z.object({
+  mode: z.enum(["defaults", "allowlist"]),
+  includeIds: z.array(ProviderIdSchema),
+  excludeIds: z.array(ProviderIdSchema),
+  includeDomains: z.array(SourceDomainSchema),
+  excludeDomains: z.array(SourceDomainSchema),
+  includeContentKinds: z.array(ContentKindSchema),
+  excludeContentKinds: z.array(ContentKindSchema),
+  includeAccess: z.array(AccessClassSchema),
+  excludeAccess: z.array(AccessClassSchema),
+}).strict();
+
+export const SearchSelectionConfigSchema = SearchSelectionFieldsSchema.superRefine((selection, context) => {
+  const excluded = new Set(selection.excludeIds);
+  for (const id of selection.includeIds) {
+    if (excluded.has(id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["includeIds"],
+        message: `provider cannot be both included and excluded: ${id}`,
+      });
+    }
+  }
+});
+
+export const SearchConfigSchema = z.object({
+  selection: SearchSelectionConfigSchema,
+}).strict();
+
+const UserSearchConfigSchema = z.object({
+  selection: SearchSelectionFieldsSchema.partial().optional(),
+}).strict();
+
 export const ConfigOriginSchema = z.object({
   kind: z.enum(["default", "user", "project", "explicit", "credentials", "env"]),
   source: z.string().min(1),
@@ -67,6 +128,7 @@ export const ResolvedConfigSchema = z.object({
   defaults: DefaultsConfigSchema,
   output: OutputConfigSchema,
   smoke: SmokeConfigSchema,
+  search: SearchConfigSchema,
   platform: z.record(ConfigRecordSchema),
   api: z.record(ConfigRecordSchema),
   meta: ConfigMetaSchema,
@@ -79,6 +141,7 @@ export const UserConfigSchema = z.object({
   defaults: DefaultsConfigSchema.partial().optional(),
   output: OutputConfigSchema.partial().optional(),
   smoke: SmokeConfigSchema.partial().optional(),
+  search: UserSearchConfigSchema.optional(),
   platform: z.record(ConfigRecordSchema).optional(),
   api: z.record(ConfigRecordSchema).optional(),
 }).strict();

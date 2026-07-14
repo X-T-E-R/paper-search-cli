@@ -1,6 +1,7 @@
 import type {
   ProviderConfigFieldSchema,
   ProviderHelpExample,
+  ProviderInventoryEntry,
   ProviderManifest,
   ProviderUsageHelp,
 } from "../sdk/types.js";
@@ -97,6 +98,120 @@ function validateUsageHelp(help: unknown): asserts help is ProviderUsageHelp {
       throw new ManifestValidationError("help.examples must be an array");
     }
     help.examples.forEach((example, index) => validateHelpExample(example, index));
+  }
+}
+
+function validateStringArray(value: unknown, field: string): asserts value is string[] {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    throw new ManifestValidationError(`${field} must be string[]`);
+  }
+}
+
+function validateControlledArray(
+  value: unknown,
+  field: string,
+  allowed: readonly string[],
+): asserts value is string[] {
+  validateStringArray(value, field);
+  if (
+    value.length === 0 ||
+    new Set(value).size !== value.length ||
+    value.some((entry) => !allowed.includes(entry))
+  ) {
+    throw new ManifestValidationError(`${field} must contain unique controlled values`);
+  }
+}
+
+function validateInventory(
+  inventory: unknown,
+  manifestId: string,
+  manifestSourceType: "academic" | "patent",
+): asserts inventory is ProviderInventoryEntry {
+  if (!isPlainObject(inventory)) {
+    throw new ManifestValidationError("inventory must be an object");
+  }
+  if (inventory.schemaVersion !== 1) {
+    throw new ManifestValidationError("inventory.schemaVersion must be 1");
+  }
+  if (inventory.id !== manifestId) {
+    throw new ManifestValidationError("inventory.id must match manifest.id");
+  }
+  if (inventory.kind !== "search") {
+    throw new ManifestValidationError("inventory.kind must be search");
+  }
+  if (inventory.sourceType !== manifestSourceType) {
+    throw new ManifestValidationError("inventory.sourceType must match manifest.sourceType");
+  }
+  if (inventory.entryKind !== "source" && inventory.entryKind !== "view") {
+    throw new ManifestValidationError("inventory.entryKind must be source or view");
+  }
+  if (typeof inventory.serviceFamily !== "string" || !inventory.serviceFamily) {
+    throw new ManifestValidationError("inventory.serviceFamily must be a string");
+  }
+  if (inventory.transport !== "api" && inventory.transport !== "html") {
+    throw new ManifestValidationError("inventory.transport must be api or html");
+  }
+  validateControlledArray(inventory.domains, "inventory.domains", [
+    "biomedicine",
+    "computer-science",
+    "cryptography",
+    "engineering",
+    "life-sciences",
+    "multidisciplinary",
+    "patents",
+  ]);
+  validateControlledArray(inventory.contentKinds, "inventory.contentKinds", [
+    "book",
+    "conference-paper",
+    "journal-article",
+    "patent",
+    "preprint",
+    "repository-record",
+  ]);
+  validateControlledArray(inventory.access, "inventory.access", [
+    "credentialed",
+    "institutional",
+    "public",
+    "session-gated",
+  ]);
+  if (
+    !isPlainObject(inventory.selection) ||
+    typeof inventory.selection.defaultInAll !== "boolean"
+  ) {
+    throw new ManifestValidationError("inventory.selection.defaultInAll must be boolean");
+  }
+  if (!isPlainObject(inventory.publication)) {
+    throw new ManifestValidationError("inventory.publication must be an object");
+  }
+  if (
+    inventory.publication.status !== "published" &&
+    inventory.publication.status !== "retained-unpublished"
+  ) {
+    throw new ManifestValidationError(
+      "inventory.publication.status must be published or retained-unpublished",
+    );
+  }
+  if (inventory.aliases !== undefined) {
+    validateStringArray(inventory.aliases, "inventory.aliases");
+  }
+  if (inventory.entryKind === "source") {
+    if (typeof inventory.sourceId !== "string" || !inventory.sourceId) {
+      throw new ManifestValidationError("source inventory requires sourceId");
+    }
+    if (inventory.backingSourceIds !== undefined) {
+      throw new ManifestValidationError("source inventory cannot declare backingSourceIds");
+    }
+  } else {
+    if (inventory.sourceId !== undefined) {
+      throw new ManifestValidationError("view inventory cannot declare sourceId");
+    }
+    validateStringArray(inventory.backingSourceIds, "view inventory.backingSourceIds");
+    if (inventory.backingSourceIds.length === 0) {
+      throw new ManifestValidationError("view inventory.backingSourceIds cannot be empty");
+    }
+    if (inventory.selection.defaultInAll) {
+      throw new ManifestValidationError("view inventory cannot default into platform=all");
+    }
   }
 }
 
@@ -219,6 +334,15 @@ export function parseProviderManifest(raw: string): ProviderManifest {
     integrity = { sha256: typeof sha === "string" ? sha.toLowerCase() : undefined };
   }
 
+  let inventory: ProviderInventoryEntry | undefined;
+  if (data.inventory !== undefined) {
+    if (sourceType === "web") {
+      throw new ManifestValidationError("web provider cannot declare search inventory");
+    }
+    validateInventory(data.inventory, id, sourceType);
+    inventory = data.inventory;
+  }
+
   return {
     id,
     name,
@@ -235,5 +359,6 @@ export function parseProviderManifest(raw: string): ProviderManifest {
     searchTimeoutMs,
     allowedGlobalPrefs,
     integrity,
+    inventory,
   };
 }

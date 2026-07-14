@@ -1,5 +1,6 @@
 import type {
   ProviderAPI,
+  ProviderHttpBodyRequestOptions,
   ProviderHttpRequestOptions,
   ProviderHttpResponse,
   ProviderManifest,
@@ -24,11 +25,12 @@ export interface ProviderHttpTransport {
   post<T = unknown>(
     url: string,
     body?: string | Record<string, unknown>,
-    options?: {
-      headers?: Record<string, string>;
-      timeout?: number;
-      withCredentials?: boolean;
-    },
+    options?: ProviderHttpBodyRequestOptions,
+  ): Promise<ProviderHttpResponse<T>>;
+  put?<T = unknown>(
+    url: string,
+    body?: string | Record<string, unknown>,
+    options?: ProviderHttpBodyRequestOptions,
   ): Promise<ProviderHttpResponse<T>>;
 }
 
@@ -408,6 +410,43 @@ function createDefaultTransport(manifest: ProviderManifest): ProviderHttpTranspo
         headers: headersToRecord(response.headers),
       };
     },
+    async put<T = unknown>(
+      url: string,
+      body?: string | Record<string, unknown>,
+      options?: ProviderHttpBodyRequestOptions,
+    ): Promise<ProviderHttpResponse<T>> {
+      const target = new URL(url);
+      const headers = mergeHeaders({}, options?.headers);
+      let payload: string | undefined;
+      if (typeof body === "string") {
+        payload = body;
+      } else if (body !== undefined) {
+        payload = JSON.stringify(body);
+        if (!headers["content-type"]) {
+          headers["content-type"] = "application/json";
+        }
+      }
+      if (options?.withCredentials) {
+        const cookieHeader = buildCookieHeader(cookiesByOrigin, target);
+        if (cookieHeader && !headers.cookie && !headers.Cookie) {
+          headers.cookie = cookieHeader;
+        }
+      }
+      const response = await fetchWithTimeout<T>(url, {
+        method: "PUT",
+        headers,
+        body: payload,
+      }, options?.timeout ?? manifest.searchTimeoutMs ?? 30_000);
+      if (options?.withCredentials) {
+        appendCookies(cookiesByOrigin, target, extractSetCookies(response.headers));
+      }
+      return {
+        data: await fetchJsonOrText<T>(response),
+        status: response.status,
+        statusText: response.statusText,
+        headers: headersToRecord(response.headers),
+      };
+    },
   };
 }
 
@@ -533,6 +572,19 @@ export function createNodeCompatibilityApi(
       ): Promise<ProviderHttpResponse<T>> {
         await beforeRequest(url);
         const response = await transport.post<T>(url, body, requestOptions);
+        assertSuccessfulResponse(response, options.manifest, url);
+        return response;
+      },
+      async put<T = unknown>(
+        url: string,
+        body?: string | Record<string, unknown>,
+        requestOptions?: ProviderHttpBodyRequestOptions,
+      ): Promise<ProviderHttpResponse<T>> {
+        await beforeRequest(url);
+        if (!transport.put) {
+          throw new Error(`Provider HTTP transport does not implement PUT: ${options.manifest.id}`);
+        }
+        const response = await transport.put<T>(url, body, requestOptions);
         assertSuccessfulResponse(response, options.manifest, url);
         return response;
       },
