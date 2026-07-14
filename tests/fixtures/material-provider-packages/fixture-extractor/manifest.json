@@ -1,0 +1,26 @@
+{
+  "id": "fixture-extractor",
+  "name": "Fixture Extractor",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "provider.js",
+  "capabilities": {
+    "inputs": ["url", "local_file", "artifact"],
+    "inputTypes": ["pdf", "html"],
+    "outputs": ["markdown", "json"],
+    "network": false
+  },
+  "configSchema": {
+    "mode": {
+      "type": "string",
+      "default": "fixture"
+    }
+  },
+  "permissions": {
+    "localRead": true,
+    "localWrite": "cache"
+  },
+  "rateLimit": {
+    "requestsPerMinute": 60
+  }
+}

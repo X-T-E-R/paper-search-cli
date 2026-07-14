@@ -1,0 +1,15 @@
+{
+  "id": "fixture-academic",
+  "name": "Fixture Academic",
+  "version": "1.0.0",
+  "sourceType": "academic",
+  "permissions": {
+    "urls": ["https://fixture.example/*"]
+  },
+  "configSchema": {
+    "label": {
+      "type": "string",
+      "default": "fixture"
+    }
+  }
+}

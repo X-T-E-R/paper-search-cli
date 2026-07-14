@@ -1,0 +1,31 @@
+{
+  "id": "fixture-runtime",
+  "name": "Fixture Runtime Provider",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "provider.js",
+  "capabilities": {
+    "inputs": ["url", "local_file", "artifact"],
+    "inputTypes": ["pdf", "html"],
+    "outputs": ["markdown", "json"],
+    "network": true
+  },
+  "configSchema": {
+    "apiKey": {
+      "type": "secret",
+      "required": true
+    },
+    "mode": {
+      "type": "string",
+      "default": "fixture"
+    }
+  },
+  "permissions": {
+    "network": ["https://allowed.example/*"],
+    "localRead": true,
+    "localWrite": "workspace"
+  },
+  "rateLimit": {
+    "requestsPerMinute": 60
+  }
+}

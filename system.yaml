@@ -1,0 +1,10 @@
+
+system:
+  project: paper-search
+  name: paper-search-cli
+  version: 0.1.0
+  status: primary
+  vcs: independent-git
+  vcs_ref: "main"
+  supersedes: []
+contract_managed_by: metasystem

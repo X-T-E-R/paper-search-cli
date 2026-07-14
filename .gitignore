@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist.previous/
+.paper-search-runtime/
+coverage/
+tests/.tmp/
+.paper-search/
+*.log

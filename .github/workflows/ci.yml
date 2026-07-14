@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-search-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release_gate:
+    name: Release gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - name: Checkout Paper Search CLI
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          path: paper-search-cli
+          persist-credentials: false
+
+      - name: Checkout search providers
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: X-T-E-R/resource-search-providers
+          ref: e8b26a5fc632db1372a38cf7e7eee5f9f8491cd7
+          path: resource-search-providers
+          persist-credentials: false
+
+      - name: Checkout material providers
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: X-T-E-R/material-providers
+          ref: 144890bf76b4d7af3c413fb81f2cb822337a7bb0
+          path: material-providers
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            paper-search-cli/package-lock.json
+            resource-search-providers/package-lock.json
+            material-providers/package-lock.json
+
+      - name: Install locked dependencies
+        run: |
+          npm --prefix resource-search-providers ci
+          npm --prefix material-providers ci
+          npm --prefix paper-search-cli ci
+
+      - name: Verify provider release contracts
+        run: |
+          npm --prefix resource-search-providers run verify:release
+          npm --prefix material-providers run verify:release
+
+      - name: Verify Paper Search release
+        working-directory: paper-search-cli
+        run: npm run verify:release

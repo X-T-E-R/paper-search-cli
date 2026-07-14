@@ -1,0 +1,15 @@
+{
+  "id": "directory-entrypoint",
+  "name": "Directory Entrypoint",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "entrypoint",
+  "capabilities": {
+    "inputs": ["url"],
+    "outputs": ["markdown"],
+    "network": false
+  },
+  "permissions": {
+    "localWrite": "cache"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "missing-entry-field",
+  "name": "Missing Entry Field",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "capabilities": {
+    "inputs": ["url"],
+    "outputs": ["markdown"],
+    "network": false
+  },
+  "permissions": {
+    "localWrite": "cache"
+  }
+}

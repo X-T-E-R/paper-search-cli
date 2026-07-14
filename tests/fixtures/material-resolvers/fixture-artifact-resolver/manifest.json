@@ -1,0 +1,23 @@
+{
+  "id": "fixture-artifact-resolver",
+  "name": "Fixture Artifact Resolver",
+  "version": "1.0.0",
+  "kind": "artifact_resolver",
+  "entry": "provider.js",
+  "capabilities": {
+    "inputs": ["identifier"],
+    "identifierSchemes": ["doi"],
+    "outputs": ["locations"],
+    "network": false
+  },
+  "configSchema": {
+    "mode": {
+      "type": "string",
+      "default": "multi"
+    }
+  },
+  "permissions": {
+    "localRead": false,
+    "localWrite": "none"
+  }
+}

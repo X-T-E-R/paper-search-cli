@@ -1,0 +1,28 @@
+{
+  "providers": [
+    {
+      "id": "fresh-install",
+      "version": "1.0.0",
+      "packagePath": "./fresh-install"
+    },
+    {
+      "id": "up-to-date",
+      "version": "1.0.0",
+      "packagePath": "./up-to-date"
+    },
+    {
+      "id": "needs-update",
+      "version": "1.0.0",
+      "packagePath": "./needs-update"
+    },
+    {
+      "id": "future-only",
+      "version": "1.0.0",
+      "packagePath": "./future-only",
+      "minPluginVersion": "9.9.9",
+      "checksum": {
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    }
+  ]
+}

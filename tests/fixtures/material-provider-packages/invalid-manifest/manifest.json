@@ -1,0 +1,15 @@
+{
+  "id": "Invalid Material Provider",
+  "name": "Invalid Material Provider",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "provider.js",
+  "capabilities": {
+    "inputs": ["url"],
+    "outputs": ["markdown"],
+    "network": false
+  },
+  "permissions": {
+    "localWrite": "cache"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "fresh-install",
+  "name": "Fresh Install",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "provider.js",
+  "capabilities": {
+    "inputs": ["url", "local_file", "artifact"],
+    "outputs": ["markdown", "json"],
+    "network": false
+  },
+  "permissions": {
+    "localRead": true,
+    "localWrite": "cache"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "fixture-markdown-extractor",
+  "name": "Fixture Markdown Extractor",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "provider.js",
+  "capabilities": {
+    "inputs": ["local_file", "url", "artifact"],
+    "inputTypes": ["pdf", "html", "text"],
+    "outputs": ["markdown", "json"],
+    "network": false
+  },
+  "configSchema": {
+    "mode": {
+      "type": "string",
+      "default": "fixture"
+    }
+  },
+  "permissions": {
+    "localRead": true,
+    "localWrite": "none"
+  }
+}

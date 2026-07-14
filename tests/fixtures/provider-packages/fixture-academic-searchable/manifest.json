@@ -1,0 +1,9 @@
+{
+  "id": "fixture-academic-searchable",
+  "name": "Fixture Academic Searchable",
+  "version": "1.0.0",
+  "sourceType": "academic",
+  "permissions": {
+    "urls": ["https://fixture.example/*"]
+  }
+}

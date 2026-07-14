@@ -1,0 +1,73 @@
+schemaVersion = 1
+
+[providers]
+installDir = "~/.paper-search/providers"
+autoUpdate = false
+allowReleaseFallback = true
+
+[workspace]
+root = "./.paper-search/workspace"
+defaultSink = "workspace"
+defaultCollection = "inbox"
+
+[server]
+enabled = false
+transport = "http"
+host = "127.0.0.1"
+port = 23121
+
+[defaults]
+timeoutMs = 30000
+maxResults = 10
+
+[output]
+format = "table"
+locale = "zh-CN"
+prettyJson = true
+
+[smoke]
+enabled = true
+envVar = "PAPER_SEARCH_RUN_SMOKE"
+
+[platform.crossref]
+enabled = true
+maxResults = 25
+defaultSort = "citations"
+
+[platform.patentstar]
+enabled = false
+loginName = ""
+maxResults = 20
+
+[platform.wos]
+enabled = false
+database = "WOS"
+
+[api.tavily]
+enabled = false
+baseUrl = "https://api.tavily.com"
+authMode = "body"
+maxResults = 10
+
+[api.firecrawl]
+enabled = false
+baseUrl = "https://api.firecrawl.dev"
+maxResults = 10
+
+[api.exa]
+enabled = false
+baseUrl = "https://api.exa.ai"
+maxResults = 10
+
+[api.xai]
+enabled = false
+baseUrl = "https://api.x.ai/v1"
+searchMode = "official"
+model = "grok-4.20-beta-latest-non-reasoning"
+maxResults = 5
+
+[api.mysearch]
+enabled = false
+baseUrl = ""
+mcpPath = "/mcp"
+proxyFirst = false

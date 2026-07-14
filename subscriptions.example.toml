@@ -1,0 +1,11 @@
+schemaVersion = 1
+
+[subscriptions.official-search]
+runtimeKind = "search"
+url = "https://github.com/X-T-E-R/resource-search-providers/releases/download/providers-registry-latest/registry.json"
+enabled = true
+
+[subscriptions.official-material]
+runtimeKind = "material"
+url = "https://github.com/X-T-E-R/material-providers/releases/download/material-registry-latest/registry.json"
+enabled = true

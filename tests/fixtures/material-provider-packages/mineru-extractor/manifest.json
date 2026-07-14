@@ -1,0 +1,83 @@
+{
+  "id": "mineru-extractor",
+  "name": "MinerU Extractor",
+  "version": "0.1.0",
+  "kind": "extractor",
+  "entry": "provider.js",
+  "description": "External MinerU material extractor wrapper for URL extraction into Markdown, JSON, assets, and result zips; local-file upload request construction is exposed as a wrapper contract for host-mediated integration.",
+  "author": "Paper Search fixtures",
+  "capabilities": {
+    "inputs": ["url", "artifact"],
+    "inputTypes": ["pdf", "html", "office", "image"],
+    "outputs": ["markdown", "json", "assets", "zip"],
+    "network": true
+  },
+  "configSchema": {
+    "apiToken": {
+      "type": "secret",
+      "required": true,
+      "env": ["MINERU_TOKEN", "MINERU_API_TOKEN"],
+      "label": "MinerU API token",
+      "description": "Bearer token issued by mineru.net."
+    },
+    "endpoint": {
+      "type": "string",
+      "default": "https://mineru.net",
+      "env": ["MINERU_API_BASE", "MINERU_ENDPOINT"],
+      "label": "MinerU API base URL",
+      "description": "Base URL for the MinerU API."
+    },
+    "modelVersion": {
+      "type": "string",
+      "default": "auto",
+      "description": "MinerU model_version: auto, pipeline, vlm, or MinerU-HTML."
+    },
+    "language": {
+      "type": "string",
+      "default": "auto",
+      "description": "MinerU language option."
+    },
+    "enableOcr": {
+      "type": "boolean",
+      "default": true,
+      "description": "Map to MinerU is_ocr."
+    },
+    "enableTable": {
+      "type": "boolean",
+      "default": true,
+      "description": "Map to MinerU enable_table."
+    },
+    "enableFormula": {
+      "type": "boolean",
+      "default": true,
+      "description": "Map to MinerU enable_formula."
+    },
+    "pollIntervalMs": {
+      "type": "number",
+      "default": 2000,
+      "description": "Default poll interval for live extraction."
+    },
+    "timeoutMs": {
+      "type": "number",
+      "default": 600000,
+      "description": "Default live extraction timeout."
+    },
+    "cache": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the provider may reuse provider-scoped cache entries."
+    }
+  },
+  "permissions": {
+    "network": [
+      "https://mineru.net/api/v4/*",
+      "https://*.mineru.net/api/v4/*",
+      "https://*.aliyuncs.com/*"
+    ],
+    "localRead": true,
+    "localWrite": "cache"
+  },
+  "rateLimit": {
+    "requestsPerMinute": 30
+  }
+}

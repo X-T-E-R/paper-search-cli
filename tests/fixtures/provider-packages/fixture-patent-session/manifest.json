@@ -1,0 +1,23 @@
+{
+  "id": "fixture-patent-session",
+  "name": "Fixture Patent Session",
+  "version": "1.0.0",
+  "sourceType": "patent",
+  "description": "Fixture patent provider that requires a session cookie for search and detail.",
+  "permissions": {
+    "urls": ["https://fixture.example/*"]
+  },
+  "configSchema": {
+    "enabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "loginName": {
+      "type": "string"
+    },
+    "password": {
+      "type": "string",
+      "secret": true
+    }
+  }
+}

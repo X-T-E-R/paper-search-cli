@@ -1,0 +1,80 @@
+{
+  "name": "paper-search-cli",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/paper-search-cli.git"
+  },
+  "homepage": "https://github.com/X-T-E-R/paper-search-cli#readme",
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/paper-search-cli/issues"
+  },
+  "type": "module",
+  "description": "Standalone paper search CLI with provider-compatible runtime and optional MCP surface.",
+  "bin": {
+    "paper-search": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "packageManager": "npm@11.6.2",
+  "paperSearch": {
+    "buildInputs": [
+      "tsconfig.json",
+      "tsconfig.build.json",
+      "src",
+      "scripts/build-runtime.mjs",
+      "skills/paper-search-cli/scripts/paper-search.mjs"
+    ],
+    "selfUpdateVerificationInputs": [
+      "package.json",
+      "package-lock.json",
+      "scripts",
+      "skills",
+      "tests/contract",
+      "tests/fixtures",
+      "tests/helpers",
+      "tests/integration",
+      "tests/unit",
+      "vitest.config.ts",
+      "README.md",
+      "paper-search.example.toml",
+      "subscriptions.example.toml",
+      "credentials.example.toml",
+      "docs"
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/build-runtime.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:contract": "vitest run tests/contract",
+    "test:integration": "vitest run tests/integration",
+    "test:self-update": "vitest run tests/unit/self-update.test.ts tests/integration/self-command.test.ts && node scripts/test-self-update-installer.mjs",
+    "test:self-update-target": "npm run typecheck && vitest run --exclude tests/integration/material-provider-mineru-distribution.test.ts --exclude tests/integration/unpaywall-resolver-funnel.test.ts",
+    "test:installed-runtime": "npm run build && node scripts/test-installed-runtime.mjs",
+    "test:installer": "node scripts/test-dist-swap.mjs && node scripts/test-self-update-installer.mjs && node scripts/test-installer.mjs",
+    "test:compat:official": "npm run build && npm --prefix ../resource-search-providers run build && node scripts/run-provider-compat.mjs",
+    "test:smoke": "node scripts/run-smoke.mjs",
+    "check": "npm run typecheck && npm run test",
+    "verify:release": "npm run check && npm run test:installed-runtime && npm run test:installer && npm run test:compat:official && npm run test:smoke"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "commander": "^12.1.0",
+    "jszip": "^3.10.1",
+    "linkedom": "^0.18.12",
+    "yaml": "^2.9.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

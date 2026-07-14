@@ -1,0 +1,15 @@
+{
+  "id": "missing-entrypoint",
+  "name": "Missing Entrypoint",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "missing.js",
+  "capabilities": {
+    "inputs": ["url"],
+    "outputs": ["markdown"],
+    "network": false
+  },
+  "permissions": {
+    "localWrite": "cache"
+  }
+}

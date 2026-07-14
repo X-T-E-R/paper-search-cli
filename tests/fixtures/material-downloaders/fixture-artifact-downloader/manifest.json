@@ -1,0 +1,23 @@
+{
+  "id": "fixture-artifact-downloader",
+  "name": "Fixture Artifact Downloader",
+  "version": "1.0.0",
+  "kind": "artifact_downloader",
+  "entry": "provider.js",
+  "capabilities": {
+    "inputs": ["url"],
+    "inputTypes": ["pdf", "html", "bytes"],
+    "outputs": ["bytes"],
+    "network": false
+  },
+  "configSchema": {
+    "mode": {
+      "type": "string",
+      "default": "fixture"
+    }
+  },
+  "permissions": {
+    "localRead": false,
+    "localWrite": "none"
+  }
+}
