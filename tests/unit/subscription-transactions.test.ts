@@ -17,10 +17,13 @@ describe("subscription transaction recovery", () => {
     roots.push(root);
     const env = {
       ...process.env,
+      APPDATA: path.join(root, "appdata"),
+      XDG_CONFIG_HOME: path.join(root, "xdg-config"),
       PAPER_SEARCH_INSTALL_TEST_MODE: "1",
       PAPER_SEARCH_TEST_DATA_ROOT: path.join(root, "data"),
     };
     const paths = resolveSubscriptionPaths(env);
+    expect(paths.subscriptionsFile).toBe(path.join(root, "appdata", "paper-search", "subscriptions.toml"));
     await mkdir(paths.operationsDir, { recursive: true });
     const first = paths.subscriptionsFile;
     const second = identityPath("alpha", env);
