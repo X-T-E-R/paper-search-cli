@@ -1,7 +1,9 @@
 import { Command } from "commander";
 import { registerArtifactCommands } from "./commands/artifact.js";
+import { registerAssessmentCommands } from "./commands/assessment.js";
 import { registerBatchCommands } from "./commands/batch.js";
 import { registerConfigCommands } from "./commands/config.js";
+import { registerCitationCommands } from "./commands/citation.js";
 import { registerDiscoveryCommands } from "./commands/discovery.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerExtractCommand } from "./commands/extract.js";
@@ -13,12 +15,14 @@ import { registerPathsCommand } from "./commands/paths.js";
 import { registerProviderCommands } from "./commands/providers.js";
 import { registerRegistriesCommands } from "./commands/registries.js";
 import { registerRunCommand } from "./commands/run.js";
+import { registerRunsCommand } from "./commands/runs.js";
 import { registerSearchCommands } from "./commands/search.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerSelfCommands } from "./commands/self.js";
 import { registerSetupCommand } from "./commands/setup.js";
 import { registerWebCommands } from "./commands/web.js";
 import { registerWorkspaceCommands } from "./commands/workspace.js";
+import { registerZoteroCommands } from "./commands/zotero.js";
 import { createIo, type IoStreams } from "./runtime/io.js";
 import { getSystemVersion } from "./runtime/version.js";
 
@@ -29,9 +33,9 @@ export function buildProgram(streams: IoStreams = {}): Command {
   program
     .name("paper-search")
     .description(
-      "Standalone paper search CLI with provider-compatible contracts and a local MCP surface.",
+      "Paper Search CLI X: extensible discovery, citation expansion, and transparent assessment.",
     )
-    .version(getSystemVersion(), "--version", "show the Paper Search version")
+    .version(getSystemVersion(), "--version", "show the Paper Search CLI X version")
     .option("--config <path>", "explicit TOML config path")
     .helpCommand(false)
     .showHelpAfterError();
@@ -48,13 +52,17 @@ export function buildProgram(streams: IoStreams = {}): Command {
   registerProviderCommands(program, io);
   registerSearchCommands(program, io);
   registerWebCommands(program, io);
+  registerCitationCommands(program, io);
+  registerAssessmentCommands(program, io);
   registerArtifactCommands(program, io);
   registerBatchCommands(program, io);
   registerWorkspaceCommands(program, io);
   registerPdfCommands(program, io);
   registerExtractCommand(program, io);
   registerMaterialCommands(program, io);
+  registerZoteroCommands(program, io);
   registerRunCommand(program, io);
+  registerRunsCommand(program, io);
   registerMcpCommands(program, io);
 
   return program;

@@ -1,3 +1,6 @@
+# Copy to ~/.paper-search/subscriptions.toml. Registry subscriptions install
+# independently distributed search and material providers; they do not make
+# External Search v1 available.
 schemaVersion = 1
 
 [subscriptions.official-search]

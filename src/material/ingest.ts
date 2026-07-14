@@ -403,11 +403,8 @@ function pathInsideWorkspace(workspaceRoot: string, relativePath: string): strin
   return path.join(path.resolve(workspaceRoot), relativePath);
 }
 
-function plannedExtractionOutputPath(workspaceRoot: string): string {
-  return pathInsideWorkspace(
-    workspaceRoot,
-    path.join(EXTRACTION_RECORDS_DIR, PLANNED_EXTRACTION_ID),
-  );
+function plannedExtractionOutputPath(extractionRoot: string): string {
+  return path.join(path.resolve(extractionRoot), PLANNED_EXTRACTION_ID);
 }
 
 function plannedArtifactRecordPath(workspaceRoot: string): string {
@@ -424,12 +421,12 @@ function plannedExtractionRecordPath(workspaceRoot: string): string {
   );
 }
 
-function plannedMarkdownPath(workspaceRoot: string): string {
-  return path.join(plannedExtractionOutputPath(workspaceRoot), "content.md");
+function plannedMarkdownPath(extractionRoot: string): string {
+  return path.join(plannedExtractionOutputPath(extractionRoot), "content.md");
 }
 
-function plannedJsonPath(workspaceRoot: string): string {
-  return path.join(plannedExtractionOutputPath(workspaceRoot), "result.json");
+function plannedJsonPath(extractionRoot: string): string {
+  return path.join(plannedExtractionOutputPath(extractionRoot), "result.json");
 }
 
 function providerPackagePath(
@@ -639,7 +636,7 @@ function extractionPlanFromSubplan(options: {
   materialInputKind: MaterialInputKind;
   recordTargetPath: string;
   outputTargetPath: string;
-  workspaceRoot: string;
+  extractionRoot: string;
 }): MaterialIngestExtractionPlan {
   const source = options.resource.kind === "path"
     ? {
@@ -659,8 +656,8 @@ function extractionPlanFromSubplan(options: {
     provider: options.extractionProvider,
     recordTargetPath: options.recordTargetPath,
     outputTargetPath: options.outputTargetPath,
-    markdownPath: plannedMarkdownPath(options.workspaceRoot),
-    jsonPath: plannedJsonPath(options.workspaceRoot),
+    markdownPath: plannedMarkdownPath(options.extractionRoot),
+    jsonPath: plannedJsonPath(options.extractionRoot),
   };
 }
 
@@ -708,10 +705,6 @@ function artifactRecordFilePath(workspaceRoot: string, artifactId: string): stri
 
 function extractionRecordFilePath(workspaceRoot: string, extractionId: string): string {
   return pathInsideWorkspace(workspaceRoot, path.join(EXTRACTION_RECORDS_DIR, `${extractionId}.json`));
-}
-
-function extractionOutputDirectoryPath(workspaceRoot: string, extractionId: string): string {
-  return pathInsideWorkspace(workspaceRoot, path.join(EXTRACTION_RECORDS_DIR, extractionId));
 }
 
 function inferLocalArtifactKind(filePath: string): ArtifactKind {
@@ -783,24 +776,15 @@ function requireLocalResourcePath(resource: MaterialIngestResourcePlan): string 
   return resource.path;
 }
 
-function requireExtractionOutputPath(
-  record: ExtractionRecord,
-  key: "markdownPath" | "jsonPath",
-): string {
-  const value = record.outputs[key];
-  if (!value) {
-    fail(`Material extraction record did not include outputs.${key}`);
-  }
-  return value;
-}
-
 function buildArtifactExecutionFromDownload(options: {
   plan: MaterialIngestPlanData;
   data: NonNullable<Awaited<ReturnType<typeof runArtifactDownload>>["data"]>;
   workspaceRoot: string;
 }): MaterialIngestArtifactExecution {
   const artifactFilePath = options.data.artifactPath
-    ? absoluteWorkspacePath(options.workspaceRoot, options.data.artifactPath)
+    ? (path.isAbsolute(options.data.artifactPath)
+        ? path.resolve(options.data.artifactPath)
+        : absoluteWorkspacePath(options.workspaceRoot, options.data.artifactPath))
     : undefined;
   return {
     mode: "download",
@@ -834,17 +818,15 @@ function buildExtractionExecution(options: {
   workspaceRoot: string;
   materialInputKind: MaterialInputKind;
 }): MaterialIngestExtractionExecution {
-  const markdownRelativePath = requireExtractionOutputPath(options.data.record, "markdownPath");
-  const jsonRelativePath = requireExtractionOutputPath(options.data.record, "jsonPath");
   return {
     extractionId: options.data.record.id,
     source: options.data.record.source,
     materialInputKind: options.materialInputKind,
     provider: providerFromExtractionExecution(options.data.provider),
     recordTargetPath: extractionRecordFilePath(options.workspaceRoot, options.data.record.id),
-    outputTargetPath: extractionOutputDirectoryPath(options.workspaceRoot, options.data.record.id),
-    markdownPath: absoluteWorkspacePath(options.workspaceRoot, markdownRelativePath),
-    jsonPath: absoluteWorkspacePath(options.workspaceRoot, jsonRelativePath),
+    outputTargetPath: path.dirname(options.data.markdownPath),
+    markdownPath: path.resolve(options.data.markdownPath),
+    jsonPath: path.resolve(options.data.jsonPath ?? path.join(path.dirname(options.data.markdownPath), "result.json")),
     record: options.data.record,
     markdown: options.data.markdown,
   };
@@ -944,7 +926,7 @@ export async function planMaterialIngest(
   const extractionRecordsDir = pathInsideWorkspace(options.config.workspace.root, EXTRACTION_RECORDS_DIR);
   const artifactRecordPath = plannedArtifactRecordPath(options.config.workspace.root);
   const extractionRecordPath = plannedExtractionRecordPath(options.config.workspace.root);
-  const extractionOutputPath = plannedExtractionOutputPath(options.config.workspace.root);
+  const extractionOutputPath = plannedExtractionOutputPath(options.config.storage.extractionRoot);
 
   const artifactEnvelope = resolved.artifactInput
     ? await planArtifactDownload({
@@ -1003,7 +985,7 @@ export async function planMaterialIngest(
     materialInputKind: extractionInputKind,
     recordTargetPath: extractionRecordPath,
     outputTargetPath: extractionOutputPath,
-    workspaceRoot: options.config.workspace.root,
+    extractionRoot: options.config.storage.extractionRoot,
   });
   const outputs: MaterialIngestOutputPlan = {
     artifactRecordPath,

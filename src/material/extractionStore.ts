@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   ExtractionOutputs,
@@ -7,6 +7,7 @@ import type {
   ExtractionSource,
   ExtractionStatus,
 } from "./records.js";
+import { parseLocalStorageRef, resolveLegacyWorkspacePath, resolveLocalStorageRef } from "../storage/local.js";
 
 export type { ExtractionRecord } from "./records.js";
 
@@ -82,12 +83,27 @@ function parseExtractionSource(value: unknown): ExtractionSource {
 
 function parseExtractionOutputs(value: unknown): ExtractionOutputs {
   if (!isPlainObject(value)) fail("outputs must be an object");
+  const markdownStorage = value.markdownStorage !== undefined
+    ? parseLocalStorageRef(value.markdownStorage, "outputs.markdownStorage")
+    : undefined;
+  const jsonStorage = value.jsonStorage !== undefined
+    ? parseLocalStorageRef(value.jsonStorage, "outputs.jsonStorage")
+    : undefined;
+  const assetsStorage = value.assetsStorage !== undefined
+    ? parseLocalStorageRef(value.assetsStorage, "outputs.assetsStorage")
+    : undefined;
+  if ([markdownStorage, jsonStorage, assetsStorage].some((storage) => storage && storage.area !== "extraction")) {
+    fail("extraction output storage.area must be extraction");
+  }
   return {
     ...(value.markdownPath !== undefined
       ? { markdownPath: assertOptionalString(value.markdownPath, "outputs.markdownPath") }
       : {}),
     ...(value.jsonPath !== undefined ? { jsonPath: assertOptionalString(value.jsonPath, "outputs.jsonPath") } : {}),
     ...(value.assetsDir !== undefined ? { assetsDir: assertOptionalString(value.assetsDir, "outputs.assetsDir") } : {}),
+    ...(markdownStorage ? { markdownStorage } : {}),
+    ...(jsonStorage ? { jsonStorage } : {}),
+    ...(assetsStorage ? { assetsStorage } : {}),
     ...(value.markdown !== undefined ? { markdown: assertOptionalString(value.markdown, "outputs.markdown") } : {}),
   };
 }
@@ -139,10 +155,21 @@ export async function createExtractionRecord(
     createdAt: input.createdAt ?? new Date().toISOString(),
     status: input.status ?? "extracted",
   });
-  await writeFile(extractionRecordPath(workspaceRoot, record.id), `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-  });
+  const target = extractionRecordPath(workspaceRoot, record.id);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    try {
+      await lstat(target);
+      fail(`Extraction record already exists: ${record.id}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    await rename(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return record;
 }
 
@@ -156,6 +183,25 @@ export async function readExtractionRecord(
     if (isNotFoundError(error)) return null;
     throw error;
   }
+}
+
+export async function resolveExtractionOutputPath(
+  workspaceRoot: string,
+  record: ExtractionRecord,
+  kind: "markdown" | "json" | "assets",
+): Promise<string | null> {
+  const storage = kind === "markdown"
+    ? record.outputs.markdownStorage
+    : kind === "json"
+      ? record.outputs.jsonStorage
+      : record.outputs.assetsStorage;
+  if (storage) return resolveLocalStorageRef(storage);
+  const legacy = kind === "markdown"
+    ? record.outputs.markdownPath
+    : kind === "json"
+      ? record.outputs.jsonPath
+      : record.outputs.assetsDir;
+  return legacy ? resolveLegacyWorkspacePath(workspaceRoot, legacy) : null;
 }
 
 export async function listExtractionRecords(

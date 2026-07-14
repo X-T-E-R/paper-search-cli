@@ -7,11 +7,14 @@ import type {
   SearchOptions,
   SearchResult,
   PatentDetailResult,
+  CitationPageRequest,
+  CitationRelationPage,
 } from "../sdk/types.js";
 
 export interface ProviderInspection {
   hasSearch: boolean;
   hasGetDetail: boolean;
+  hasGetCitationPage: boolean;
 }
 
 export interface LoadedNodeProvider {
@@ -58,7 +61,10 @@ return {
     typeof globalThis.__paper_search_provider.search === "function",
   hasGetDetail:
     !!globalThis.__paper_search_provider &&
-    typeof globalThis.__paper_search_provider.getDetail === "function"
+    typeof globalThis.__paper_search_provider.getDetail === "function",
+  hasGetCitationPage:
+    !!globalThis.__paper_search_provider &&
+    typeof globalThis.__paper_search_provider.getCitationPage === "function"
 };
 })()`;
 }
@@ -66,7 +72,7 @@ return {
 function wrapProviderMethod<Args extends unknown[], Result>(
   manifest: ProviderManifest,
   providerObject: Record<string, unknown>,
-  method: "search" | "getDetail",
+  method: "search" | "getDetail" | "getCitationPage",
 ): (...args: Args) => Promise<Result> {
   return async (...args: Args): Promise<Result> => {
     const candidate = providerObject[method];
@@ -130,6 +136,18 @@ export async function invokeProviderFactoryInNode(
         providerObject,
         "getDetail",
       )(sourceId, options);
+    };
+  }
+
+  if (inspection.hasGetCitationPage) {
+    provider.getCitationPage = async (
+      request: CitationPageRequest,
+    ): Promise<CitationRelationPage> => {
+      return wrapProviderMethod<[CitationPageRequest], CitationRelationPage>(
+        manifest,
+        providerObject,
+        "getCitationPage",
+      )(request);
     };
   }
 

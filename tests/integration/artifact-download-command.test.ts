@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +31,11 @@ async function writeProjectConfig(root: string, workspaceRoot: string): Promise<
       "[workspace]",
       `root = "${tomlPath(workspaceRoot)}"`,
       'defaultCollection = "Inbox"',
+      "",
+      "[storage]",
+      `artifactRoot = "${tomlPath(path.join(root, "artifact-storage"))}"`,
+      `extractionRoot = "${tomlPath(path.join(root, "extraction-storage"))}"`,
+      `exportRoot = "${tomlPath(path.join(root, "exports"))}"`,
       "",
       "[platform.fixture-artifact-downloader]",
       'mode = "integration"',
@@ -130,7 +135,14 @@ describe("artifact download command", () => {
       itemId: "item-123",
       filename: "fixture-download.pdf",
       contentType: "application/pdf",
-      path: `material/files/${data.record.id}/fixture-download.pdf`,
+      storage: {
+        schemaVersion: 1,
+        sink: "local",
+        area: "artifact",
+        root: path.join(root, "artifact-storage"),
+        key: `${data.record.id}/fixture-download.pdf`,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      },
       remoteUrl: "https://example.test/files/article.pdf",
       sizeBytes: "fixture downloader bytes\n".length,
       provenance: {
@@ -142,13 +154,14 @@ describe("artifact download command", () => {
     });
     expect(data.record.message).toContain("integration, workspace-safe, item-123");
 
-    await expect(readFile(path.join(workspaceRoot, data.record.path!), "utf8")).resolves.toBe(
+    expect(data.record.path).toBeUndefined();
+    await expect(readFile(data.artifactPath!, "utf8")).resolves.toBe(
       "fixture downloader bytes\n",
     );
     await expect(readArtifactRecord(workspaceRoot, data.record.id)).resolves.toMatchObject({
       id: data.record.id,
       status: "downloaded",
-      path: data.record.path,
+      storage: data.record.storage,
       attempts: [
         expect.objectContaining({
           tier: "artifact-download-candidate",
@@ -215,7 +228,7 @@ describe("artifact download command", () => {
         }),
       ],
     });
-    await expect(stat(path.join(workspaceRoot, "material", "files"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(root, "artifact-storage"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readArtifactRecord(workspaceRoot, data.record.id)).resolves.toMatchObject({
       id: data.record.id,
       status: "requested",
@@ -250,6 +263,49 @@ describe("artifact download command", () => {
       errors: ["Invalid workspace item id: ../bad-item"],
     });
     await expect(stat(workspaceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports committed artifact bytes as an orphan when record metadata cannot be written", async () => {
+    const { root, workspaceRoot } = await createWorkspace("paper-search-artifact-orphan-");
+    await mkdir(path.join(workspaceRoot, "material"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, "material", "artifacts"), "block record directory", "utf8");
+
+    const result = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      "https://example.test/files/orphan.pdf",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "acquire",
+      tool: "artifact_download",
+      data: null,
+      orphan: {
+        outcome: "orphaned",
+        commitStage: "metadata",
+        artifactId: expect.any(String),
+        artifactPath: expect.any(String),
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "artifact",
+          root: path.join(root, "artifact-storage"),
+          key: expect.stringMatching(/\/fixture-download\.pdf$/u),
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          sizeBytes: "fixture downloader bytes\n".length,
+        },
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        sizeBytes: "fixture downloader bytes\n".length,
+        metadataPath: expect.stringMatching(/[\\/]material[\\/]artifacts[\\/][^\\/]+\.json$/u),
+      },
+      diagnostics: { partial: true, orphanedBytes: true },
+      errors: [expect.stringContaining("metadata commit failed after bytes were committed")],
+    });
+    const orphan = (result.envelope as typeof result.envelope & { orphan: { artifactPath: string } }).orphan;
+    await expect(readFile(orphan.artifactPath, "utf8")).resolves.toBe("fixture downloader bytes\n");
   });
 
   it("returns a shared dry-run plan without writing artifact files or records", async () => {

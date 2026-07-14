@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   listProviderPackageDirectories,
@@ -23,8 +23,11 @@ import { tryParseDoiIdentifier } from "./resolverResult.js";
 import type { MaterialIdentifierInput, MaterialResolverCandidateLocation } from "./types.js";
 import type { ArtifactAttempt, ArtifactKind, ArtifactRecord } from "./records.js";
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "./cache.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
 import type { WorkspaceItemRecord } from "../workspace/store.js";
+import { writeLocalStorageBytes } from "../storage/local.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
 
 export interface ArtifactDownloadOptions {
   config: ResolvedConfig;
@@ -34,6 +37,7 @@ export interface ArtifactDownloadOptions {
   resolverProviderId?: string;
   policy?: string;
   download?: boolean;
+  filename?: string;
 }
 
 export interface ArtifactDownloadProviderSummary {
@@ -59,6 +63,24 @@ export interface ArtifactDownloadData {
   download: boolean;
   artifactPath?: string;
 }
+
+/** Bytes were committed, but their durable artifact record was not. */
+export interface ArtifactDownloadOrphanOutcome {
+  outcome: "orphaned";
+  commitStage: "metadata";
+  artifactId: string;
+  artifactPath: string;
+  storage: LocalStorageRefV1;
+  sha256: string;
+  sizeBytes: number;
+  metadataPath: string;
+  error: string;
+}
+
+export type ArtifactDownloadResultEnvelope = ResultEnvelope<ArtifactDownloadData> & {
+  /** Present only when bytes were committed but the record metadata was not. */
+  orphan?: ArtifactDownloadOrphanOutcome;
+};
 
 interface ResolvedArtifactDownloadInput {
   summary: ArtifactDownloadInputSummary;
@@ -444,28 +466,8 @@ function toWorkspacePath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-function resolveWorkspacePath(workspaceRoot: string, relativePath: string): string {
-  const root = path.resolve(workspaceRoot);
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    fail(`Workspace artifact path escapes workspace root: ${relativePath}`);
-  }
-  return target;
-}
-
 function artifactBytesRelativePath(artifactId: string, filename: string): string {
-  return toWorkspacePath(path.join("material", "files", artifactId, filename));
-}
-
-async function writeArtifactBytes(options: {
-  workspaceRoot: string;
-  relativePath: string;
-  bytes: Buffer;
-}): Promise<void> {
-  const target = resolveWorkspacePath(options.workspaceRoot, options.relativePath);
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, options.bytes);
+  return toWorkspacePath(path.join(artifactId, filename));
 }
 
 function providerInput(options: {
@@ -511,7 +513,7 @@ function artifactRecordInput(options: {
   policy: string;
   download: true;
   providerResult: ProviderDownloadResult;
-  relativePath: string;
+  storage: LocalStorageRefV1;
   resolver?: ResolverProviderSummary;
   resolverSource?: string;
   priorAttempts?: ArtifactAttempt[];
@@ -526,14 +528,14 @@ function artifactRecordInput(options: {
   policy: string;
   download: boolean;
   providerResult?: ProviderDownloadResult;
-  relativePath?: string;
+  storage?: LocalStorageRefV1;
   resolver?: ResolverProviderSummary;
   resolverSource?: string;
   priorAttempts?: ArtifactAttempt[];
   sourceUrl?: string;
   chosenCandidate?: MaterialResolverCandidateLocation;
 }): Parameters<typeof createArtifactRecord>[1] {
-  const downloaded = options.download && options.providerResult && options.relativePath;
+  const downloaded = options.download && options.providerResult && options.storage;
   const effectiveSourceUrl =
     options.sourceUrl ?? options.resolvedInput.sourceUrl ?? options.resolvedInput.identifier?.value;
   const filename = downloaded
@@ -565,7 +567,7 @@ function artifactRecordInput(options: {
     ...(options.resolvedInput.attachedItemId ? { itemId: options.resolvedInput.attachedItemId } : {}),
     filename,
     ...(downloaded && options.providerResult!.contentType ? { contentType: options.providerResult!.contentType } : {}),
-    ...(downloaded ? { path: options.relativePath! } : {}),
+    ...(downloaded ? { storage: options.storage! } : {}),
     remoteUrl: downloaded ? options.providerResult!.remoteUrl : effectiveSourceUrl,
     ...(downloaded ? { sizeBytes: options.providerResult!.bytes.byteLength } : {}),
     provenance: {
@@ -711,7 +713,7 @@ export async function planArtifactDownload(
     providerId: options.providerId,
   });
   const provider = providerSummary(providerPackage);
-  const plannedFileDir = path.join(options.config.workspace.root, "material", "files", "<new-artifact-id>");
+  const plannedFileDir = path.join(options.config.storage.artifactRoot, "<new-artifact-id>");
   const recordDir = path.join(options.config.workspace.root, ARTIFACT_RECORDS_DIR);
   const resolverSteps = resolverPlan
     ? [
@@ -768,7 +770,7 @@ export async function planArtifactDownload(
             {
               id: "write-artifact",
               action: "write" as const,
-              description: "Write artifact bytes to the workspace.",
+              description: "Write artifact bytes to the configured artifact storage root.",
               targetPaths: [plannedFileDir],
               providerId: provider.id,
               policy,
@@ -811,7 +813,7 @@ export async function planArtifactDownload(
 
 export async function runArtifactDownload(
   options: ArtifactDownloadOptions,
-): Promise<ResultEnvelope<ArtifactDownloadData>> {
+): Promise<ArtifactDownloadResultEnvelope> {
   const started = Date.now();
   const attachTo = normalizeAttachTo(options.attachTo);
   const policy = normalizePolicy(options.policy);
@@ -869,7 +871,7 @@ export async function runArtifactDownload(
         capability: "acquire",
         attachTo: resolvedInput.attachedItemId ?? null,
       },
-      cacheRoot: path.join(options.config.workspace.root, ".material-provider-cache"),
+      cacheRoot: resolveMaterialProviderCacheRoot(options.config),
       workspaceRoot: options.config.workspace.root,
     });
     const loadedProvider = await invokeMaterialProviderFactoryInNode(
@@ -890,30 +892,76 @@ export async function runArtifactDownload(
       provider,
       downloadMethod,
     });
-    artifactPath = artifactBytesRelativePath(artifactId, funnelResult.providerResult.filename);
-    await writeArtifactBytes({
-      workspaceRoot: options.config.workspace.root,
-      relativePath: artifactPath,
+    let filename = sanitizeFilename(options.filename ?? funnelResult.providerResult.filename);
+    if (options.filename && funnelResult.providerResult.kind === "pdf" && !/\.pdf$/iu.test(filename)) {
+      filename = `${filename}.pdf`;
+    }
+    const stored = await writeLocalStorageBytes({
+      root: options.config.storage.artifactRoot,
+      key: artifactBytesRelativePath(artifactId, filename),
+      area: "artifact",
       bytes: funnelResult.providerResult.bytes,
     });
-    record = await createArtifactRecord(
-      options.config.workspace.root,
-      artifactRecordInput({
+    artifactPath = stored.path;
+    const normalizedProviderResult = { ...funnelResult.providerResult, filename };
+    try {
+      record = await createArtifactRecord(
+        options.config.workspace.root,
+        artifactRecordInput({
+          artifactId,
+          createdAt,
+          provider,
+          resolvedInput,
+          policy,
+          download: true,
+          providerResult: normalizedProviderResult,
+          storage: stored.ref,
+          resolver: funnelResult.resolver,
+          resolverSource: funnelResult.resolverSource,
+          priorAttempts: funnelResult.attempts,
+          sourceUrl: funnelResult.sourceUrl,
+          chosenCandidate: funnelResult.chosenCandidate,
+        }),
+      );
+    } catch (error) {
+      const metadataError = formatError(error);
+      const orphan: ArtifactDownloadOrphanOutcome = {
+        outcome: "orphaned",
+        commitStage: "metadata",
         artifactId,
-        createdAt,
-        provider,
-        resolvedInput,
-        policy,
-        download: true,
-        providerResult: funnelResult.providerResult,
-        relativePath: artifactPath,
-        resolver: funnelResult.resolver,
-        resolverSource: funnelResult.resolverSource,
-        priorAttempts: funnelResult.attempts,
-        sourceUrl: funnelResult.sourceUrl,
-        chosenCandidate: funnelResult.chosenCandidate,
-      }),
-    );
+        artifactPath: stored.path,
+        storage: stored.ref,
+        sha256: stored.ref.sha256!,
+        sizeBytes: stored.ref.sizeBytes!,
+        metadataPath: path.join(path.resolve(options.config.workspace.root), ARTIFACT_RECORDS_DIR, `${artifactId}.json`),
+        error: metadataError,
+      };
+      return {
+        ok: false,
+        capability: "acquire",
+        tool: "artifact_download",
+        data: null as unknown as ArtifactDownloadData,
+        orphan,
+        diagnostics: {
+          elapsedMs: Date.now() - started,
+          inputKind: resolvedInput.summary.kind,
+          workspaceRoot: options.config.workspace.root,
+          attachTo: resolvedInput.attachedItemId ?? null,
+          download,
+          partial: true,
+          orphanedBytes: true,
+        },
+        errors: [`Artifact metadata commit failed after bytes were committed: ${metadataError}`],
+        provenance: {
+          providerIds: [
+            ...(funnelResult.resolver?.id ? [funnelResult.resolver.id] : []),
+            provider.id,
+          ],
+          policy,
+          configPaths: options.config.meta.loadedFiles,
+        },
+      };
+    }
   }
 
   const providerIds: string[] = [

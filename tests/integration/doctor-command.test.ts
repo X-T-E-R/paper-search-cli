@@ -32,10 +32,10 @@ describe("doctor command", () => {
     const secretFromConfig = "tvly-do-not-emit";
     const providerSecret = "provider-secret-do-not-emit";
     const envSecret = "env-secret-do-not-emit";
-    const appData = path.join(root, "appdata");
+    const paperSearchHome = path.join(root, "paper-search-home");
 
     await mkdir(path.join(installDir, "fixture-academic"), { recursive: true });
-    await mkdir(path.join(appData, "paper-search"), { recursive: true });
+    await mkdir(paperSearchHome, { recursive: true });
     await writeFile(
       path.join(installDir, "fixture-academic", "manifest.json"),
       JSON.stringify({
@@ -76,7 +76,7 @@ describe("doctor command", () => {
       "utf8",
     );
     await writeFile(
-      path.join(appData, "paper-search", "credentials.toml"),
+      path.join(paperSearchHome, "credentials.toml"),
       [
         "schemaVersion = 1",
         "",
@@ -97,8 +97,8 @@ describe("doctor command", () => {
     let stdout = "";
     let stderr = "";
     const originalCwd = process.cwd();
-    const originalAppData = process.env.APPDATA;
-    process.env.APPDATA = appData;
+    const originalHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = paperSearchHome;
     process.chdir(root);
     try {
       await buildProgram({
@@ -109,8 +109,8 @@ describe("doctor command", () => {
         .parseAsync(["node", "paper-search", "doctor"]);
     } finally {
       process.chdir(originalCwd);
-      if (originalAppData === undefined) delete process.env.APPDATA;
-      else process.env.APPDATA = originalAppData;
+      if (originalHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = originalHome;
     }
 
     expect(stderr).toBe("");
@@ -183,7 +183,7 @@ describe("doctor command", () => {
       ]),
     );
     expect(parsed.data.externalSearch.state).toBe("disabled");
-    expect(parsed.data.mcp.status.serverInfo.version).toBe("0.4.0");
+    expect(parsed.data.mcp.status.serverInfo.version).toBe("0.5.0");
   });
 
   it("does not fetch remote registries during readiness checks", async () => {

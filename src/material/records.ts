@@ -13,6 +13,8 @@
  * networked acquisition or extraction logic; that lives in material providers.
  */
 
+import type { LocalStorageRefV1 } from "../storage/types.js";
+
 export type ArtifactKind = "pdf" | "html" | "office" | "image" | "bytes" | "auto";
 
 export type ArtifactStatus = "recorded" | "downloaded" | "requested" | "failed";
@@ -53,6 +55,8 @@ export interface ArtifactRecord {
   contentType?: string;
   /** Workspace-relative path when bytes were stored locally. */
   path?: string;
+  /** Versioned location for bytes written outside the workspace record root. */
+  storage?: LocalStorageRefV1;
   /** Remote reference kept instead of, or alongside, local bytes. */
   remoteUrl?: string;
   sizeBytes?: number;
@@ -76,6 +80,10 @@ export interface ExtractionOutputs {
   markdownPath?: string;
   jsonPath?: string;
   assetsDir?: string;
+  /** Versioned locations used by new extraction writers. Legacy *Path fields remain workspace-relative. */
+  markdownStorage?: LocalStorageRefV1;
+  jsonStorage?: LocalStorageRefV1;
+  assetsStorage?: LocalStorageRefV1;
   /** Optional inline Markdown when the caller requested emit. */
   markdown?: string;
 }

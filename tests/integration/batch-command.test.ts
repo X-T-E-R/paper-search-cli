@@ -329,13 +329,22 @@ describe("batch command", () => {
     const workspaceRoot = path.join(root, "workspace");
     const batchPath = path.join(root, "pdf-tasks.json");
     const outPath = path.join(root, "pdf-results.jsonl");
+    const installDir = await installMaterialFixtureProviders(root);
 
     await writeFile(
       path.join(root, "paper-search.toml"),
       [
+        "[providers]",
+        `installDir = "${tomlPath(installDir)}"`,
+        "",
         "[workspace]",
         `root = \"${workspaceRoot.replace(/\\/g, "\\\\")}\"`,
         'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `artifactRoot = "${tomlPath(path.join(root, "artifact-storage"))}"`,
+        `extractionRoot = "${tomlPath(path.join(root, "extraction-storage"))}"`,
+        `exportRoot = "${tomlPath(path.join(root, "exports"))}"`,
         "",
       ].join("\n"),
       "utf8",
@@ -367,12 +376,7 @@ describe("batch command", () => {
       "utf8",
     );
 
-    const fetchMock = vi.fn(async () =>
-      new Response("batch-pdf", {
-        status: 200,
-        headers: { "content-type": "application/pdf" },
-      }),
-    );
+    const fetchMock = vi.fn(async () => { throw new Error("core fetch must not run"); });
     vi.stubGlobal("fetch", fetchMock);
 
     let stderr = "";
@@ -396,16 +400,18 @@ describe("batch command", () => {
       id: "P1",
       status: "ok",
       tool: "resource_pdf",
-      addMode: "direct",
-      add: {
+      data: {
         ok: true,
         filename: "batch-paper.pdf",
-        path: `attachments/${addResult.record.id}/batch-paper.pdf`,
+        storage: {
+          root: path.join(root, "artifact-storage"),
+          key: expect.stringMatching(/\/batch-paper\.pdf$/u),
+        },
       },
     });
-    await expect(
-      readFile(path.join(workspaceRoot, "attachments", addResult.record.id, "batch-paper.pdf"), "utf8"),
-    ).resolves.toBe("batch-pdf");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const data = line!.data as { storage: { root: string; key: string } };
+    await expect(readFile(path.join(data.storage.root, data.storage.key), "utf8")).resolves.toBe("fixture downloader bytes\n");
   });
 
   it("runs mixed material rows with one result envelope per JSONL row and resumes completed output", async () => {

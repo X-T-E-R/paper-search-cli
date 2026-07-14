@@ -1,13 +1,42 @@
-# paper-search-cli
+# Paper Search CLI X
 
-`paper-search-cli` is a standalone paper search and material workflow CLI. It
-combines a local command surface, an MCP server, a companion skill, search
-provider packages, and material provider packages under one capability-routed
-contract.
+Paper Search CLI X is a standalone, extensible research-discovery CLI. The X
+stands for extensibility and open possibilities: installed providers can add
+source-specific search, citation-graph, artifact, and extraction behavior while
+the core keeps one stable CLI, canonical-tool, MCP, batch, and Skill contract.
 
 Use it to search literature and web sources, normalize known identifiers, store
-local workspace records, acquire artifacts, extract Markdown or structured
-outputs, export workspace data, and expose the same operations to AI clients.
+local workspace records, expand citation graphs, inspect transparent assessment
+signals, acquire and extract material through providers, and export portable
+records. The command, package, configuration keys, canonical tool names, and MCP
+identity remain `paper-search`/`paper-search-cli` compatible.
+
+## Recommended workflow
+
+1. Run `paper-search doctor` and
+   `paper-search providers list-installed --kind search` to inspect local
+   readiness.
+2. Search one or more presets or sources. Repeated positive selectors form a
+   union. A direct `academic`, `patent`, `lookup`, or optional `web` command is
+   ephemeral; use `paper-search run <canonical-tool>` when you need a durable
+   discovery record.
+3. Plan citation expansion before starting it, keep traversal limits explicit,
+   and resume an interrupted durable run by run id.
+4. Add only the records you select to the local workspace. Search and citation
+   results are not ingested automatically.
+5. Plan artifact acquisition or extraction, then run it through installed
+   material providers. Core does not contain a source-specific PDF downloader
+   or network extractor.
+6. If needed, export selected bibliographic data to Zotero with the CLI-only
+   plan, preview, and digest-acknowledged apply flow. Paper Search does not claim
+   Zotero PDF or Markdown attachment import.
+7. Assess explicit, checksum-bound observation snapshots and inspect their
+   provenance, conflicts, and policy trace. Paper Search does not choose which
+   papers you should accept.
+
+See [Paper Search CLI X workflows and storage](./docs/paper-search-cli-x.md) for
+the durable-run, citation, assessment, storage, material-provider, and Zotero
+contracts.
 
 ## Install from a retained checkout
 
@@ -115,7 +144,9 @@ node dist/cli.js tools --json
 ## Configure Paper Search
 
 Run `paper-search config path --all` to show the conventional configuration
-bundle:
+bundle. All conventional user state lives below `~/.paper-search/`; old
+`%APPDATA%/paper-search`, `$XDG_CONFIG_HOME/paper-search`, and
+`~/.config/paper-search` locations are migration inputs, not live authorities.
 
 - `config.toml` stores user-owned, non-secret runtime settings.
 - `subscriptions.toml` stores user-owned trusted registry definitions and is
@@ -132,6 +163,28 @@ read from `paper-search.toml` and `.paper-search.toml` in the current directory;
 if both exist, they are merged in that order and the CLI reports a compatibility
 warning. `--config <path>` selects an additional explicit config file (or a
 directory containing `config.toml`).
+
+Default local records and outputs are separated by purpose:
+
+```text
+~/.paper-search/
+  config.toml              config.d/
+  subscriptions.toml       credentials.toml
+  external-search.toml     adapters/
+  providers/               registries/
+  cache/                   state/
+  workspace/               runs/
+  storage/artifacts/       storage/extractions/
+  exports/
+```
+
+Override future output locations with `workspace.root`,
+`storage.artifactRoot`, `storage.extractionRoot`, `storage.exportRoot`, and
+`runs.root`. Existing legacy `path` fields keep their original
+workspace-relative meaning. The default `runs.maxAgeDays = -1` disables
+age-based eligibility; Paper Search never prunes runs opportunistically during
+another command. Durable history is private local plaintext and may therefore
+be retained indefinitely until you explicitly run `runs prune --apply`.
 
 Effective values use this precedence, from lowest to highest:
 
@@ -308,6 +361,13 @@ Common environment overrides use `PAPER_SEARCH_*` names:
 
 - `PAPER_SEARCH_PROVIDERS_INSTALL_DIR`
 - `PAPER_SEARCH_WORKSPACE_ROOT`
+- `PAPER_SEARCH_STORAGE_ARTIFACT_ROOT`
+- `PAPER_SEARCH_STORAGE_EXTRACTION_ROOT`
+- `PAPER_SEARCH_STORAGE_EXPORT_ROOT`
+- `PAPER_SEARCH_RUNS_ROOT`
+- `PAPER_SEARCH_RUNS_MAX_AGE_DAYS`
+- `PAPER_SEARCH_ZOTERO_ENABLED`
+- `PAPER_SEARCH_ZOTERO_ENDPOINT`
 - `PAPER_SEARCH_PLATFORM__PATENTSTAR__LOGIN_NAME`
 - `PAPER_SEARCH_PLATFORM__PATENTSTAR__PASSWORD`
 
@@ -321,12 +381,12 @@ skill.
 | --- | --- | --- |
 | `discover` | Search academic and patent sources, plus optional generic external web search. | `academic`, `patent`, `web` |
 | `identify` | Resolve a known identifier, URL, or provider-native id to normalized metadata. | `lookup`, `patent-detail` |
-| `assess` | **Reserved** — rank, dedupe, and source/journal-level metrics (no shipped tools; promotion criteria in [ADR-0003](./docs/decisions/ADR-0003-assess-capability-group-disposition.md)). | — |
+| `assess` | Inspect checksum-bound observations, provenance, conflicts, and an optional explicit policy trace without an implicit universal verdict. | `assess plan`, `assess run`, `assess show`, `assess list` |
 | `acquire` | Fetch or record artifacts with provenance and attempt history. | `artifact download`, `artifact list`, `artifact show`, `resource-pdf` |
 | `extract` | Turn an artifact, URL, or file into Markdown, JSON, or assets through extractor providers. | `extract` |
 | `organize` | Store, tag, collect, and export workspace records. | `resource-add`, `collection-list`, `workspace-export` |
-| `orchestrate` | Run multi-step workflows over primitives. | `batch`, `material ingest`, `material status` |
-| `operate` | Inspect readiness and config, manage registries/providers, and run the server surface. | `status`, `doctor`, `config`, `registries`, `providers`, `platform-status`, `tools`, `help`, `mcp serve` |
+| `orchestrate` | Run durable discovery, citation expansion, and multi-step material workflows over primitives. | `run`, `citation`, `batch`, `material ingest`, `material status` |
+| `operate` | Inspect readiness, paths, durable runs, and config; manage registries/providers and server surfaces. | `status`, `doctor`, `paths`, `runs`, `config`, `registries`, `providers`, `platform-status`, `tools`, `help`, `mcp serve` |
 
 `operate` is a management layer. It is intentionally separate from research and
 material work so readiness checks, configuration, provider management, and MCP
@@ -480,13 +540,16 @@ paper-search workspace-export --collection-path Research --include-children --ou
 `lookup` is the recommended step before `resource-add` when you already have a
 DOI, PMID, arXiv ID, ISBN, or URL. `patent-detail` is the recommended step
 before `resource-add` when patent claims, legal status, PDF URLs, or image URLs
-matter. `resource-pdf` and `pdf` remain compatibility entrypoints for local
-workspace PDF attachments; new material workflows should prefer artifact and
-extraction records.
+matter. `resource-pdf` and `pdf` remain compatibility entrypoints for existing
+workspace item ids. They use the same installed material-provider path as
+`artifact download`; core does not fetch the URL directly. New material
+workflows should prefer artifact and extraction records.
 
 ## Artifact and Extraction Records
 
-Material workflows store auditable records under the configured workspace root.
+Material workflows store auditable metadata records under the configured
+workspace root. Artifact bytes and extracted outputs use the independently
+configured `storage.artifactRoot` and `storage.extractionRoot`.
 
 An artifact record describes a fetched, requested, resolved, or user-supplied
 file/URL snapshot. It includes:
@@ -505,8 +568,7 @@ from an artifact, local path, or URL. It includes:
   `cacheHit`
 - optional `itemId` linking the extraction to a workspace item
 - optional message from the extractor
-- output paths such as `material/extractions/<id>/content.md` and
-  `material/extractions/<id>/result.json`
+- versioned output references into the configured extraction storage root
 
 `artifact download` and `material ingest` also accept a DOI as input. The DOI
 is resolved to ordered candidate locations through an installed
@@ -555,6 +617,15 @@ installDir = "$tmp/providers"
 root = "$tmp/workspace"
 defaultCollection = "Inbox"
 
+[storage]
+artifactRoot = "$tmp/storage/artifacts"
+extractionRoot = "$tmp/storage/extractions"
+exportRoot = "$tmp/exports"
+
+[runs]
+root = "$tmp/runs"
+maxAgeDays = -1
+
 [platform.fixture-artifact-downloader]
 mode = "docs"
 
@@ -600,25 +671,30 @@ paper-search --config "$tmp/paper-search.toml" extract \
 paper-search --config "$tmp/paper-search.toml" material status "$artifact_id" --json
 ```
 
-The generated workspace contains artifact records under `material/artifacts/`,
-artifact bytes under `material/files/`, extraction records under
-`material/extractions/*.json`, and extracted Markdown/JSON under
-`material/extractions/<extraction-id>/`.
+The generated workspace contains artifact and extraction metadata records.
+Artifact bytes are written below `$tmp/storage/artifacts`; extracted Markdown,
+structured output, and assets are written below `$tmp/storage/extractions`.
 
 ## Batch and Precise Tool Calls
 
 `batch` accepts CSV, JSONL, JSON, and YAML task files. Supported rows include
-search, lookup, workspace, artifact, extract, and material ingest tools. With
-`--resume-from ./results.jsonl --out ./results.jsonl`, rows append durable JSONL
-results and keep both row `index` and row `id`.
+search, lookup, workspace, artifact, extract, material ingest,
+`citation_expand`, and `assessment_run`. With
+`--resume-from ./results.jsonl --out ./results.jsonl`, rows append JSONL results
+and keep both row `index` and row `id`.
 
-Use `run <canonical_tool>` when an agent or script needs a deterministic,
-schema-validated tool call:
+Use `run <tool>` when an agent or script needs a durable, schema-validated
+discovery call. It accepts only `academic_search`, `patent_search`,
+`resource_lookup`, `patent_detail`, and optional `web_search`:
 
 ```bash
-paper-search run material_status --arg target=item-123
-paper-search run artifact_download --json-args '{"input":"https://example.test/files/article.pdf","provider":"fixture-artifact-downloader","dry_run":true}'
+paper-search run academic_search \
+  --json-args '{"query":"retrieval augmented generation","presets":["general","computer-science"],"maxResults":5}'
+paper-search run resource_lookup --arg identifier=10.1145/3366423.3380130
 ```
+
+Use the friendly material commands shown above for local writes. Citation and
+assessment have their own plan/run commands and durable records.
 
 ## MCP Surface
 
@@ -682,4 +758,4 @@ required environment variables.
 
 ## License
 
-Paper Search CLI is available under the [MIT License](./LICENSE).
+Paper Search CLI X is available under the [MIT License](./LICENSE).

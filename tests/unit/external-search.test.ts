@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,9 +41,32 @@ async function root(): Promise<string> {
   return value;
 }
 
-async function writeExternalConfig(configRoot: string, behavior = "normal", adapter = "native"): Promise<void> {
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processIsRunning(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Configured external-search child ${pid} remained alive after cancellation`);
+}
+
+async function writeExternalConfig(
+  configRoot: string,
+  behavior = "normal",
+  adapter = "native",
+  configuredExecutable = configuredFixture,
+): Promise<void> {
   await mkdir(configRoot, { recursive: true });
-  const executableArgs = adapter === "native" ? [nativeFixture, behavior] : [configuredFixture];
+  const executableArgs = adapter === "native" ? [nativeFixture, behavior] : [configuredExecutable];
   await writeFile(path.join(configRoot, "external-search.toml"), [
     "schemaVersion = 1", "enabled = true", `adapter = "${adapter}"`, "timeoutMs = 2000", "",
     "[process]", `executable = ${JSON.stringify(process.execPath)}`,
@@ -80,11 +103,10 @@ describe("external search runtime", () => {
   });
 
   it("keeps canonical, MCP discovery, and batch projections on the one generic handler", async () => {
-    const appData = await root();
-    const configRoot = path.join(appData, "paper-search");
+    const configRoot = await root();
     await writeExternalConfig(configRoot);
-    const oldAppData = process.env.APPDATA;
-    process.env.APPDATA = appData;
+    const oldHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = configRoot;
     try {
       const resolved = config();
       const canonical = await runCanonicalTool(resolved, "web_search", { query: "canonical" });
@@ -112,15 +134,15 @@ describe("external search runtime", () => {
       });
       expect(batch).toMatchObject({ status: "ok", tool: "web_search" });
     } finally {
-      if (oldAppData === undefined) delete process.env.APPDATA;
-      else process.env.APPDATA = oldAppData;
+      if (oldHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = oldHome;
     }
   });
 
   it("keeps disabled batch invocation on the typed external-search failure", async () => {
-    const appData = await root();
-    const oldAppData = process.env.APPDATA;
-    process.env.APPDATA = appData;
+    const configRoot = await root();
+    const oldHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = configRoot;
     try {
       const tasks = buildBatchTasks([{ tool: "web_search", query: "batch" }], {
         addMode: "none", collectionMap: {}, extraTags: [], fetchPdf: false,
@@ -136,8 +158,8 @@ describe("external search runtime", () => {
         diagnostics: { reason: "external_search_disabled" },
       });
     } finally {
-      if (oldAppData === undefined) delete process.env.APPDATA;
-      else process.env.APPDATA = oldAppData;
+      if (oldHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = oldHome;
     }
   });
 
@@ -179,14 +201,21 @@ describe("external search runtime", () => {
     const configRoot = await root();
     await mkdir(path.join(configRoot, "adapters"), { recursive: true });
     await copyFile(adapterFixture, path.join(configRoot, "adapters", "fixture.mjs"));
-    await writeExternalConfig(configRoot, "normal", "fixture");
+    const cancellableFixture = path.join(configRoot, "cancellable-cli.mjs");
+    await writeFile(cancellableFixture, [
+      'import { writeFileSync } from "node:fs";',
+      'if (!process.env.PAPER_SEARCH_TEST_READY_FILE) process.exit(2);',
+      'writeFileSync(process.env.PAPER_SEARCH_TEST_READY_FILE, `${process.pid}\\n`);',
+      'setTimeout(() => {}, 60_000);',
+      '',
+    ].join("\n"));
+    await writeExternalConfig(configRoot, "normal", "fixture", cancellableFixture);
     const readyFile = path.join(configRoot, "child-ready");
-    const survivalFile = path.join(configRoot, "child-survived");
     const oldReady = process.env.PAPER_SEARCH_TEST_READY_FILE;
-    const oldSurvival = process.env.PAPER_SEARCH_TEST_SURVIVAL_FILE;
     const controller = new AbortController();
+    let childPid: number | undefined;
+    let childExited = false;
     process.env.PAPER_SEARCH_TEST_READY_FILE = readyFile;
-    process.env.PAPER_SEARCH_TEST_SURVIVAL_FILE = survivalFile;
     try {
       const execution = runExternalWebSearch(
         config(), { query: "__hang__" }, { configRoot, signal: controller.signal },
@@ -196,16 +225,23 @@ describe("external search runtime", () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       await expect(access(readyFile)).resolves.toBeUndefined();
+      childPid = Number.parseInt((await readFile(readyFile, "utf8")).trim(), 10);
+      expect(childPid).toBeGreaterThan(0);
       controller.abort();
       await expect(execution).rejects.toMatchObject({ code: "process_cancelled" });
-      await new Promise((resolve) => setTimeout(resolve, 900));
-      await expect(access(survivalFile)).rejects.toMatchObject({ code: "ENOENT" });
+      await waitForProcessExit(childPid);
+      childExited = true;
     } finally {
       controller.abort();
+      if (childPid && !childExited) {
+        try {
+          process.kill(childPid);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
       if (oldReady === undefined) delete process.env.PAPER_SEARCH_TEST_READY_FILE;
       else process.env.PAPER_SEARCH_TEST_READY_FILE = oldReady;
-      if (oldSurvival === undefined) delete process.env.PAPER_SEARCH_TEST_SURVIVAL_FILE;
-      else process.env.PAPER_SEARCH_TEST_SURVIVAL_FILE = oldSurvival;
     }
   });
 

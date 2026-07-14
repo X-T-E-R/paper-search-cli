@@ -52,42 +52,82 @@ export const CLI_TOOL_MAPPINGS: CliToolMapping[] = [
   {
     tool: "resource_pdf",
     commands: ["resource-pdf", "resource_pdf", "pdf"],
-    note: "Uses the local workspace attachment sink; itemKey is a workspace item id.",
+    note: "Uses installed material providers and projects the artifact onto a workspace item.",
   },
   {
     tool: "artifact_download",
-    commands: ["artifact download", "run artifact_download"],
+    commands: ["artifact download"],
     note: "Uses material downloader providers and stores artifact records with provenance.",
   },
   {
     tool: "artifact_list",
-    commands: ["artifact list", "run artifact_list"],
+    commands: ["artifact list"],
     note: "Reads artifact records from the local workspace.",
   },
   {
     tool: "artifact_show",
-    commands: ["artifact show", "run artifact_show"],
+    commands: ["artifact show"],
     note: "Reads one artifact record by id from the local workspace.",
   },
   {
     tool: "extract",
-    commands: ["extract", "run extract"],
+    commands: ["extract"],
     note: "Uses material extractor providers and stores extraction records.",
   },
   {
     tool: "material_ingest",
-    commands: ["material ingest", "run material_ingest"],
+    commands: ["material ingest"],
     note: "Orchestrates artifact acquisition and extraction through the shared material primitives.",
   },
   {
     tool: "material_status",
-    commands: ["material status", "run material_status"],
+    commands: ["material status"],
     note: "Reports artifact and extracted-output status for a workspace item, artifact, or extraction.",
   },
   {
     tool: "material_provider_list_installed",
     commands: ["providers list-installed --kind material", "material-providers list-installed"],
     note: "Uses the durable providers --kind material management shape.",
+  },
+  {
+    tool: "research_run",
+    commands: ["run"],
+    note: "Only wraps the fixed non-destructive discovery allowlist; intrinsically durable and management tools are rejected.",
+  },
+  {
+    tool: "run_list",
+    commands: ["runs list"],
+  },
+  {
+    tool: "run_show",
+    commands: ["runs show"],
+  },
+  {
+    tool: "run_prune_plan",
+    commands: ["runs prune"],
+    note: "Canonical invocation is plan-only; applying a prune remains CLI-only and requires --apply.",
+  },
+  {
+    tool: "citation_expand",
+    commands: ["citation plan", "citation run", "citation resume"],
+    note: "Unions exact-identifier graph providers with bounded traversal and durable checkpoints.",
+  },
+  {
+    tool: "citation_run_status",
+    commands: ["citation status"],
+  },
+  {
+    tool: "assessment_run",
+    commands: ["assess plan", "assess run"],
+    note: "Consumes an immutable checksum-bound local observation snapshot; it does not make hidden quality decisions.",
+  },
+  {
+    tool: "assessment_show",
+    commands: ["assess show"],
+  },
+  {
+    tool: "assessment_list",
+    commands: ["assess list"],
   },
   {
     tool: "platform_status",
@@ -151,6 +191,26 @@ export const CLI_ONLY_COMMANDS = [
   {
     command: "migrate",
     purpose: "Plan or apply journaled migration of legacy v0 user configuration and flat provider installs without modifying project config files.",
+  },
+  {
+    command: "runs export",
+    purpose: "Export one sanitized run or change whether age retention may prune it.",
+  },
+  {
+    command: "runs pin",
+    purpose: "Keep one durable run out of age-based pruning.",
+  },
+  {
+    command: "runs unpin",
+    purpose: "Return one durable run to the configured age-retention policy.",
+  },
+  {
+    command: "runs prune --apply",
+    purpose: "Explicitly quarantine and delete only eligible local run records after reviewing the plan.",
+  },
+  {
+    command: "zotero sink",
+    purpose: "Export bibliographic records to a configured Zotero endpoint with an explicit digest-bound apply step; attachments remain outside the claimed contract.",
   },
   {
     command: "registries list|show",

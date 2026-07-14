@@ -7,6 +7,7 @@ import {
 import { loadMaterialProviderPackage, type LoadedMaterialProviderPackage } from "./package/load.js";
 import { parseMaterialResolverResult } from "./resolverResult.js";
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "./cache.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
 import type {
   MaterialIdentifierInput,
@@ -171,7 +172,7 @@ export async function resolveAcquireCandidates(options: {
       capability: "acquire",
       attachTo: options.attachTo ?? null,
     },
-    cacheRoot: path.join(options.config.workspace.root, ".material-provider-cache"),
+    cacheRoot: resolveMaterialProviderCacheRoot(options.config),
     workspaceRoot: options.config.workspace.root,
   });
   const loadedProvider = await invokeMaterialProviderFactoryInNode(

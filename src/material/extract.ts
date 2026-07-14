@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import {
   listProviderPackageDirectories,
@@ -8,13 +8,16 @@ import {
 import type { ResolvedConfig } from "../config/schema.js";
 import { createPlanEnvelope, type PlannedOperationData } from "../surface/plan.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
-import { readArtifactRecord } from "./artifactStore.js";
-import { createExtractionRecord } from "./extractionStore.js";
+import { readArtifactRecord, resolveArtifactRecordPath } from "./artifactStore.js";
+import { EXTRACTION_RECORDS_DIR, createExtractionRecord } from "./extractionStore.js";
 import { loadMaterialProviderPackage, type LoadedMaterialProviderPackage } from "./package/load.js";
 import type { ArtifactRecord, ExtractionRecord, ExtractionSource } from "./records.js";
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "./cache.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
 import type { MaterialInputKind } from "./types.js";
+import { writeLocalStorageBytes } from "../storage/local.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
 
 export interface MaterialExtractionOptions {
   config: ResolvedConfig;
@@ -48,6 +51,29 @@ export interface MaterialExtractionData {
   provider: MaterialExtractionProviderSummary;
 }
 
+export interface MaterialExtractionCommittedOutput {
+  kind: "markdown" | "json";
+  path: string;
+  storage: LocalStorageRefV1;
+  sha256: string;
+  sizeBytes: number;
+}
+
+/** One or more extraction files were committed without a durable record. */
+export interface MaterialExtractionOrphanOutcome {
+  outcome: "orphaned";
+  commitStage: "output" | "metadata";
+  extractionId: string;
+  outputs: MaterialExtractionCommittedOutput[];
+  metadataPath: string;
+  error: string;
+}
+
+export type MaterialExtractionResultEnvelope = ResultEnvelope<MaterialExtractionData> & {
+  /** Present only when one or more output files were committed without record metadata. */
+  orphan?: MaterialExtractionOrphanOutcome;
+};
+
 interface ResolvedExtractionInput {
   source: ExtractionSource;
   materialInputKind: MaterialInputKind;
@@ -59,6 +85,16 @@ interface ProviderExtractionResult {
   metadata?: unknown;
   cacheHit: boolean;
   message?: string;
+}
+
+class ExtractionOutputCommitError extends Error {
+  constructor(
+    readonly committedOutputs: MaterialExtractionCommittedOutput[],
+    cause: unknown,
+  ) {
+    super(formatError(cause));
+    this.name = "ExtractionOutputCommitError";
+  }
 }
 
 export class MaterialExtractionError extends Error {
@@ -119,16 +155,6 @@ function toWorkspacePath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-function resolveWorkspacePath(workspaceRoot: string, relativePath: string): string {
-  const root = path.resolve(workspaceRoot);
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    fail(`Workspace output path escapes workspace root: ${relativePath}`);
-  }
-  return target;
-}
-
 async function resolvePathInput(cwd: string, input: string): Promise<string | null> {
   const candidate = path.isAbsolute(input) ? input : path.resolve(cwd, input);
   try {
@@ -165,10 +191,12 @@ async function resolveExtractionInput(config: ResolvedConfig, input: string): Pr
   if (ARTIFACT_ID_RE.test(trimmed)) {
     const artifact = await readArtifactRecord(config.workspace.root, trimmed);
     if (artifact) {
+      const artifactPath = await resolveArtifactRecordPath(config.workspace.root, artifact);
+      const resolvedArtifact = artifactPath ? { ...artifact, path: artifactPath } : artifact;
       return {
         source: { kind: "artifact", artifactId: artifact.id },
         materialInputKind: "artifact",
-        artifact,
+        artifact: resolvedArtifact,
       };
     }
   }
@@ -264,7 +292,7 @@ function parseProviderExtractionResult(value: unknown): ProviderExtractionResult
 }
 
 function outputRelativePaths(extractionId: string): { markdownPath: string; jsonPath: string } {
-  const base = toWorkspacePath(path.join("material", "extractions", extractionId));
+  const base = toWorkspacePath(path.join(extractionId));
   return {
     markdownPath: `${base}/content.md`,
     jsonPath: `${base}/result.json`,
@@ -272,30 +300,55 @@ function outputRelativePaths(extractionId: string): { markdownPath: string; json
 }
 
 async function writeExtractionOutputs(options: {
-  workspaceRoot: string;
+  extractionRoot: string;
   markdownPath: string;
   jsonPath: string;
   markdown: string;
   providerResult: ProviderExtractionResult;
-}): Promise<void> {
-  const markdownTarget = resolveWorkspacePath(options.workspaceRoot, options.markdownPath);
-  const jsonTarget = resolveWorkspacePath(options.workspaceRoot, options.jsonPath);
-  await mkdir(path.dirname(markdownTarget), { recursive: true });
-  await writeFile(markdownTarget, options.markdown, "utf8");
-  await writeFile(
-    jsonTarget,
-    `${JSON.stringify(
-      {
-        markdown: options.providerResult.markdown,
-        metadata: options.providerResult.metadata ?? null,
-        cacheHit: options.providerResult.cacheHit,
-        message: options.providerResult.message ?? null,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+}): Promise<{
+  markdown: { ref: LocalStorageRefV1; path: string };
+  json: { ref: LocalStorageRefV1; path: string };
+}> {
+  const markdown = await writeLocalStorageBytes({
+    root: options.extractionRoot,
+    key: options.markdownPath,
+    area: "extraction",
+    bytes: Buffer.from(options.markdown, "utf8"),
+  });
+  let json: { ref: LocalStorageRefV1; path: string };
+  try {
+    json = await writeLocalStorageBytes({
+      root: options.extractionRoot,
+      key: options.jsonPath,
+      area: "extraction",
+      bytes: Buffer.from(`${JSON.stringify(
+        {
+          markdown: options.providerResult.markdown,
+          metadata: options.providerResult.metadata ?? null,
+          cacheHit: options.providerResult.cacheHit,
+          message: options.providerResult.message ?? null,
+        },
+        null,
+        2,
+      )}\n`, "utf8"),
+    });
+  } catch (error) {
+    throw new ExtractionOutputCommitError([committedOutput("markdown", markdown)], error);
+  }
+  return { markdown, json };
+}
+
+function committedOutput(
+  kind: MaterialExtractionCommittedOutput["kind"],
+  output: { ref: LocalStorageRefV1; path: string },
+): MaterialExtractionCommittedOutput {
+  return {
+    kind,
+    path: output.path,
+    storage: output.ref,
+    sha256: output.ref.sha256!,
+    sizeBytes: output.ref.sizeBytes!,
+  };
 }
 
 function providerInput(options: {
@@ -324,9 +377,7 @@ export async function planMaterialExtractionForInputKind(
   });
   const provider = providerSummary(providerPackage);
   const plannedOutputDir = path.join(
-    options.config.workspace.root,
-    "material",
-    "extractions",
+    options.config.storage.extractionRoot,
     "<new-extraction-id>",
   );
 
@@ -359,7 +410,7 @@ export async function planMaterialExtractionForInputKind(
       {
         id: "write-markdown",
         action: "write",
-        description: "Write extracted Markdown and structured provider output to the workspace.",
+        description: "Write extracted Markdown and structured provider output to the configured extraction root.",
         targetPaths: [plannedOutputDir],
         providerId: provider.id,
         policy,
@@ -405,7 +456,7 @@ export async function planMaterialExtraction(
 
 export async function runMaterialExtraction(
   options: MaterialExtractionOptions,
-): Promise<ResultEnvelope<MaterialExtractionData>> {
+): Promise<MaterialExtractionResultEnvelope> {
   const started = Date.now();
   const attachTo = normalizeAttachTo(options.attachTo);
   const policy = normalizePolicy(options.policy);
@@ -424,7 +475,7 @@ export async function runMaterialExtraction(
       capability: "extract",
       attachTo: attachTo ?? null,
     },
-    cacheRoot: path.join(options.config.workspace.root, ".material-provider-cache"),
+    cacheRoot: resolveMaterialProviderCacheRoot(options.config),
     workspaceRoot: options.config.workspace.root,
   });
   const loadedProvider = await invokeMaterialProviderFactoryInNode(
@@ -441,30 +492,68 @@ export async function runMaterialExtraction(
   );
   const extractionId = randomUUID();
   const outputs = outputRelativePaths(extractionId);
-  await writeExtractionOutputs({
-    workspaceRoot: options.config.workspace.root,
-    markdownPath: outputs.markdownPath,
-    jsonPath: outputs.jsonPath,
-    markdown: providerResult.markdown,
-    providerResult,
-  });
-  const record = await createExtractionRecord(options.config.workspace.root, {
-    id: extractionId,
-    source: resolvedInput.source,
-    backend: provider.id,
-    options: {
-      policy,
-      providerVersion: provider.version,
-    },
-    outputs: {
+  let storedOutputs: Awaited<ReturnType<typeof writeExtractionOutputs>>;
+  try {
+    storedOutputs = await writeExtractionOutputs({
+      extractionRoot: options.config.storage.extractionRoot,
       markdownPath: outputs.markdownPath,
       jsonPath: outputs.jsonPath,
       markdown: providerResult.markdown,
-    },
-    cacheHit: providerResult.cacheHit,
-    ...(attachTo ? { itemId: attachTo } : {}),
-    ...(providerResult.message ? { message: providerResult.message } : {}),
-  });
+      providerResult,
+    });
+  } catch (error) {
+    if (error instanceof ExtractionOutputCommitError) {
+      return extractionOrphanEnvelope({
+        options,
+        started,
+        provider,
+        policy,
+        attachTo,
+        resolvedInput,
+        extractionId,
+        commitStage: "output",
+        committedOutputs: error.committedOutputs,
+        error: error.message,
+      });
+    }
+    throw error;
+  }
+  let record: ExtractionRecord;
+  try {
+    record = await createExtractionRecord(options.config.workspace.root, {
+      id: extractionId,
+      source: resolvedInput.source,
+      backend: provider.id,
+      options: {
+        policy,
+        providerVersion: provider.version,
+      },
+      outputs: {
+        markdownStorage: storedOutputs.markdown.ref,
+        jsonStorage: storedOutputs.json.ref,
+        markdown: providerResult.markdown,
+      },
+      cacheHit: providerResult.cacheHit,
+      ...(attachTo ? { itemId: attachTo } : {}),
+      ...(providerResult.message ? { message: providerResult.message } : {}),
+    });
+  } catch (error) {
+    return extractionOrphanEnvelope({
+      options,
+      started,
+      provider,
+      policy,
+      attachTo,
+      resolvedInput,
+      extractionId,
+      commitStage: "metadata",
+      committedOutputs: [
+        committedOutput("markdown", storedOutputs.markdown),
+        committedOutput("json", storedOutputs.json),
+      ],
+      error: formatError(error),
+    });
+  }
 
   return okEnvelope({
     capability: "extract",
@@ -472,8 +561,8 @@ export async function runMaterialExtraction(
     data: {
       record,
       markdown: providerResult.markdown,
-      markdownPath: outputs.markdownPath,
-      jsonPath: outputs.jsonPath,
+      markdownPath: storedOutputs.markdown.path,
+      jsonPath: storedOutputs.json.path,
       provider,
     },
     diagnostics: {
@@ -488,6 +577,54 @@ export async function runMaterialExtraction(
       configPaths: options.config.meta.loadedFiles,
     },
   });
+}
+
+function extractionOrphanEnvelope(options: {
+  options: MaterialExtractionOptions;
+  started: number;
+  provider: MaterialExtractionProviderSummary;
+  policy: string;
+  attachTo?: string;
+  resolvedInput: ResolvedExtractionInput;
+  extractionId: string;
+  commitStage: MaterialExtractionOrphanOutcome["commitStage"];
+  committedOutputs: MaterialExtractionCommittedOutput[];
+  error: string;
+}): MaterialExtractionResultEnvelope {
+  const orphan: MaterialExtractionOrphanOutcome = {
+    outcome: "orphaned",
+    commitStage: options.commitStage,
+    extractionId: options.extractionId,
+    outputs: options.committedOutputs,
+    metadataPath: path.join(
+      path.resolve(options.options.config.workspace.root),
+      EXTRACTION_RECORDS_DIR,
+      `${options.extractionId}.json`,
+    ),
+    error: options.error,
+  };
+  return {
+    ok: false,
+    capability: "extract",
+    tool: "extract",
+    data: null as unknown as MaterialExtractionData,
+    orphan,
+    diagnostics: {
+      elapsedMs: Date.now() - options.started,
+      inputKind: options.resolvedInput.materialInputKind,
+      workspaceRoot: options.options.config.workspace.root,
+      attachTo: options.attachTo ?? null,
+      partial: true,
+      orphanedBytes: true,
+      commitStage: options.commitStage,
+    },
+    errors: [`Extraction ${options.commitStage} commit failed after bytes were committed: ${options.error}`],
+    provenance: {
+      providerIds: [options.provider.id],
+      policy: options.policy,
+      configPaths: options.options.config.meta.loadedFiles,
+    },
+  };
 }
 
 function formatError(error: unknown): string {

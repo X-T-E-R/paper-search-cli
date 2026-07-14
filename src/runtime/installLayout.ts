@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveConfigRoot } from "../config/paths.js";
+import { resolvePaperSearchPaths } from "../config/home.js";
 import {
   inspectBuildHealth,
   type BuildHealthChecks,
@@ -86,17 +85,12 @@ export function resolveInstallPaths(
 ): InstallPaths {
   const layout = resolveRepoLayout(moduleUrl);
   const repoRoot = layout.repoRoot;
-  const dataRoot =
-    env.PAPER_SEARCH_INSTALL_TEST_MODE === "1" && env.PAPER_SEARCH_TEST_DATA_ROOT
-      ? path.resolve(env.PAPER_SEARCH_TEST_DATA_ROOT)
-      : path.join(os.homedir(), ".paper-search");
-  const binRoot =
-    process.platform === "win32" && env.LOCALAPPDATA
-      ? path.join(env.LOCALAPPDATA, "PaperSearch", "bin")
-      : path.join(os.homedir(), ".local", "bin");
+  const conventional = resolvePaperSearchPaths(env);
+  const dataRoot = conventional.home;
+  const binRoot = conventional.binRoot;
   return {
     repoRoot,
-    configRoot: resolveConfigRoot(env),
+    configRoot: conventional.configRoot,
     dataRoot,
     binRoot,
     installStatePath: path.join(dataRoot, "state", "install.json"),

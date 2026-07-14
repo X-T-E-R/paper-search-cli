@@ -1,6 +1,9 @@
 # Management Layer
 
-Use the management layer for readiness, configuration, provider inventory, provider installation planning, MCP serving, help/catalog discovery, and smoke gates. Keep it separate from research/material results.
+Use the management layer for readiness, paths, durable-run inspection and prune
+plans, configuration, provider inventory, provider installation planning, MCP
+serving, help/catalog discovery, and smoke gates. Keep it separate from
+research/material results.
 
 ## Readiness Probes
 
@@ -17,8 +20,10 @@ node scripts/paper-search.mjs tools --json
 node scripts/paper-search.mjs help
 ```
 
-- `paths --json` reports the independent repository, config, data, bin, state,
-  and build paths, plus whether the managed bin root is on `PATH`.
+- `paths --json` reports the one conventional `~/.paper-search/` authority and
+  its config, provider, registry, cache, state, workspace, artifact, extraction,
+  export, run, and bin paths, plus legacy migration state and retained-checkout
+  build paths.
 - `self status --json` inspects source/build freshness, installer identity,
   source-management mode, Git/upstream state, skill projections, shim health,
   and pending update recovery. It does not update the checkout.
@@ -37,6 +42,39 @@ node scripts/paper-search.mjs help
 - `platform-status --json` reports enabled/configured/available provider states and current canonical tool availability.
 - `tools --json` reports canonical tools, capability annotations, CLI aliases, and CLI-only management commands.
 - `help [topic]` reports local help and provider usage notes as JSON.
+
+## Conventional home and run retention
+
+All conventional user config and data derive from `~/.paper-search/`, or from
+an absolute `PAPER_SEARCH_HOME` override. This default is independent of the
+current working directory. Project and explicit config files remain optional
+runtime layers, not alternate conventional homes.
+
+Use these keys to separate future writes:
+
+```text
+workspace.root
+storage.artifactRoot
+storage.extractionRoot
+storage.exportRoot
+runs.root
+runs.maxAgeDays
+```
+
+`runs.maxAgeDays = -1` means no run is age-eligible. A positive value becomes
+the default cutoff for the explicit prune plan; it does not schedule deletion.
+Durable history is sanitized private local plaintext and may be retained
+indefinitely.
+
+```bash
+node scripts/paper-search.mjs runs list
+node scripts/paper-search.mjs runs show <id>
+node scripts/paper-search.mjs runs prune
+node scripts/paper-search.mjs runs prune --max-age-days 30 --apply
+```
+
+`runs export`, `runs pin`, `runs unpin`, and applied pruning are CLI-only.
+Canonical/MCP may use `run_list`, `run_show`, and plan-only `run_prune_plan`.
 
 ## Retained-Checkout Management
 
@@ -153,19 +191,25 @@ an unmasked legacy value locally. Do not echo raw secrets in the final answer.
 
 ## Migration
 
-Treat legacy v0 user configuration and flat provider folders as migration
-inputs. The command plans both parts together and writes only with `--apply`:
+Treat `%APPDATA%/paper-search/`, `$XDG_CONFIG_HOME/paper-search/`,
+`~/.config/paper-search/`, legacy-v0 config, and flat provider folders as
+migration inputs. The command plans the relevant work and writes only with
+`--apply`:
 
 ```bash
 node scripts/paper-search.mjs migrate
 node scripts/paper-search.mjs migrate --apply
+node scripts/paper-search.mjs migrate --legacy-config-root <path> --apply
 node scripts/paper-search.mjs migrate --legacy-install-dir <path> --apply
 ```
 
-The migration reuses the split-config transaction journal, provider receipts,
-replacement preconditions, kind-separated targets, and recovery journals. It
-does not edit project config files. A custom/project/env provider root must be
-selected explicitly with `--legacy-install-dir` before it can be moved.
+Location migration copies known files into the conventional home and never
+deletes or rewrites its source. Multiple differing non-empty roots require
+`--legacy-config-root`; destination conflicts fail closed. The migration reuses
+the split-config transaction journal, provider receipts, replacement
+preconditions, kind-separated targets, and recovery journals. It does not edit
+project config files. A custom/project/env provider root must be selected
+explicitly with `--legacy-install-dir` before it can be moved.
 
 ## Registry Subscriptions
 

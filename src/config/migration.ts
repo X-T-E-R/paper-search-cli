@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse } from "@iarna/toml";
-import { DEFAULT_CONFIG } from "./defaults.js";
+import { createDefaultConfig } from "./defaults.js";
 import { isPlainConfigObject } from "./env.js";
 import { parseLegacyV0Config, type LegacyV0Blocker } from "./legacyV0.js";
 import {
@@ -163,7 +163,7 @@ function resolveLegacyInstallSource(
       origin: "legacy-user-config",
     };
   }
-  const configuredDefault = DEFAULT_CONFIG.providers.installDir;
+  const configuredDefault = createDefaultConfig(env).providers.installDir;
   const source = configuredDefault.startsWith("~/") || configuredDefault.startsWith("~\\")
     ? path.join(resolveInstallPaths(env).dataRoot, configuredDefault.slice(2).replace(/^\.paper-search[\\/]/, ""))
     : path.resolve(configuredDefault);

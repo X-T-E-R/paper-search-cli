@@ -1,69 +1,95 @@
 ---
 name: paper-search-cli
-description: Use the local paper-search-cli for academic/patent search, optional generic External Search v1 web_search, source presets and search plans, identifier lookup, artifact acquisition, extraction, material ingest/status, workspace storage/export, provider and registry-subscription management, config/migration/status checks, and MCP serving. Trigger for paper-search-cli, paper-search MCP, mcp serve, provider registries, academic_search, patent_search, patent_detail, search-plan, web_search, resource_lookup, resource_add, resource_pdf, artifact_download, extract, material_ingest, workspace_export, platform_status, batch, doctor, config, migrate, registries, providers, or material-providers. Use the Zotero skill instead for Zotero writes or Zotero Resource Search; do not use this skill for general web search that does not need Paper Search.
+description: Use Paper Search CLI X for academic/patent discovery, optional External Search v1 web_search, multi-preset/source union, identifier lookup, durable research_run history, citation_expand plan/run/resume, checksum-bound transparent assessment, provider-mediated artifact/PDF acquisition and extraction, local workspace/export, CLI-only Zotero bibliographic handoff, provider/registry/config/migration/status management, and MCP serving. Trigger for paper-search-cli, paper-search, academic_search, patent_search, resource_lookup, research_run, runs, citation_expand, assessment_run, artifact_download, resource_pdf, extract, material_ingest, zotero sink, search-plan, registries, providers, doctor, or mcp serve. Do not use for ordinary web browsing unless the user explicitly requests Paper Search or its optional external-search surface.
 ---
 
-# Paper Search CLI
+# Paper Search CLI X
 
-Use this skill for the local `paper-search-cli` system and its MCP server. Run the skill-local launcher for deterministic terminal evidence; use `mcp serve` only when the request needs the JSON-RPC transport over the same core behavior.
+Use this skill for the local `paper-search-cli` system, its canonical tools, and
+its MCP server. X means extensibility and open possibilities; it does not rename
+the `paper-search` command, skill slug, configuration keys, or canonical tools.
 
-## Installed Entrypoint
+## Installed entrypoint
 
 Run commands from this skill directory through its launcher:
 
 ```bash
 node scripts/paper-search.mjs --version
 node scripts/paper-search.mjs paths --json
-node scripts/paper-search.mjs self status --json
-node scripts/paper-search.mjs self mode --json
-node scripts/paper-search.mjs self update --json
+node scripts/paper-search.mjs status --json
+node scripts/paper-search.mjs tools --json
 ```
 
 The installed skill is a Junction or symlink into a retained Paper Search
-checkout. This launcher resolves that checkout and starts its verified runtime.
-Do not bypass it with a repository-relative `node dist/cli.js` command during
-normal agent use. The `paper-search` command is the equivalent shim for humans.
+checkout. The launcher resolves that checkout and starts its verified runtime.
+Do not bypass it with repository-relative `node dist/cli.js` during normal agent
+use. The `paper-search` shim is the equivalent human entrypoint.
 
-## Activation Boundary
+## Activation boundary
 
-Use this skill when the request is explicitly about `paper-search-cli`, its provider packages, its local workspace, its material artifact/extraction records, its MCP server, or its source-compatible canonical tools.
+Use this skill when the request concerns Paper Search, its provider packages,
+local workspace or run history, citation expansion, transparent assessment,
+material records, its explicit Zotero sink, its MCP server, or a canonical tool.
 
-Do not use this skill for ordinary news lookup, broad web browsing, or general current-events search unless the user explicitly asks to route that work through `paper-search-cli`.
+The optional `web_search` tool exists only when the user-owned
+`external-search.toml` grants External Search v1 process authority. Use normal
+search/browser routing for general web work. Use a dedicated Zotero skill for
+general Zotero library operations; use this skill only for Paper Search's
+explicit `zotero sink` handoff.
 
-## Eight Capability Groups
+## Eight capability groups
 
 | Group | Use for |
 | --- | --- |
-| `discover` | Academic and patent search, plus optional generic External Search v1. |
+| `discover` | Academic and patent search, plus optional External Search v1. |
 | `identify` | DOI/PMID/arXiv/ISBN/URL metadata lookup and patent detail. |
-| `assess` | Reserved group with no implemented tools; do not route work here (promotion criteria: [ADR-0003](../../docs/decisions/ADR-0003-assess-capability-group-disposition.md)). |
-| `acquire` | Artifact acquisition/recording from a URL, workspace item, or DOI, plus PDF attachment records. |
-| `extract` | Markdown/JSON/assets extraction from an artifact, URL, or local file through material providers. |
-| `organize` | Local workspace add/list/export operations. |
-| `orchestrate` | Batch rows, material ingest, and material status over stored records. |
-| `operate` | Status, search-plan, config, provider management, help/tools, and MCP serving. |
+| `assess` | Checksum-bound observation snapshots, conflicts, provenance, and optional explicit policy traces. |
+| `acquire` | Provider-mediated artifact acquisition or recording, including `resource_pdf` compatibility. |
+| `extract` | Markdown, structured output, and assets through material extractor providers. |
+| `organize` | Local workspace add/list/export and the explicit CLI-only Zotero bibliographic handoff. |
+| `orchestrate` | Durable discovery, citation expansion, batch rows, material ingest, and material status. |
+| `operate` | Paths, status, run inspection/pruning plans, config, provider management, help/tools, and MCP serving. |
 
-## Reference Rule
+## Default workflow
 
-Before parameter-heavy work, read the matching reference:
+1. Probe `doctor --json`, `tools --json`, and installed search/material providers.
+2. Use `search-plan` before a broad multi-preset/source query. Repeated positive
+   selectors form a union; direct friendly search remains ephemeral.
+3. Use `run <canonical-tool>` or canonical/MCP `research_run` when discovery
+   must be retained. Default run retention is `maxAgeDays = -1`; local plaintext
+   history is not age-pruned automatically.
+4. Use `citation plan` before `citation run`; set explicit bounds, and use
+   `citation resume <id>` after interruption.
+5. Add selected records explicitly. Do not auto-ingest all discovery or graph
+   results.
+6. Discover material providers and run `--dry-run` before PDF acquisition,
+   extraction, or ingest. Core has no source-specific network fallback.
+7. Use `assess plan` or `assess run` only with an exact snapshot checksum. Read
+   conflicts and the policy trace; do not treat assessment as a ranking oracle.
+8. If requested, use `zotero sink` plan, preview, and digest-acknowledged apply.
+   Do not claim attachment import.
 
-- Read `references/capability-routing.md` before mapping a request to the eight groups and current entrypoints.
-- Read `references/cli-contract.md` before touching working directory, build/probe, JSON output, `ResultEnvelope`, `run <canonical_tool>`, aliases, batch rows, dry-run/plan, local records, or secrets/config.
-- Read `references/management-layer.md` before using `status`, `doctor`, `search-plan`, source presets/config fragments, `config`, `migrate`, `registries`, subscription-bound `providers available|install|update`, `providers inventory`, `providers --kind search|material`, `material-providers`, `mcp serve`, `platform-status`, `help`, `tools`, or smoke gates.
-- Read `references/management-layer.md` before planning or applying `self mode`
-  or `self update`. These commands are plan-first. Production authority is
-  source-sealed to the official HTTPS `main` origin and cannot be changed by
-  config, environment, or CLI input; other clones remain user-managed.
+## Reference rule
 
-For material download, extraction, or ingest, route through material-provider discovery and a dry-run/plan before live network or write execution. DOI inputs are resolved to candidate URLs through installed resolver providers before download. No networked material resolver, downloader, or extractor is built into the core CLI; installed material providers must be discovered and validated.
+- Read `references/capability-routing.md` before mapping an intent to current
+  CLI and canonical names.
+- Read `references/cli-contract.md` before canonical invocation, durable runs,
+  citation/assessment schemas, aliases, batch rows, local records, Zotero, or
+  secret/config handling.
+- Read `references/management-layer.md` before `status`, `doctor`, `paths`,
+  `runs`, `search-plan`, config, migration, registries/providers, retained
+  checkout management, MCP serving, or smoke gates.
 
-## Trust Live CLI
+For networked material work, discover and validate installed material providers
+before execution. DOI resolution, PDF download, and extraction remain
+provider-mediated. Paper Search reports technical prerequisites and provenance;
+the user remains responsible for licensing, entitlement, legal, and
+jurisdictional decisions.
+
+## Trust the live CLI
 
 If this skill or a reference disagrees with the installed CLI, trust the live
-CLI and report the documentation drift. Run every probe below from this skill
-directory. If the launcher reports a missing or incompatible verified build,
-follow its installer command rather than invoking `dist/cli.js` directly.
-Prefer these probes:
+catalog and help, then report the documentation drift:
 
 ```bash
 node scripts/paper-search.mjs --version
@@ -72,6 +98,7 @@ node scripts/paper-search.mjs help
 node scripts/paper-search.mjs status --json
 ```
 
-## Validation Boundary
-
-Report the exact command evidence used. Keep smoke or live-network validation explicit: do not claim live provider, external web search, remote PDF, networked material extraction, or MCP behavior unless the matching smoke gate, provider inspection, contract test, or JSON-RPC call was actually run. `status` is static; `doctor` may run only the External Search v1 no-network probe.
+Report the exact evidence used. Do not claim live provider, external Web,
+remote PDF, network extraction, Zotero write, or MCP behavior without the
+matching provider inspection, smoke gate, preview/apply receipt, contract test,
+or JSON-RPC call.

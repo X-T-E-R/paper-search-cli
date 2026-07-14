@@ -21,6 +21,24 @@ export const WorkspaceConfigSchema = z.object({
   defaultCollection: z.string().min(1),
 }).strict();
 
+export const StorageConfigSchema = z.object({
+  artifactRoot: z.string().min(1),
+  extractionRoot: z.string().min(1),
+  exportRoot: z.string().min(1),
+}).strict();
+
+export const RunsConfigSchema = z.object({
+  root: z.string().min(1),
+  maxAgeDays: z.union([z.literal(-1), z.number().int().min(1)]),
+}).strict();
+
+export const ZoteroConfigSchema = z.object({
+  enabled: z.boolean(),
+  endpoint: z.string().url(),
+  timeoutMs: z.number().int().min(100).max(300_000),
+  unavailable: z.enum(["error", "warn"]),
+}).strict();
+
 export const ServerConfigSchema = z.object({
   enabled: z.boolean(),
   transport: z.enum(["stdio", "http"]),
@@ -318,6 +336,9 @@ export const ConfigMetaSchema = z.object({
 export const ResolvedConfigSchema = z.object({
   providers: ProvidersConfigSchema,
   workspace: WorkspaceConfigSchema,
+  storage: StorageConfigSchema,
+  runs: RunsConfigSchema,
+  zotero: ZoteroConfigSchema,
   server: ServerConfigSchema,
   defaults: DefaultsConfigSchema,
   output: OutputConfigSchema,
@@ -331,6 +352,9 @@ export const ResolvedConfigSchema = z.object({
 export const UserConfigSchema = z.object({
   providers: ProvidersConfigSchema.partial().optional(),
   workspace: WorkspaceConfigSchema.partial().optional(),
+  storage: StorageConfigSchema.partial().optional(),
+  runs: RunsConfigSchema.partial().optional(),
+  zotero: ZoteroConfigSchema.partial().optional(),
   server: ServerConfigSchema.partial().optional(),
   defaults: DefaultsConfigSchema.partial().optional(),
   output: OutputConfigSchema.partial().optional(),

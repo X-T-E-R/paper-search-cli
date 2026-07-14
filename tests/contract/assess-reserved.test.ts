@@ -1,49 +1,44 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { getCanonicalToolCapability, getCanonicalToolNames } from "../../src/surface/toolCatalog.js";
+import { getCanonicalToolCapability } from "../../src/surface/toolCatalog.js";
 
 const packageRoot = path.resolve(".");
-
-const RESERVED_MARKERS = [/reserved/i, /预留/];
+const ASSESSMENT_TOOLS = ["assessment_run", "assessment_show", "assessment_list"] as const;
 
 async function readDoc(relativePath: string): Promise<string> {
   return readFile(path.join(packageRoot, relativePath), "utf8");
 }
 
-function expectAssessReserved(section: string, label: string): void {
-  const assessLine = section
-    .split("\n")
-    .find((line) => line.includes("`assess`") || /\|\s*`assess`\s*\|/.test(line));
-  expect(assessLine, `${label} should mention assess`).toBeDefined();
-  expect(
-    RESERVED_MARKERS.some((marker) => marker.test(assessLine ?? "")),
-    `${label} should mark assess as reserved`,
-  ).toBe(true);
-}
-
-describe("assess capability group disposition (ADR-0003)", () => {
-  it("does not map any canonical tool to assess", () => {
-    for (const toolName of getCanonicalToolNames()) {
-      expect(getCanonicalToolCapability(toolName)).not.toBe("assess");
+describe("implemented assess capability group (ADR-0003 amendment)", () => {
+  it("maps the fixed assessment tools to assess", () => {
+    for (const toolName of ASSESSMENT_TOOLS) {
+      expect(getCanonicalToolCapability(toolName)).toBe("assess");
     }
   });
 
-  it("documents assess as reserved in README and architecture", async () => {
-    const readme = await readDoc("README.md");
-    const architecture = await readDoc("docs/architecture.md");
-    expectAssessReserved(readme, "README.md");
-    expectAssessReserved(architecture, "docs/architecture.md");
-    expect(readme).toMatch(/ADR-0003/i);
-    expect(architecture).toMatch(/ADR-0003/i);
+  it("documents checksum-bound assessment in README and architecture", async () => {
+    const [readme, architecture, decision] = await Promise.all([
+      readDoc("README.md"),
+      readDoc("docs/architecture.md"),
+      readDoc("docs/decisions/ADR-0003-assess-capability-group-disposition.md"),
+    ]);
+    for (const [label, markdown] of [["README", readme], ["architecture", architecture]] as const) {
+      expect(markdown, label).toMatch(/assessment_run|assess plan/u);
+      expect(markdown, label).toMatch(/checksum|SHA-256|校验和/iu);
+    }
+    expect(decision).toMatch(/amend|supersed|implemented|实施|修订/iu);
   });
 
-  it("documents assess as reserved in the companion skill", async () => {
-    const skill = await readDoc("skills/paper-search-cli/SKILL.md");
-    const routing = await readDoc("skills/paper-search-cli/references/capability-routing.md");
-    expectAssessReserved(skill, "skills/paper-search-cli/SKILL.md");
-    expectAssessReserved(routing, "skills/paper-search-cli/references/capability-routing.md");
-    expect(skill).toMatch(/ADR-0003/i);
-    expect(routing).toMatch(/ADR-0003/i);
+  it("routes assessment through the companion skill instead of marking it reserved", async () => {
+    const [skill, routing] = await Promise.all([
+      readDoc("skills/paper-search-cli/SKILL.md"),
+      readDoc("skills/paper-search-cli/references/capability-routing.md"),
+    ]);
+    for (const [label, markdown] of [["skill", skill], ["routing", routing]] as const) {
+      expect(markdown, label).toContain("assessment_run");
+      const assessLines = markdown.split(/\r?\n/u).filter((line) => /`assess`|assessment_run/u.test(line));
+      expect(assessLines.some((line) => /reserved|预留/iu.test(line)), label).toBe(false);
+    }
   });
 });

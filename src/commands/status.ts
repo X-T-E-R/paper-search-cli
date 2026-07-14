@@ -13,6 +13,7 @@ import {
 import { okEnvelope } from "../surface/resultEnvelope.js";
 import { inspectProviderLifecycleHealth } from "./doctor.js";
 import { inspectExternalSearchStatic } from "../external-search/config.js";
+import { planConfigLocationMigration } from "../config/locationMigration.js";
 
 interface StatusOptions {
   json?: boolean;
@@ -25,14 +26,18 @@ export function registerStatusCommand(program: Command, io: Io): void {
     .option("--json", "emit machine-readable JSON")
     .action(async (options: StatusOptions, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
-      const config = await loadConfig({ explicitConfigPath: globalOptions.config });
+      const config = await loadConfig({
+        explicitConfigPath: globalOptions.config,
+        allowPendingLocationMigration: true,
+      });
       const smoke = resolveSmokePolicy(config.smoke, process.env);
-      const [searchProviders, materialProviders, installation, providerLifecycle, externalSearch] = await Promise.all([
+      const [searchProviders, materialProviders, installation, providerLifecycle, externalSearch, configLocationMigration] = await Promise.all([
         listInstalledProviders(config.providers.installDir),
         listInstalledMaterialProviders(config.providers.installDir),
         inspectInstallHealth(),
         inspectProviderLifecycleHealth(config.providers.installDir),
         inspectExternalSearchStatic(),
+        planConfigLocationMigration(),
       ]);
       const compatibilityCounts = summarizeOnboardingInstallCounts(searchProviders, materialProviders);
       const installCounts = {
@@ -53,6 +58,9 @@ export function registerStatusCommand(program: Command, io: Io): void {
       const warnings = [
         ...buildZeroProviderWarnings(registrySource, installCounts),
         ...formatInstallHealthWarnings(installation),
+        ...(["pending", "ambiguous", "conflicted", "blocked"].includes(configLocationMigration.status)
+          ? [`Configuration location migration is ${configLocationMigration.status}; run \`paper-search migrate\` before config-dependent work.`]
+          : []),
       ];
       const payload = {
         cwd: config.meta.cwd,
@@ -60,6 +68,10 @@ export function registerStatusCommand(program: Command, io: Io): void {
         appliedEnvOverrides: config.meta.appliedEnvOverrides,
         providers: { ...config.providers, registryUrl: registrySource },
         workspace: config.workspace,
+        storage: config.storage,
+        runs: config.runs,
+        zotero: config.zotero,
+        configLocationMigration,
         server: {
           ...config.server,
           endpoint:
@@ -130,6 +142,12 @@ export function registerStatusCommand(program: Command, io: Io): void {
       );
       io.writeLine(`provider lifecycle health: ${payload.providerLifecycle.health.status}`);
       io.writeLine(`workspace root: ${payload.workspace.root}`);
+      io.writeLine(`artifact storage root: ${payload.storage.artifactRoot}`);
+      io.writeLine(`extraction storage root: ${payload.storage.extractionRoot}`);
+      io.writeLine(`export root: ${payload.storage.exportRoot}`);
+      io.writeLine(`runs root: ${payload.runs.root}`);
+      io.writeLine(`run retention max age days: ${payload.runs.maxAgeDays} (local plaintext; pruning is explicit)`);
+      io.writeLine(`config location migration: ${payload.configLocationMigration.status}`);
       io.writeLine(`external search: ${payload.externalSearch.state}`);
       io.writeLine(`checkout: ${payload.installation.checkout}`);
       io.writeLine(`source management: ${payload.installation.sourceManagementMode}`);

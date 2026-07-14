@@ -1,5 +1,6 @@
-# Copy this file to the conventional Paper Search user config root as
-# external-search.toml. It is intentionally separate from layered config.
+# Copy this file to ~/.paper-search/external-search.toml (or the root selected
+# by an absolute PAPER_SEARCH_HOME). It grants optional External Search v1
+# process authority and is intentionally separate from layered config.
 schemaVersion = 1
 enabled = true
 adapter = "native"

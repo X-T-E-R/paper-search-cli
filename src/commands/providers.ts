@@ -14,6 +14,7 @@ import { applyMaterialProviderRegistry } from "../material/registry/apply.js";
 import { loadMaterialProviderRegistryManifest } from "../material/registry/load.js";
 import { listInstalledMaterialProviders, planMaterialProviderRegistry } from "../material/registry/plan.js";
 import { createMaterialRuntimeContext } from "../material/runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "../material/cache.js";
 import { inspectMaterialProviderPackageInNode } from "../material/runtime/invokeNodeFactory.js";
 import {
   applyProviderZipInstallPlan,
@@ -634,7 +635,7 @@ async function inspectPackageEnvelope(
       manifest: providerPackage.manifest,
       providerConfig: asRecord(config.platform[providerPackage.manifest.id]),
       policy: { name: "material-provider-inspect" },
-      cacheRoot: path.join(config.workspace.root, ".paper-search", "material-provider-cache"),
+      cacheRoot: resolveMaterialProviderCacheRoot(config),
       workspaceRoot: config.workspace.root,
       transport: {
         async get(): Promise<never> {
@@ -683,6 +684,7 @@ async function inspectPackageEnvelope(
     diagnostics: {
       hasSearch: inspection.hasSearch,
       hasGetDetail: inspection.hasGetDetail,
+      hasGetCitationPage: inspection.hasGetCitationPage,
     },
     provenance: { providerIds: [providerPackage.manifest.id] },
   });
@@ -1047,7 +1049,12 @@ function writeValidateManifestHuman(io: Io, envelope: ResultEnvelope<unknown>, k
 function writeInspectPackageHuman(io: Io, envelope: ResultEnvelope<unknown>, kind: ProviderKind): void {
   const payload = requireEnvelopeData<{
     manifest: { id: string; version: string; sourceType?: string; kind?: string };
-    inspection: { hasSearch?: boolean; hasGetDetail?: boolean; methods?: string[] };
+    inspection: {
+      hasSearch?: boolean;
+      hasGetDetail?: boolean;
+      hasGetCitationPage?: boolean;
+      methods?: string[];
+    };
   }>(envelope);
   const runtimeLabel = kind === "material" ? payload.manifest.kind : payload.manifest.sourceType;
   io.writeLine(`package ok: ${payload.manifest.id}@${payload.manifest.version} (${runtimeLabel})`);
@@ -1056,7 +1063,7 @@ function writeInspectPackageHuman(io: Io, envelope: ResultEnvelope<unknown>, kin
     return;
   }
   io.writeLine(
-    `capabilities: search=${payload.inspection.hasSearch ? "yes" : "no"}, getDetail=${payload.inspection.hasGetDetail ? "yes" : "no"}`,
+    `capabilities: search=${payload.inspection.hasSearch ? "yes" : "no"}, getDetail=${payload.inspection.hasGetDetail ? "yes" : "no"}, getCitationPage=${payload.inspection.hasGetCitationPage ? "yes" : "no"}`,
   );
 }
 

@@ -24,7 +24,7 @@ describe("loadConfig", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-config-"));
     tempDirs.push(root);
 
-    const userConfigDir = path.join(root, "appdata", "paper-search");
+    const userConfigDir = path.join(root, "paper-search-home");
     const projectDir = path.join(root, "project");
     const explicitDir = path.join(root, "explicit");
     await mkdir(userConfigDir, { recursive: true });
@@ -49,8 +49,8 @@ describe("loadConfig", () => {
       "utf8",
     );
 
-    const originalAppData = process.env.APPDATA;
-    process.env.APPDATA = path.join(root, "appdata");
+    const originalHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = userConfigDir;
 
     try {
       const config = await loadConfig({
@@ -65,7 +65,8 @@ describe("loadConfig", () => {
       expect(config.meta.loadedFiles).toHaveLength(3);
       expect(config.meta.appliedEnvOverrides).toEqual([]);
     } finally {
-      process.env.APPDATA = originalAppData;
+      if (originalHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = originalHome;
     }
   });
 
@@ -134,7 +135,7 @@ describe("loadConfig", () => {
   it("loads credentials after project/explicit config and before environment overrides", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-config-credentials-"));
     tempDirs.push(root);
-    const appDir = path.join(root, "appdata", "paper-search");
+    const appDir = path.join(root, "paper-search-home");
     const projectDir = path.join(root, "project");
     const explicitDir = path.join(root, "explicit");
     await mkdir(appDir, { recursive: true });
@@ -158,10 +159,10 @@ describe("loadConfig", () => {
     );
 
     const previous = {
-      APPDATA: process.env.APPDATA,
+      PAPER_SEARCH_HOME: process.env.PAPER_SEARCH_HOME,
       API_KEY: process.env.PAPER_SEARCH_API__TAVILY__API_KEY,
     };
-    process.env.APPDATA = path.join(root, "appdata");
+    process.env.PAPER_SEARCH_HOME = appDir;
     process.env.PAPER_SEARCH_API__TAVILY__API_KEY = "environment";
     try {
       const config = await loadConfig({ cwd: projectDir, explicitConfigPath: explicitDir });
@@ -173,7 +174,8 @@ describe("loadConfig", () => {
         source: "PAPER_SEARCH_API__TAVILY__API_KEY",
       });
     } finally {
-      process.env.APPDATA = previous.APPDATA;
+      if (previous.PAPER_SEARCH_HOME === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = previous.PAPER_SEARCH_HOME;
       process.env.PAPER_SEARCH_API__TAVILY__API_KEY = previous.API_KEY;
     }
   });

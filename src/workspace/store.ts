@@ -3,6 +3,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createArtifactRecord, type ArtifactRecord } from "../material/artifactStore.js";
 import type { PatentDetailResult, ResourceItem } from "../providers/sdk/types.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
+import { resolveLegacyWorkspacePath, resolveLocalStorageRef } from "../storage/local.js";
 
 export type WorkspaceDetailPayload = PatentDetailResult["detail"];
 
@@ -46,6 +48,7 @@ export interface WorkspaceAttachmentRecord {
   contentType: string;
   sourceUrl?: string;
   path?: string;
+  storage?: LocalStorageRefV1;
   status: "attached" | "requested" | "failed";
   sizeBytes?: number;
   message?: string;
@@ -64,9 +67,19 @@ export interface WorkspacePdfResult {
   artifactId?: string;
   filename?: string;
   path?: string;
+  storage?: LocalStorageRefV1;
   sourceUrl?: string;
   message?: string;
   attachment?: WorkspaceAttachmentRecord;
+}
+
+export async function resolveWorkspaceAttachmentPath(
+  workspaceRoot: string,
+  attachment: WorkspaceAttachmentRecord,
+): Promise<string | null> {
+  if (attachment.storage) return resolveLocalStorageRef(attachment.storage);
+  if (attachment.path) return resolveLegacyWorkspacePath(workspaceRoot, attachment.path);
+  return null;
 }
 
 export interface WorkspaceCollectionNode {
@@ -94,7 +107,7 @@ export interface WorkspaceExportResult {
 const MANIFEST_FILE = "manifest.json";
 const COLLECTIONS_FILE = "collections.json";
 const ITEMS_DIR = "items";
-const ATTACHMENTS_DIR = "attachments";
+const WORKSPACE_ITEM_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const workspaceMutationLocks = new Map<string, Promise<void>>();
 
 async function withWorkspaceMutation<T>(root: string, work: () => Promise<T>): Promise<T> {
@@ -119,7 +132,6 @@ async function withWorkspaceMutation<T>(root: string, work: () => Promise<T>): P
 async function ensureWorkspaceRoot(root: string): Promise<void> {
   await mkdir(root, { recursive: true });
   await mkdir(path.join(root, ITEMS_DIR), { recursive: true });
-  await mkdir(path.join(root, ATTACHMENTS_DIR), { recursive: true });
 }
 
 async function ensureManifest(root: string): Promise<void> {
@@ -247,12 +259,16 @@ async function ensureWorkspace(root: string): Promise<void> {
   await ensureManifest(root);
 }
 
-async function loadWorkspaceItem(root: string, itemId: string): Promise<WorkspaceItemRecord | null> {
+export async function readWorkspaceItemRecord(root: string, itemId: string): Promise<WorkspaceItemRecord | null> {
+  if (!WORKSPACE_ITEM_ID_RE.test(itemId) || itemId === "." || itemId === "..") {
+    throw new Error(`Invalid workspace item id: ${itemId}`);
+  }
   try {
     const raw = await readFile(path.join(root, ITEMS_DIR, `${itemId}.json`), "utf8");
     return JSON.parse(raw) as WorkspaceItemRecord;
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 
@@ -262,7 +278,7 @@ async function loadAllWorkspaceItems(root: string): Promise<WorkspaceItemRecord[
     const records = await Promise.all(
       entries
         .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-        .map(async (entry) => loadWorkspaceItem(root, path.basename(entry.name, ".json"))),
+        .map(async (entry) => readWorkspaceItemRecord(root, path.basename(entry.name, ".json"))),
     );
     return records.filter((record): record is WorkspaceItemRecord => Boolean(record));
   } catch {
@@ -271,11 +287,15 @@ async function loadAllWorkspaceItems(root: string): Promise<WorkspaceItemRecord[
 }
 
 async function saveWorkspaceItem(root: string, record: WorkspaceItemRecord): Promise<void> {
-  await writeFile(
-    path.join(root, ITEMS_DIR, `${record.id}.json`),
-    JSON.stringify(record, null, 2),
-    "utf8",
-  );
+  const target = path.join(root, ITEMS_DIR, `${record.id}.json`);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(record, null, 2), { encoding: "utf8", flag: "wx" });
+    await rename(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function normalizeCollectionPath(input: string): string {
@@ -391,59 +411,6 @@ function findPdfUrlInRecord(record: WorkspaceItemRecord): string | undefined {
   );
 }
 
-function parseFilenameFromContentDisposition(value: string | null): string | undefined {
-  if (!value) return undefined;
-  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/iu);
-  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/gu, ""));
-  const match = value.match(/filename="?([^";]+)"?/iu);
-  return match?.[1]?.trim();
-}
-
-function filenameFromUrl(url: string): string | undefined {
-  try {
-    const parsed = new URL(url);
-    const base = path.basename(parsed.pathname);
-    return base || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function sanitizeFilename(value: string): string {
-  const cleaned = value
-    .replace(/[<>:"/\\|?*\x00-\x1F]/gu, "_")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const fallback = cleaned || "attachment.pdf";
-  return /\.pdf$/iu.test(fallback) ? fallback : `${fallback}.pdf`;
-}
-
-async function resolvePdfFilename(options: {
-  explicitFilename?: string;
-  sourceUrl: string;
-  response?: Response;
-  itemTitle?: string;
-}): Promise<string> {
-  return sanitizeFilename(
-    options.explicitFilename ||
-      parseFilenameFromContentDisposition(options.response?.headers.get("content-disposition") ?? null) ||
-      filenameFromUrl(options.sourceUrl) ||
-      `${options.itemTitle || "attachment"}.pdf`,
-  );
-}
-
-function uniqueAttachmentFilename(existing: WorkspaceAttachmentRecord[], filename: string): string {
-  const used = new Set(existing.map((attachment) => attachment.filename.toLowerCase()));
-  if (!used.has(filename.toLowerCase())) return filename;
-  const extension = path.extname(filename) || ".pdf";
-  const stem = path.basename(filename, extension);
-  for (let index = 2; index < 10_000; index += 1) {
-    const candidate = `${stem}-${index}${extension}`;
-    if (!used.has(candidate.toLowerCase())) return candidate;
-  }
-  return `${stem}-${randomUUID()}${extension}`;
-}
-
 function existingPdfAttachment(record: WorkspaceItemRecord): WorkspaceAttachmentRecord | undefined {
   return (record.attachments ?? []).find(
     (attachment) =>
@@ -474,6 +441,7 @@ async function createPdfArtifactForAttachment(
     filename: options.attachment.filename,
     contentType: options.attachment.contentType,
     path: options.attachment.path,
+    storage: options.attachment.storage,
     remoteUrl: options.sourceUrl,
     sizeBytes: options.attachment.sizeBytes,
     provenance: {
@@ -509,6 +477,7 @@ function pdfSuccessResult(options: {
     artifactId: options.artifactId,
     filename: options.attachment.filename,
     path: options.attachment.path,
+    storage: options.attachment.storage,
     sourceUrl: options.attachment.sourceUrl,
     message: options.message,
     attachment: options.attachment,
@@ -581,7 +550,7 @@ export async function fetchPdfForWorkspaceItem(
 ): Promise<WorkspacePdfResult> {
   return withWorkspaceMutation(root, async () => {
     await ensureWorkspace(root);
-    const record = await loadWorkspaceItem(root, options.itemKey);
+    const record = await readWorkspaceItemRecord(root, options.itemKey);
     if (!record) {
       return { ok: false, message: `Item not found: ${options.itemKey}` };
     }
@@ -621,115 +590,56 @@ export async function fetchPdfForWorkspaceItem(
       });
     }
 
-    const sourceUrl = options.url || findPdfUrlInRecord(record);
-    if (!sourceUrl) {
-      return {
-        ok: false,
-        message: "Could not find accessible PDF URL in the local workspace item",
-      };
+    return {
+      ok: false,
+      itemKey: record.id,
+      itemId: record.id,
+      sourceUrl: options.url || findPdfUrlInRecord(record),
+      message: "Direct core PDF acquisition is disabled; route resource-pdf through an installed material downloader provider",
+    };
+  });
+}
+
+/** Project a provider-created artifact into the legacy attachment list without moving its bytes. */
+export async function recordArtifactAsWorkspaceAttachment(
+  root: string,
+  artifact: ArtifactRecord,
+): Promise<WorkspacePdfResult> {
+  if (!artifact.itemId) {
+    return { ok: false, artifactId: artifact.id, message: "Artifact is not attached to a workspace item" };
+  }
+  return withWorkspaceMutation(root, async () => {
+    await ensureWorkspace(root);
+    const record = await readWorkspaceItemRecord(root, artifact.itemId!);
+    if (!record) return { ok: false, artifactId: artifact.id, message: `Item not found: ${artifact.itemId}` };
+    const existing = (record.attachments ?? []).find((entry) => entry.artifactId === artifact.id);
+    if (existing) {
+      return pdfSuccessResult({ itemId: record.id, attachment: existing, artifactId: artifact.id, message: "PDF already attached" });
     }
-
-    const now = new Date().toISOString();
-    const existingAttachments = record.attachments ?? [];
-    const attachmentId = randomUUID();
-
-    if (options.download === false) {
-      const filename = uniqueAttachmentFilename(
-        existingAttachments,
-        await resolvePdfFilename({
-          explicitFilename: options.filename,
-          sourceUrl,
-          itemTitle: record.item.title,
-        }),
-      );
-      const attachment: WorkspaceAttachmentRecord = {
-        id: attachmentId,
-        itemId: record.id,
-        filename,
-        contentType: "application/pdf",
-        sourceUrl,
-        status: "requested",
-        message: "PDF fetch recorded but download was not requested",
-        createdAt: now,
-      };
-      const artifact = await createPdfArtifactForAttachment(root, {
-        itemId: record.id,
-        attachment,
-        sourceUrl,
-        downloaded: false,
-        createdAt: now,
-      });
-      const attachmentWithArtifact = { ...attachment, artifactId: artifact.id };
-      const updated = { ...record, attachments: [...existingAttachments, attachmentWithArtifact] };
-      await saveWorkspaceItem(root, updated);
-      return pdfSuccessResult({
-        itemId: record.id,
-        attachment: attachmentWithArtifact,
-        artifactId: artifact.id,
-        message: "PDF fetch recorded but download was not requested",
-      });
-    }
-
-    try {
-      const fetchImpl = options.fetchImpl ?? fetch;
-      const response = await fetchImpl(sourceUrl, {
-        headers: { accept: "application/pdf,*/*" },
-      });
-      if (!response.ok) {
-        return { ok: false, sourceUrl, message: `PDF fetch failed: HTTP ${response.status} ${response.statusText}` };
-      }
-      const filename = uniqueAttachmentFilename(
-        existingAttachments,
-        await resolvePdfFilename({
-          explicitFilename: options.filename,
-          sourceUrl,
-          response,
-          itemTitle: record.item.title,
-        }),
-      );
-      const bytes = Buffer.from(await response.arrayBuffer());
-      const itemAttachmentDir = path.join(root, ATTACHMENTS_DIR, record.id);
-      await mkdir(itemAttachmentDir, { recursive: true });
-      const relativePath = path.join(ATTACHMENTS_DIR, record.id, filename).replaceAll("\\", "/");
-      const absolutePath = path.join(root, relativePath);
-      await writeFile(absolutePath, bytes);
-
-      const attachment: WorkspaceAttachmentRecord = {
-        id: attachmentId,
-        itemId: record.id,
-        filename,
-        contentType: response.headers.get("content-type")?.split(";")[0]?.trim() || "application/pdf",
-        sourceUrl,
-        path: relativePath,
-        status: "attached",
-        sizeBytes: bytes.byteLength,
-        message: "PDF fetched into local workspace attachments",
-        createdAt: now,
-      };
-      const artifact = await createPdfArtifactForAttachment(root, {
-        itemId: record.id,
-        attachment,
-        sourceUrl,
-        downloaded: true,
-        responseStatus: response.status,
-        createdAt: now,
-      });
-      const attachmentWithArtifact = { ...attachment, artifactId: artifact.id };
-      const updated = { ...record, attachments: [...existingAttachments, attachmentWithArtifact] };
-      await saveWorkspaceItem(root, updated);
-      return pdfSuccessResult({
-        itemId: record.id,
-        attachment: attachmentWithArtifact,
-        artifactId: artifact.id,
-        message: "PDF fetched into local workspace attachments",
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        sourceUrl,
-        message: `PDF fetch error: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
+    const createdAt = new Date().toISOString();
+    const attachment: WorkspaceAttachmentRecord = {
+      id: randomUUID(),
+      itemId: record.id,
+      artifactId: artifact.id,
+      filename: artifact.filename ?? "attachment.pdf",
+      contentType: artifact.contentType ?? "application/pdf",
+      ...(artifact.remoteUrl ? { sourceUrl: artifact.remoteUrl } : {}),
+      ...(artifact.path ? { path: artifact.path } : {}),
+      ...(artifact.storage ? { storage: artifact.storage } : {}),
+      status: artifact.status === "downloaded" || artifact.status === "recorded" ? "attached" : "requested",
+      ...(artifact.sizeBytes !== undefined ? { sizeBytes: artifact.sizeBytes } : {}),
+      message: artifact.message,
+      createdAt,
+    };
+    await saveWorkspaceItem(root, { ...record, attachments: [...(record.attachments ?? []), attachment] });
+    return pdfSuccessResult({
+      itemId: record.id,
+      attachment,
+      artifactId: artifact.id,
+      message: attachment.status === "attached"
+        ? "PDF acquired through material provider and attached to the workspace item"
+        : "PDF acquisition recorded through material provider without downloading bytes",
+    });
   });
 }
 
@@ -809,7 +719,7 @@ export async function exportWorkspaceItems(
           : collection.path === normalizedPath;
       });
       const itemIds = [...new Set(selectedCollections.flatMap((collection) => collection.itemIds))];
-      const loaded = await Promise.all(itemIds.map((itemId) => loadWorkspaceItem(root, itemId)));
+      const loaded = await Promise.all(itemIds.map((itemId) => readWorkspaceItemRecord(root, itemId)));
       items = loaded.filter((record): record is WorkspaceItemRecord => Boolean(record));
     } else {
       items = await loadAllWorkspaceItems(root);

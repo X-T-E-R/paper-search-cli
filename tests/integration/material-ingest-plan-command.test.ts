@@ -63,6 +63,11 @@ async function writeProjectConfig(root: string, workspaceRoot: string): Promise<
       `root = "${tomlPath(workspaceRoot)}"`,
       'defaultCollection = "Inbox"',
       "",
+      "[storage]",
+      `artifactRoot = "${tomlPath(path.join(root, "artifact-storage"))}"`,
+      `extractionRoot = "${tomlPath(path.join(root, "extraction-storage"))}"`,
+      `exportRoot = "${tomlPath(path.join(root, "exports"))}"`,
+      "",
       "[platform.fixture-artifact-downloader]",
       'mode = "integration"',
       "",
@@ -200,9 +205,9 @@ describe("material ingest plan command", () => {
       path.join(workspaceRoot, "material", "artifacts", "<new-artifact-id>.json"),
     ]);
     expect(data.intendedSteps.find((step) => step.id === "extraction.write-markdown")?.targetPaths).toEqual([
-      path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>"),
-      path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>", "content.md"),
-      path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>", "result.json"),
+      path.join(root, "extraction-storage", "<new-extraction-id>"),
+      path.join(root, "extraction-storage", "<new-extraction-id>", "content.md"),
+      path.join(root, "extraction-storage", "<new-extraction-id>", "result.json"),
     ]);
     expect(data.intendedSteps.find((step) => step.id === "extraction.record-extraction")?.targetPaths).toEqual([
       path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>.json"),

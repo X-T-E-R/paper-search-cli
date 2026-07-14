@@ -11,6 +11,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  readdir,
   readlink,
   realpath,
   rename,
@@ -116,24 +117,20 @@ function parseArgs(argv) {
   return options;
 }
 
-function resolveDataRoot(env = process.env) {
-  if (env.PAPER_SEARCH_INSTALL_TEST_MODE === "1" && env.PAPER_SEARCH_TEST_DATA_ROOT) {
+function resolvePaperSearchHome(env = process.env) {
+  const explicit = env.PAPER_SEARCH_HOME?.trim();
+  if (explicit) {
+    if (!path.isAbsolute(explicit)) throw new Error("PAPER_SEARCH_HOME must be an absolute path");
+    return path.normalize(explicit);
+  }
+  if (env.PAPER_SEARCH_INSTALL_TEST_MODE === "1" && env.PAPER_SEARCH_TEST_DATA_ROOT?.trim()) {
     return path.resolve(env.PAPER_SEARCH_TEST_DATA_ROOT);
   }
   return path.join(os.homedir(), ".paper-search");
 }
 
-function resolveConfigRoot(env = process.env) {
-  if (env.APPDATA) return path.join(env.APPDATA, "paper-search");
-  if (env.XDG_CONFIG_HOME) return path.join(env.XDG_CONFIG_HOME, "paper-search");
-  return path.join(os.homedir(), ".config", "paper-search");
-}
-
 function resolveDefaultBinRoot(env = process.env) {
-  if (process.platform === "win32" && env.LOCALAPPDATA) {
-    return path.join(env.LOCALAPPDATA, "PaperSearch", "bin");
-  }
-  return path.join(os.homedir(), ".local", "bin");
+  return path.join(resolvePaperSearchHome(env), "bin");
 }
 
 function samePath(left, right) {
@@ -146,6 +143,250 @@ function samePath(left, right) {
 
 function sha256Text(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+const legacyConfigRootFiles = [
+  "config.toml",
+  "subscriptions.toml",
+  "credentials.toml",
+  "external-search.toml",
+];
+
+async function inspectInstallerLegacyConfigRoot(root, origins) {
+  const files = [];
+  const blockers = [];
+  try {
+    const rootStat = await lstat(root);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      return { root, origins, nonEmpty: true, fingerprint: null, files, blockers: [`${root}: legacy root is not a real directory`] };
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") return { root, origins, nonEmpty: false, fingerprint: null, files, blockers };
+    throw error;
+  }
+
+  const inspectFile = async (relativePath) => {
+    const filePath = path.join(root, relativePath);
+    try {
+      const stat = await lstat(filePath);
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        blockers.push(`${filePath}: migration source must be a regular file and cannot be a symlink`);
+        return;
+      }
+      const bytes = await readFile(filePath);
+      files.push({
+        relativePath: relativePath.split(path.sep).join("/"),
+        path: filePath,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        credential: relativePath === "credentials.toml",
+      });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  };
+  for (const name of legacyConfigRootFiles) await inspectFile(name);
+  for (const directoryName of ["config.d", "adapters"]) {
+    const directory = path.join(root, directoryName);
+    let entries;
+    try {
+      const stat = await lstat(directory);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        blockers.push(`${directory}: migration source must be a real directory and cannot be a symlink`);
+        continue;
+      }
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const accepted = directoryName === "config.d" ? entry.name.endsWith(".toml") : entry.name.endsWith(".mjs");
+      if (entry.isSymbolicLink() || !entry.isFile()) {
+        blockers.push(`${path.join(directory, entry.name)}: nested directories and symlinks are not accepted`);
+      } else if (accepted) {
+        await inspectFile(path.join(directoryName, entry.name));
+      } else if (/\.(?:bat|cmd|com|dll|exe|js|cjs|mjs|ps1|sh)$/iu.test(entry.name)) {
+        blockers.push(`${path.join(directory, entry.name)}: unknown executable file is not eligible for migration`);
+      }
+    }
+  }
+  files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  const fingerprint = files.length
+    ? sha256Text(files.map((file) => `${file.relativePath}\0${file.sha256}`).join("\n"))
+    : null;
+  return { root, origins, nonEmpty: files.length > 0 || blockers.length > 0, fingerprint, files, blockers };
+}
+
+async function inspectInstallerConfigLocationMigration(home) {
+  const roots = [
+    ...(process.env.APPDATA ? [{ root: path.join(process.env.APPDATA, "paper-search"), origin: "windows-appdata" }] : []),
+    ...(process.env.XDG_CONFIG_HOME ? [{ root: path.join(process.env.XDG_CONFIG_HOME, "paper-search"), origin: "xdg" }] : []),
+    { root: path.join(os.homedir(), ".config", "paper-search"), origin: "home-config" },
+  ];
+  const unique = new Map();
+  for (const candidate of roots) {
+    if (samePath(candidate.root, home)) continue;
+    const key = process.platform === "win32" ? path.resolve(candidate.root).toLowerCase() : path.resolve(candidate.root);
+    const current = unique.get(key);
+    if (current) current.origins.push(candidate.origin);
+    else unique.set(key, { root: path.resolve(candidate.root), origins: [candidate.origin] });
+  }
+  const candidates = await Promise.all([...unique.values()].map((candidate) => inspectInstallerLegacyConfigRoot(candidate.root, candidate.origins)));
+  const nonEmpty = candidates.filter((candidate) => candidate.nonEmpty);
+  const destinationBundlePresent = await Promise.all(
+    [...legacyConfigRootFiles, "config.d", "adapters"].map((name) => pathExists(path.join(home, name))),
+  ).then((values) => values.some(Boolean));
+  const receiptPath = path.join(home, "state", "migrations", "config-location-v1.json");
+  let receiptPresent = false;
+  try {
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    receiptPresent = receipt?.schemaVersion === 1 && receipt?.status === "complete";
+  } catch (error) {
+    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+  }
+  const fingerprints = new Set(nonEmpty.map((candidate) => candidate.fingerprint ?? `blocked:${candidate.root}`));
+  const requiresExplicitSource = nonEmpty.length > 1 && fingerprints.size > 1;
+  const selected = requiresExplicitSource ? null : nonEmpty[0] ?? null;
+  const entries = [];
+  // A known destination entry can be the first durable write of an
+  // interrupted migration.  It is not evidence that the bundle is complete.
+  if (selected) {
+    for (const file of selected.files) {
+      const destination = path.join(home, ...file.relativePath.split("/"));
+      let destinationSha256;
+      try {
+        destinationSha256 = createHash("sha256").update(await readFile(destination)).digest("hex");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      entries.push({
+        ...file,
+        destination,
+        action: !destinationSha256 ? "copy" : destinationSha256 === file.sha256 ? "identical" : "conflict",
+      });
+    }
+  }
+  const blockers = [...(selected?.blockers ?? [])];
+  if (requiresExplicitSource) blockers.push("Multiple different legacy config roots require explicit migration before installer apply");
+  blockers.push(...entries.filter((entry) => entry.action === "conflict").map((entry) => `Destination conflict: ${entry.destination}`));
+  const status = requiresExplicitSource
+    ? "ambiguous"
+    : !selected ? "none"
+      : blockers.length ? entries.some((entry) => entry.action === "conflict") ? "conflicted" : "blocked"
+        : entries.every((entry) => entry.action === "identical") && receiptPresent ? "completed"
+          : "pending";
+  return { status, home, selectedSource: selected?.root ?? null, candidates, entries, blockers, receiptPath };
+}
+
+async function applyInstallerConfigLocationMigration(plan) {
+  const pendingPath = path.join(path.dirname(plan.receiptPath), "config-location-v1.pending.json");
+  let journal = await readJsonIfPresent(pendingPath);
+  if (plan.status === "completed") {
+    // Receipt persistence can succeed immediately before a process stops.
+    // The receipt is authoritative only after all journalled entries completed.
+    if (journal) await rm(pendingPath, { force: true });
+    return false;
+  }
+  if (plan.status !== "pending") return false;
+
+  const expectedEntries = plan.entries.map((entry) => ({
+    relativePath: entry.relativePath,
+    path: entry.path,
+    destination: entry.destination,
+    sha256: entry.sha256,
+    credential: entry.credential,
+  }));
+  if (journal) {
+    if (
+      journal.schemaVersion !== 1 ||
+      journal.status !== "pending" ||
+      typeof journal.operationId !== "string" ||
+      typeof journal.sourceRoot !== "string" ||
+      typeof journal.destinationRoot !== "string" ||
+      !samePath(journal.sourceRoot, plan.selectedSource) ||
+      !samePath(journal.destinationRoot, plan.home) ||
+      !Array.isArray(journal.entries) ||
+      journal.entries.length !== expectedEntries.length ||
+      journal.entries.some((entry, index) => {
+        const expected = expectedEntries[index];
+        return !expected || entry.relativePath !== expected.relativePath || entry.path !== expected.path ||
+          entry.destination !== expected.destination || entry.sha256 !== expected.sha256 ||
+          entry.credential !== expected.credential || !["copy", "identical"].includes(entry.action) ||
+          typeof entry.completed !== "boolean";
+      })
+    ) {
+      throw new Error(`Unsupported or unsafe config-location migration journal: ${pendingPath}`);
+    }
+  } else {
+    journal = {
+      schemaVersion: 1,
+      status: "pending",
+      operationId: randomUUID(),
+      sourceRoot: plan.selectedSource,
+      destinationRoot: plan.home,
+      createdAt: new Date().toISOString(),
+      entries: expectedEntries.map((entry, index) => ({
+        ...entry,
+        action: plan.entries[index].action,
+        completed: false,
+      })),
+    };
+    await atomicWriteJson(pendingPath, journal, 0o600);
+  }
+
+  for (const entry of journal.entries) {
+    const source = await readFile(entry.path);
+    if (createHash("sha256").update(source).digest("hex") !== entry.sha256) {
+      throw new Error(`Legacy config source changed after planning: ${entry.path}`);
+    }
+    let destinationSha256;
+    try {
+      destinationSha256 = createHash("sha256").update(await readFile(entry.destination)).digest("hex");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (entry.completed) {
+      if (destinationSha256 !== entry.sha256) {
+        throw new Error(`Completed config-location migration entry diverged: ${entry.destination}`);
+      }
+      continue;
+    }
+    if (destinationSha256 && destinationSha256 !== entry.sha256) {
+      throw new Error(`Legacy config destination changed after planning: ${entry.destination}`);
+    }
+    if (!destinationSha256) {
+      await mkdir(path.dirname(entry.destination), { recursive: true, mode: 0o700 });
+      const temporary = `${entry.destination}.migration-${randomUUID()}.tmp`;
+      await writeFile(temporary, source, { flag: "wx", mode: 0o600 });
+      await rename(temporary, entry.destination);
+      if (entry.credential && process.platform !== "win32") await chmod(entry.destination, 0o600);
+    }
+    entry.completed = true;
+    journal.updatedAt = new Date().toISOString();
+    await atomicWriteJson(pendingPath, journal, 0o600);
+    if (
+      process.env.PAPER_SEARCH_INSTALL_TEST_MODE === "1" &&
+      process.env.PAPER_SEARCH_TEST_FAIL_AFTER === `config-location:${entry.relativePath}`
+    ) {
+      throw new Error(`Injected config-location migration interruption after ${entry.relativePath}`);
+    }
+  }
+  if (await pathExists(plan.receiptPath)) {
+    throw new Error(`Config-location migration receipt appeared during apply: ${plan.receiptPath}`);
+  }
+  await mkdir(path.dirname(plan.receiptPath), { recursive: true, mode: 0o700 });
+  await atomicWriteJson(plan.receiptPath, {
+    schemaVersion: 1,
+    status: "complete",
+    sourceRoot: plan.selectedSource,
+    destinationRoot: plan.home,
+    operationId: journal.operationId,
+    copied: journal.entries.filter((entry) => entry.action === "copy").map((entry) => ({ relativePath: entry.relativePath, sha256: entry.sha256 })),
+    identical: journal.entries.filter((entry) => entry.action === "identical").map((entry) => entry.relativePath),
+    completedAt: new Date().toISOString(),
+  }, 0o600);
+  await rm(pendingPath, { force: true });
+  return true;
 }
 
 async function readJsonIfPresent(filePath) {
@@ -253,8 +494,8 @@ async function atomicWriteFile(filePath, contents, mode) {
   }
 }
 
-async function atomicWriteJson(filePath, value) {
-  await atomicWriteFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+async function atomicWriteJson(filePath, value, mode) {
+  await atomicWriteFile(filePath, `${JSON.stringify(value, null, 2)}\n`, mode);
 }
 
 async function acquireLock(lockPath, timeoutMs = lockWaitMs, command = "installer setup") {
@@ -630,9 +871,10 @@ async function createPlan(
   lockHash,
   recoveryFiles = [],
 ) {
-  const dataRoot = resolveDataRoot();
-  const configRoot = resolveConfigRoot();
+  const dataRoot = resolvePaperSearchHome();
+  const configRoot = dataRoot;
   const binRoot = options.binDir ?? resolveDefaultBinRoot();
+  const configLocationMigration = await inspectInstallerConfigLocationMigration(configRoot);
   const binOnPath = String(process.env.PATH ?? "")
     .split(path.delimiter)
     .filter(Boolean)
@@ -651,6 +893,9 @@ async function createPlan(
     ...(ownershipConflict ? [ownershipConflict] : []),
     ...projections.filter((entry) => entry.action === "conflict").map((entry) => `${entry.destination}: ${entry.reason}`),
     ...shims.filter((entry) => entry.action === "conflict").map((entry) => `${entry.path}: ${entry.reason}`),
+    ...(["ambiguous", "conflicted", "blocked"].includes(configLocationMigration.status)
+      ? configLocationMigration.blockers
+      : []),
   ];
   const planIdentity = {
     schemaVersion: 1,
@@ -660,6 +905,7 @@ async function createPlan(
     binRoot,
     dataRoot,
     configRoot,
+    configLocationMigration,
     buildInputDigest: digest.value,
     selfUpdateVerificationDigest: verificationDigest.value,
     lockfileSha256: lockHash,
@@ -712,6 +958,7 @@ function printPlan(plan, json) {
   process.stdout.write(`  configRoot: ${plan.configRoot}\n`);
   process.stdout.write(`  dataRoot:   ${plan.dataRoot}\n`);
   process.stdout.write(`  binRoot:    ${plan.binRoot}\n`);
+  process.stdout.write(`  config migration: ${plan.configLocationMigration.status}\n`);
   process.stdout.write(`  bin on PATH: ${plan.binOnPath ? "yes" : "no"}\n`);
   process.stdout.write(`  build:      ${plan.build}\n`);
   for (const recovery of plan.recoveryFiles ?? []) {
@@ -943,7 +1190,7 @@ async function main() {
     selfUpdateVerificationInputs,
   );
   const lockHash = await sha256File(path.join(repoRoot, "package-lock.json"));
-  const dataRoot = resolveDataRoot();
+  const dataRoot = resolvePaperSearchHome();
   const stateRoot = path.join(dataRoot, "state");
   const installPath = path.join(stateRoot, "install.json");
   const journalPath = path.join(stateRoot, "setup-journal.json");
@@ -1044,6 +1291,13 @@ async function main() {
           });
     }
     recoveredSetup = Boolean(pendingJournal);
+    // A recovered setup journal embeds the pre-interruption installer plan.
+    // Re-inspect config migration state: its receipt may have been committed
+    // before setup later interrupted, so replaying the stale pending plan
+    // would incorrectly start a second migration journal.
+    await applyInstallerConfigLocationMigration(
+      await inspectInstallerConfigLocationMigration(plan.dataRoot),
+    );
     operationId = await applySetup(plan, installState, build);
     if (!options.selfUpdateCandidate) {
       clearedSelfUpdateRecovery = await clearSatisfiedSelfUpdateRecovery(dataRoot, build);

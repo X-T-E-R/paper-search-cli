@@ -6,9 +6,29 @@ autoUpdate = false
 allowReleaseFallback = true
 
 [workspace]
-root = "./.paper-search/workspace"
+root = "~/.paper-search/workspace"
 defaultSink = "workspace"
 defaultCollection = "inbox"
+
+# Material files, portable exports, and durable history are independent from
+# workspace bibliographic records. Relative paths in an explicit config remain
+# relative to that config file; these conventional defaults are user-wide.
+[storage]
+artifactRoot = "~/.paper-search/storage/artifacts"
+extractionRoot = "~/.paper-search/storage/extractions"
+exportRoot = "~/.paper-search/exports"
+
+[runs]
+root = "~/.paper-search/runs"
+# -1 means that age alone never makes a run eligible for explicit pruning.
+maxAgeDays = -1
+
+# Optional CLI-only bibliographic sink. It does not import attachments.
+[zotero]
+enabled = false
+endpoint = "http://127.0.0.1:23120/mcp"
+timeoutMs = 15000
+unavailable = "error"
 
 [server]
 enabled = false

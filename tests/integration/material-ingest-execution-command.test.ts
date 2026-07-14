@@ -70,6 +70,11 @@ async function writeProjectConfig(root: string, workspaceRoot: string): Promise<
       `root = "${tomlPath(workspaceRoot)}"`,
       'defaultCollection = "Inbox"',
       "",
+      "[storage]",
+      `artifactRoot = "${tomlPath(path.join(root, "artifact-storage"))}"`,
+      `extractionRoot = "${tomlPath(path.join(root, "extraction-storage"))}"`,
+      `exportRoot = "${tomlPath(path.join(root, "exports"))}"`,
+      "",
       "[platform.fixture-artifact-downloader]",
       'mode = "integration"',
       "",
@@ -121,8 +126,10 @@ async function runMaterialCommand(root: string, args: string[]): Promise<{
   let stderr = "";
   const originalCwd = process.cwd();
   const originalAppData = process.env.APPDATA;
+  const originalPaperSearchHome = process.env.PAPER_SEARCH_HOME;
 
   process.env.APPDATA = path.join(root, "appdata");
+  process.env.PAPER_SEARCH_HOME = path.join(root, "appdata", "paper-search");
   process.chdir(root);
   try {
     await buildProgram({
@@ -137,6 +144,11 @@ async function runMaterialCommand(root: string, args: string[]): Promise<{
       delete process.env.APPDATA;
     } else {
       process.env.APPDATA = originalAppData;
+    }
+    if (originalPaperSearchHome === undefined) {
+      delete process.env.PAPER_SEARCH_HOME;
+    } else {
+      process.env.PAPER_SEARCH_HOME = originalPaperSearchHome;
     }
   }
 
@@ -223,7 +235,13 @@ describe("material ingest execution command", () => {
       record: {
         status: "downloaded",
         itemId: "item-123",
-        path: `material/files/${data.artifact.artifactId}/fixture-download.pdf`,
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "artifact",
+          root: path.join(root, "artifact-storage"),
+          key: `${data.artifact.artifactId}/fixture-download.pdf`,
+        },
       },
     });
     expect(data.extraction).toMatchObject({
@@ -272,7 +290,7 @@ describe("material ingest execution command", () => {
       "extraction.write-markdown",
       "extraction.record-extraction",
     ]);
-    expect(data.outputs.artifactFilePath).toBe(path.join(workspaceRoot, data.artifact.record.path!));
+    expect(data.outputs.artifactFilePath).toBe(path.join(root, "artifact-storage", data.artifact.artifactId, "fixture-download.pdf"));
     await expect(readFile(data.outputs.artifactFilePath!, "utf8")).resolves.toBe("fixture downloader bytes\n");
     await expect(readArtifactRecord(workspaceRoot, data.artifact.artifactId)).resolves.toMatchObject({
       id: data.artifact.artifactId,

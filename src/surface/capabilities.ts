@@ -40,12 +40,12 @@ export const CAPABILITY_MAP: Record<CapabilityGroup, CapabilityDescriptor> = {
   },
   assess: {
     group: "assess",
-    summary: "Rank and dedupe results and report source/journal-level metrics.",
+    summary: "Preserve source-backed observations, conflicts, and explicit policy traces without an opaque universal score.",
     layer: "work",
   },
   acquire: {
     group: "acquire",
-    summary: "Fetch or record an artifact with provenance and attempt history.",
+    summary: "Acquire or record an artifact through installed material providers with provenance and attempt history.",
     layer: "work",
   },
   extract: {

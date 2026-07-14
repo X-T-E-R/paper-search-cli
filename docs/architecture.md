@@ -1,8 +1,10 @@
-# Architecture
+# Paper Search CLI X architecture
 
-`paper-search-cli` is organized around one rule: the CLI, MCP server, batch
+Paper Search CLI X is organized around one rule: the CLI, MCP server, batch
 runner, provider runtimes, and companion skill share the same capability and
 result contracts. Human-facing commands are adapters over those contracts.
+The X describes extensibility and open possibilities; existing machine-facing
+names remain compatible.
 
 ## Main Layers
 
@@ -24,16 +26,75 @@ result contracts. Human-facing commands are adapters over those contracts.
 3. **Entry surfaces**
    - CLI commands for humans
    - canonical tool catalog for deterministic tool calls
-   - `run <canonical_tool>` for schema-validated single-tool execution
+   - `run <tool>` as the durable CLI projection of canonical `research_run`
    - MCP JSON-RPC server for AI clients
    - companion skill for capability routing and workflow discipline
    - batch runner over the same canonical tools and result envelope
 4. **Storage and sinks**
-   - local workspace records under the configured workspace root
-   - artifact and extraction records for material workflows
-   - attachment sink for `resource-pdf` compatibility
-   - workspace export sink for JSON, JSONL, CSV, and BibTeX
-   - no host-application bridge or profile writer in this system
+   - one conventional user home at `~/.paper-search/`
+   - independently configurable workspace, artifact, extraction, export, and
+     durable-run roots
+   - provider-mediated artifact acquisition for `resource-pdf` compatibility
+   - portable workspace export sink for JSON, JSONL, CSV, and BibTeX
+   - no general host-application bridge or profile writer; the explicit CLI-only
+     Zotero bibliographic sink is the narrow exception accepted by
+      [ADR-0004](./decisions/ADR-0004-cli-only-zotero-bibliographic-sink.md)
+
+## Conventional home and storage classes
+
+`PAPER_SEARCH_HOME` may select an explicit absolute home. Otherwise all
+conventional config, credentials, subscriptions, adapters, provider packages,
+registry snapshots, caches, state, runs, workspace records, material outputs,
+exports, and managed shims derive from `~/.paper-search/`. Platform config roots
+are inspected only as copy-migration sources.
+
+The default path classes are distinct:
+
+- `workspace/` owns local bibliographic and material metadata records;
+- `storage/artifacts/` owns acquired bytes such as PDFs;
+- `storage/extractions/` owns Markdown, structured output, and assets;
+- `exports/` owns implicit portable export targets where supported; and
+- `runs/` owns private local execution history and checkpoints.
+
+`workspace.root`, `storage.artifactRoot`, `storage.extractionRoot`,
+`storage.exportRoot`, and `runs.root` can be configured independently. Changing
+a root affects future writes. Versioned local storage references capture the
+resolved root and contained key; legacy workspace-relative `path` fields keep
+their existing meaning.
+
+## Durable runs
+
+Friendly discovery commands are ephemeral. `run <tool>` and canonical/MCP
+`research_run` durably wrap the fixed non-destructive discovery allowlist:
+`academic_search`, `patent_search`, `resource_lookup`, `patent_detail`, and the
+optional `web_search`. Citation and assessment workflows are intrinsically
+durable when run rather than planned.
+
+The common run store persists sanitized request, resolved selection,
+timestamps, diagnostics, provenance, failures, and terminal results or
+references. Citation runs also persist checkpoints. `runs.maxAgeDays = -1`
+means age alone never selects a run for pruning. Pruning is explicit and
+plan-first; active, interrupted-resumable, corrupt, and pinned records are not
+age-prune candidates.
+
+Canonical/MCP exposes `run_list`, `run_show`, and plan-only `run_prune_plan`.
+Run export, pin/unpin, and applied pruning remain CLI-only. Durable history is
+private local plaintext and may be retained indefinitely with the default.
+
+## Optional Zotero boundary
+
+Paper Search local workspace and material records remain authoritative. The
+CLI-only Zotero sink can project a bibliographic item, render one selected
+extraction as a note, and target one explicit existing collection through a
+user-authorized Zotero MCP Neo endpoint. It uses local plan, remote dry-run
+preview, digest-acknowledged apply, returned-key verification, and a local
+receipt. It is not a canonical tool, MCP operation, batch row, default workspace
+sink, or material-ingest side effect.
+
+The adapter does not create collections or import attachments. Local PDF,
+Markdown, JSON, and asset files stay local and are reported as omitted. Partial
+remote completion returns the created key and is not automatically retried or
+rolled back.
 
 ## Capability Contract
 
@@ -44,16 +105,43 @@ are projections of these eight groups:
 | --- | --- | --- |
 | `discover` | work | Search academic, patent, and web sources. |
 | `identify` | work | Resolve known identifiers, URLs, or provider-native ids to normalized metadata. |
-| `assess` | work | **Reserved** — rank, dedupe, and report source/journal metrics (no canonical tools; see [ADR-0003](./decisions/ADR-0003-assess-capability-group-disposition.md)). |
+| `assess` | work | Evaluate checksum-bound observations, preserve conflicts/provenance, and optionally apply an explicit traceable user policy. |
 | `acquire` | work | Fetch or record artifacts with provenance and attempt history. |
 | `extract` | work | Turn artifacts, URLs, or files into Markdown, JSON, or assets. |
 | `organize` | work | Store, tag, collect, and export workspace records. |
-| `orchestrate` | work | Run multi-step workflows over primitives. |
-| `operate` | management | Inspect readiness/config, manage providers, and run server surfaces. |
+| `orchestrate` | work | Run durable discovery, citation expansion, and multi-step workflows over primitives. |
+| `operate` | management | Inspect readiness/config/runs, manage providers, and run server surfaces. |
 
 `operate` is the only management-layer group. This keeps commands such as
 `doctor`, `config`, `providers`, `tools`, `help`, and `mcp serve` out of the
 research/material workflow path.
+
+### Citation expansion
+
+`citation_expand` plans, starts, or resumes bounded backward/forward traversal
+from exact identifiers. Repeated graph-capable providers use union semantics.
+Core normalizes identities, deduplicates nodes and edges, retains per-edge
+provider provenance, detects cycles, and applies depth, breadth, node, edge,
+page, and concurrency bounds. A plan performs no provider calls or writes; a run
+checkpoints each valid provider page in the common run store; resume continues
+remaining work after checkpoint and provider-drift validation.
+
+`citation_run_status` reads a stored checkpoint without calling providers.
+`citation_expand` is also a supported batch row tool. Citation results are not
+automatically added to the workspace.
+
+### Transparent assessment
+
+`assessment_run` evaluates an immutable local observation snapshot bound to its
+exact SHA-256. It preserves source/version/time, coverage outcomes, raw-evidence
+digests, conflicts, missing signals, and an optional user-policy trace. Without
+a policy there is no disposition. A policy can return `include`, `exclude`, or
+`review`, but cannot be presented as a universal quality score or automatic
+acceptance decision.
+
+`assessment_show` replays a completed assessment from stored evidence, and
+`assessment_list` lists assessment-run headers. Assessment does not rerank or
+deduplicate discovery results. See [ADR-0003](./decisions/ADR-0003-assess-capability-group-disposition.md).
 
 ## Result Envelope Contract
 
@@ -267,8 +355,11 @@ Important fields:
   and timestamp, including `artifact-resolver` tier attempts and per-candidate
   download attempts for resolved acquisitions
 
-Artifact bytes, when stored, live under `material/files/<artifact-id>/`.
-Artifact records live under `material/artifacts/<artifact-id>.json`.
+Artifact records live under the workspace root at
+`material/artifacts/<artifact-id>.json`. New artifact bytes use the configured
+`storage.artifactRoot` and a versioned local storage reference that captures its
+root, contained key, and digest/size when available. Legacy record paths retain
+their original workspace-relative meaning.
 
 ### Extraction Records
 
@@ -285,9 +376,11 @@ Important fields:
 - optional `itemId` workspace link
 - optional provider message
 
-Extraction records live under `material/extractions/<extraction-id>.json`.
-Generated Markdown and structured provider output live under
-`material/extractions/<extraction-id>/`.
+Extraction records live under the workspace root at
+`material/extractions/<extraction-id>.json`. New Markdown, structured provider
+output, and assets use `storage.extractionRoot` and versioned local storage
+references. Legacy record paths retain their original workspace-relative
+meaning.
 
 ## Command Semantics
 
@@ -304,8 +397,8 @@ Generated Markdown and structured provider output live under
 ### Workspace and Export
 
 - `resource-add` writes normalized item records into `items/*.json`.
-- `resource-pdf` downloads or records PDF attachments for existing workspace
-  item ids and remains available as `pdf`.
+- `resource-pdf` acquires or records a PDF for an existing workspace item id
+  through the installed material-provider path and remains available as `pdf`.
 - `collection-list` reads the local collection tree from `collections.json`.
 - `workspace-export` writes portable JSON, JSONL, CSV, or BibTeX.
 - Workspace mutations are serialized per root so concurrent batch adds do not

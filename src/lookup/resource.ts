@@ -1,5 +1,6 @@
 import type { ResolvedConfig } from "../config/schema.js";
 import type { Creator, ResourceItem } from "../providers/sdk/types.js";
+import { normalizeArxiv, normalizeDoi } from "../identifiers/paper.js";
 
 export type LookupIdentifierType = "doi" | "pmid" | "arxiv" | "isbn";
 
@@ -82,7 +83,6 @@ interface OpenLibraryBook {
   identifiers?: Record<string, string[]>;
 }
 
-const DOI_PREFIX_RE = /^(?:https?:\/\/(?:dx\.)?doi\.org\/|doi:\s*)/i;
 const HTML_ENTITY_MAP: Record<string, string> = {
   "&amp;": "&",
   "&lt;": "<",
@@ -148,14 +148,6 @@ function mapCrossrefAuthors(authors?: CrossrefAuthor[]): Creator[] | undefined {
     lastName: trimToUndefined(author.family) ?? trimToUndefined(author.name) ?? "Unknown",
     creatorType: "author",
   }));
-}
-
-function normalizeDoi(identifier: string): string {
-  return identifier.replace(DOI_PREFIX_RE, "").trim();
-}
-
-function normalizeArxiv(identifier: string): string {
-  return identifier.replace(/^arxiv:/i, "").trim();
 }
 
 function normalizeIsbn(identifier: string): string {

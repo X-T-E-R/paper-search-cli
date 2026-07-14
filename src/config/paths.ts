@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { resolvePaperSearchPaths } from "./home.js";
 
 export interface ConfigBundlePaths {
   root: string;
@@ -10,24 +11,17 @@ export interface ConfigBundlePaths {
 }
 
 export function resolveConfigRoot(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.APPDATA) {
-    return path.join(env.APPDATA, "paper-search");
-  }
-  const xdgConfigHome = env.XDG_CONFIG_HOME?.trim();
-  if (xdgConfigHome) {
-    return path.join(expandHome(xdgConfigHome, env), "paper-search");
-  }
-  return path.join(os.homedir(), ".config", "paper-search");
+  return resolvePaperSearchPaths(env).configRoot;
 }
 
 export function resolveConfigBundlePaths(env: NodeJS.ProcessEnv = process.env): ConfigBundlePaths {
-  const root = resolveConfigRoot(env);
+  const paths = resolvePaperSearchPaths(env);
   return {
-    root,
-    config: path.join(root, "config.toml"),
-    subscriptions: path.join(root, "subscriptions.toml"),
-    credentials: path.join(root, "credentials.toml"),
-    externalSearch: path.join(root, "external-search.toml"),
+    root: paths.configRoot,
+    config: paths.configPath,
+    subscriptions: paths.subscriptionsPath,
+    credentials: paths.credentialsPath,
+    externalSearch: paths.externalSearchPath,
   };
 }
 
@@ -53,6 +47,7 @@ export function resolveProjectConfigCandidates(cwd: string): string[] {
 }
 
 export function expandHome(input: string, env: NodeJS.ProcessEnv = process.env): string {
+  void env;
   if (input === "~") {
     return os.homedir();
   }

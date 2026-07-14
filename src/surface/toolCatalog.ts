@@ -20,6 +20,14 @@ type RawToolSchema = Omit<ToolSchema, "capability" | "annotations"> & {
   annotations?: Omit<NonNullable<ToolSchema["annotations"]>, "capabilityGroup" | "capabilityLayer">;
 };
 
+export const DURABLE_DISCOVERY_TOOL_NAMES = Object.freeze([
+  "academic_search",
+  "patent_search",
+  "resource_lookup",
+  "patent_detail",
+  "web_search",
+] as const);
+
 const SEARCH_SELECTION_PROPERTIES: Record<string, unknown> = {
   platform: {
     type: "string",
@@ -352,7 +360,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "resource_pdf",
     description:
-      "Fetch or record a PDF attachment for an existing local workspace item. Uses the workspace item id as itemKey and stores files under the local attachment sink.",
+      "Compatibility alias that acquires a PDF through installed material providers and projects the resulting artifact onto an existing local workspace item.",
     inputSchema: {
       type: "object",
       properties: {
@@ -370,7 +378,23 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
         },
         download: {
           type: "boolean",
-          description: "Download the PDF into the local attachment sink. Set false to record a request only.",
+          description: "Download through the selected material provider. Set false to record a request only.",
+        },
+        providerId: {
+          type: "string",
+          description: "Optional material artifact downloader provider id.",
+        },
+        resolverProviderId: {
+          type: "string",
+          description: "Optional material artifact resolver provider id used for DOI inputs.",
+        },
+        policy: {
+          type: "string",
+          description: "Policy label recorded on the provider-mediated acquisition run.",
+        },
+        dryRun: {
+          type: "boolean",
+          description: "Return the provider-mediated acquisition plan without writing files or records.",
         },
       },
       required: ["itemKey"],
@@ -643,6 +667,157 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
     },
   },
   {
+    name: "research_run",
+    description:
+      "Durably invoke one allowlisted, non-destructive discovery tool and persist its sanitized request, selection, diagnostics, provenance, and terminal result.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tool: {
+          type: "string",
+          enum: [...DURABLE_DISCOVERY_TOOL_NAMES],
+          description: "Allowlisted canonical discovery tool to invoke.",
+        },
+        arguments: {
+          type: "object",
+          description: "Canonical arguments for the selected discovery tool.",
+        },
+      },
+      required: ["tool", "arguments"],
+    },
+  },
+  {
+    name: "run_list",
+    description: "List private local durable-run headers, optionally filtered by kind or status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["tool", "citation", "assessment"],
+          description: "Optional durable-run kind.",
+        },
+        status: {
+          type: "string",
+          enum: ["running", "completed", "partial", "failed", "interrupted", "corrupt"],
+          description: "Optional durable-run status.",
+        },
+      },
+    },
+  },
+  {
+    name: "run_show",
+    description: "Read one validated private local durable-run record by its portable run id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Portable durable-run id." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "run_prune_plan",
+    description:
+      "Plan age-based durable-run pruning without deleting anything. Applying pruning remains an explicit CLI-only operation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        maxAgeDays: {
+          type: "number",
+          description: "Optional retention override: -1 disables age pruning; positive integers set age in days.",
+        },
+      },
+    },
+  },
+  {
+    name: "citation_expand",
+    description:
+      "Plan, start, or resume bounded backward/forward citation expansion through installed graph-capable academic providers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["plan", "run", "resume"],
+          description: "Plan is write-free; run and resume use the common durable-run store.",
+        },
+        runId: {
+          type: "string",
+          description: "Optional id for run; required for resume. A run id is generated when run omits it.",
+        },
+        seeds: {
+          type: "array",
+          items: { type: "object" },
+          description: "One or more seeds with exact identifiers and optional normalized item metadata.",
+        },
+        directions: {
+          type: "array",
+          items: { type: "string", enum: ["backward", "forward"] },
+          description: "Directions to union. Defaults to both supported directions.",
+        },
+        providers: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional installed citation-provider ids to union.",
+        },
+        excludeIdentifiers: {
+          type: "array",
+          items: { type: "object" },
+          description: "Exact identifiers to exclude from traversal results.",
+        },
+        limits: {
+          type: "object",
+          description: "Bounded traversal limits: depth, perNode, nodes, edges, providerPages, and concurrency.",
+        },
+      },
+    },
+  },
+  {
+    name: "citation_run_status",
+    description: "Read one durable citation-expansion checkpoint and result without provider calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Citation durable-run id." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "assessment_run",
+    description:
+      "Plan or persist a transparent assessment from an immutable checksum-bound local observation snapshot and optional explicit policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["plan", "run"], description: "Plan is write-free; run persists one durable record." },
+        snapshotPath: { type: "string", description: "Local immutable assessment snapshot JSON path." },
+        snapshotSha256: { type: "string", description: "Exact SHA-256 digest of the snapshot bytes." },
+        policy: { type: "object", description: "Optional transparent assessment policy object." },
+      },
+      required: ["snapshotPath", "snapshotSha256"],
+    },
+  },
+  {
+    name: "assessment_show",
+    description:
+      "Replay a completed assessment entirely from the durable record, optionally applying a replacement explicit policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Completed assessment durable-run id." },
+        policy: { type: "object", description: "Optional replacement transparent policy object." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "assessment_list",
+    description: "List private local durable assessment-run headers.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "platform_status",
     description:
       "Show installed provider health, config readiness, and current tool availability by source type.",
@@ -671,6 +846,15 @@ const TOOL_CAPABILITIES: Record<string, CapabilityGroup> = {
   material_ingest: "orchestrate",
   material_status: "orchestrate",
   material_provider_list_installed: "operate",
+  research_run: "orchestrate",
+  run_list: "operate",
+  run_show: "operate",
+  run_prune_plan: "operate",
+  citation_expand: "orchestrate",
+  citation_run_status: "orchestrate",
+  assessment_run: "assess",
+  assessment_show: "assess",
+  assessment_list: "assess",
   platform_status: "operate",
 };
 

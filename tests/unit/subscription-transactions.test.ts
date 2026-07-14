@@ -23,7 +23,7 @@ describe("subscription transaction recovery", () => {
       PAPER_SEARCH_TEST_DATA_ROOT: path.join(root, "data"),
     };
     const paths = resolveSubscriptionPaths(env);
-    expect(paths.subscriptionsFile).toBe(path.join(root, "appdata", "paper-search", "subscriptions.toml"));
+    expect(paths.subscriptionsFile).toBe(path.join(root, "data", "subscriptions.toml"));
     await mkdir(paths.operationsDir, { recursive: true });
     const first = paths.subscriptionsFile;
     const second = identityPath("alpha", env);

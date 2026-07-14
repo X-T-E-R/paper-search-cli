@@ -87,6 +87,56 @@ export interface SearchResult {
   error?: string;
 }
 
+export const CITATION_DIRECTIONS = ["backward", "forward"] as const;
+export type CitationDirection = (typeof CITATION_DIRECTIONS)[number];
+
+export const CITATION_IDENTIFIER_KINDS = [
+  "doi",
+  "pmid",
+  "arxiv",
+  "semantic",
+  "openalex",
+  "scopus",
+] as const;
+export type CitationIdentifierKind = (typeof CITATION_IDENTIFIER_KINDS)[number];
+
+/** Exact identifiers only. Display metadata is deliberately not identity authority. */
+export type CitationIdentifiers = Partial<Record<CitationIdentifierKind, string>>;
+
+export interface CitationPaper {
+  identifiers: CitationIdentifiers;
+  item: ResourceItem;
+  /** Native identity is scoped to the provider that returned the paper. */
+  providerNativeId?: string;
+}
+
+export interface CitationPageRequest {
+  direction: CitationDirection;
+  target: CitationPaper;
+  pageSize: number;
+  /** Opaque provider cursor. It must only be returned to the same provider. */
+  cursor?: string;
+}
+
+export interface CitationRelationPage {
+  direction: CitationDirection;
+  target: CitationPaper;
+  relations: CitationPaper[];
+  nextCursor?: string;
+  exhausted: boolean;
+  observedAt: string;
+}
+
+export interface CitationGraphCapability {
+  directions: CitationDirection[];
+  targetIdentifierKinds: CitationIdentifierKind[];
+  maxPageSize: number;
+}
+
+export interface ProviderCapabilities {
+  citationGraph?: CitationGraphCapability;
+}
+
 export type SourceType = "web" | "academic" | "patent";
 
 export interface ProviderHttpResponse<T = unknown> {
@@ -159,6 +209,7 @@ export interface ProviderAPI {
 export interface PluggableProviderImpl {
   search(query: string, options?: SearchOptions): Promise<SearchResult>;
   getDetail?(sourceId: string, options?: Record<string, unknown>): Promise<PatentDetailResult>;
+  getCitationPage?(request: CitationPageRequest): Promise<CitationRelationPage>;
 }
 
 export type ProviderFactory = (api: ProviderAPI) => PluggableProviderImpl;
@@ -212,6 +263,7 @@ export interface ProviderManifest {
   rateLimitPerMinute?: number;
   searchTimeoutMs?: number;
   allowedGlobalPrefs?: string[];
+  capabilities?: ProviderCapabilities;
   integrity?: { sha256?: string };
   inventory?: ProviderInventoryEntry;
 }

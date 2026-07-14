@@ -127,8 +127,9 @@ describe("patent commands", () => {
     const installDir = path.join(root, "providers");
     const workspaceRoot = path.join(root, "workspace");
     const appData = path.join(root, "appdata");
+    const paperSearchHome = path.join(root, "home");
     await mkdir(path.join(installDir, "fixture-patent-session"), { recursive: true });
-    await mkdir(path.join(appData, "paper-search"), { recursive: true });
+    await mkdir(paperSearchHome, { recursive: true });
     await writeFile(
       path.join(root, "paper-search.toml"),
       [
@@ -147,7 +148,7 @@ describe("patent commands", () => {
       "utf8",
     );
     await writeFile(
-      path.join(appData, "paper-search", "credentials.toml"),
+      path.join(paperSearchHome, "credentials.toml"),
       ["schemaVersion = 1", "", "[platform.fixture-patent-session]", 'password = "fixture-pass"', ""].join("\n"),
       "utf8",
     );
@@ -171,7 +172,9 @@ describe("patent commands", () => {
 
     const originalCwd = process.cwd();
     const originalAppData = process.env.APPDATA;
+    const originalPaperSearchHome = process.env.PAPER_SEARCH_HOME;
     process.env.APPDATA = appData;
+    process.env.PAPER_SEARCH_HOME = paperSearchHome;
     process.chdir(root);
 
     let patentStdout = "";
@@ -230,6 +233,8 @@ describe("patent commands", () => {
       process.chdir(originalCwd);
       if (originalAppData === undefined) delete process.env.APPDATA;
       else process.env.APPDATA = originalAppData;
+      if (originalPaperSearchHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = originalPaperSearchHome;
     }
 
     const patent = JSON.parse(patentStdout);

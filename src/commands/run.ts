@@ -1,22 +1,50 @@
 import type { Command } from "commander";
 import { loadConfig } from "../config/load.js";
 import type { Io } from "../runtime/io.js";
-import { mergeToolArguments, ToolArgumentValidationError } from "../surface/toolArguments.js";
+import type { ResearchRunStore } from "../runs/index.js";
+import {
+  durableToolRejection,
+  runDurableCanonicalTool,
+} from "../runs/durable.js";
+import {
+  mergeToolArguments,
+  ToolArgumentValidationError,
+} from "../surface/toolArguments.js";
 import { runCanonicalTool, toolArgumentFailureEnvelope } from "../surface/toolRunner.js";
+import { failEnvelope } from "../surface/resultEnvelope.js";
+import {
+  openRunStoreFromResolvedConfig,
+  type ConfiguredRunStoreResolver,
+} from "../runs/config.js";
+
+export {
+  DURABLE_DISCOVERY_TOOL_ALLOWLIST,
+  durableToolRejection,
+  runDurableCanonicalTool,
+} from "../runs/durable.js";
 
 interface RunCommandOptions {
   jsonArgs?: string;
   arg?: string[];
 }
 
+export interface RegisterRunCommandOptions {
+  resolveStore?: ConfiguredRunStoreResolver;
+}
+
 function collectArg(value: string, previous: string[] = []): string[] {
   return [...previous, value];
 }
 
-export function registerRunCommand(program: Command, io: Io): void {
+export function registerRunCommand(
+  program: Command,
+  io: Io,
+  registration: RegisterRunCommandOptions = {},
+): void {
+  const resolveStore = registration.resolveStore ?? openRunStoreFromResolvedConfig;
   program
     .command("run <tool>")
-    .description("Invoke one canonical tool with schema-validated JSON arguments.")
+    .description("Durably invoke one allowlisted, non-destructive discovery tool.")
     .option("--json-args <json>", "canonical tool arguments as a JSON object")
     .option(
       "--arg <key=value>",
@@ -38,10 +66,31 @@ export function registerRunCommand(program: Command, io: Io): void {
 
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
-      const envelope = await runCanonicalTool(config, tool, args, {
-        validateArguments: true,
-      });
-      io.writeJson(envelope);
+      const rejection = durableToolRejection(tool, args);
+      if (rejection) {
+        io.writeJson(rejection);
+        return;
+      }
+
+      let store: ResearchRunStore;
+      try {
+        store = await resolveStore(config);
+      } catch (error) {
+        io.writeJson(failEnvelope({
+          capability: "orchestrate",
+          tool,
+          errors: [`Durable run persistence failed: ${error instanceof Error ? error.message : String(error)}`],
+          diagnostics: { reason: "run_persistence_failed" },
+        }));
+        return;
+      }
+      io.writeJson(await runDurableCanonicalTool(
+        config,
+        store,
+        tool,
+        args,
+        (name, input) => runCanonicalTool(config, name, input, { validateArguments: false }),
+      ));
     });
 }
 

@@ -26,8 +26,9 @@ The layers cover:
 
 - `unit`: identifier detection, lookup normalization, external-search protocol/process/status logic,
   capability and envelope contracts, plan envelopes, tool argument parsing, MCP
-  JSON-RPC behavior, batch task shaping/serialization, workspace storage, and
-  smoke gating
+  JSON-RPC behavior, batch task shaping/serialization, workspace and local
+  storage references, durable-run retention/redaction, citation normalization,
+  assessment policy traces, and smoke gating
 - `contract`: search-provider manifest validation, material-provider manifest
   validation, package loading, registry planning/install contracts, runtime
   permission enforcement, session-aware provider behavior, and MinerU wrapper
@@ -35,9 +36,10 @@ The layers cover:
 - `integration`: CLI behavior with temporary config files, realistic command
   wiring, local registry/package fixtures, discovery/help flows, MCP HTTP server
   flows, lookup-to-add flows, patent detail-to-add flows, offline external-search
-  search/research commands, stubbed `resource-pdf` downloads, material artifact
-  and extraction workflows, batch workflows, resumable JSONL output, workspace
-  sink checks, and workspace export checks
+  search commands, provider-mediated `resource-pdf`, material artifact and
+  extraction workflows, durable discovery, citation checkpoint/resume,
+  checksum-bound assessment, home-path reporting, batch workflows, resumable
+  JSONL output, workspace sink checks, and workspace export checks
 
 ## Surface Contract Coverage
 
@@ -57,6 +59,14 @@ Provider-kind integration tests exercise both runtimes through
 compatibility alias. Artifact and extraction storage tests round-trip records
 with provenance, attempts, provider/backend ids, output paths, cache status, and
 optional workspace item links.
+
+Run-management tests must distinguish direct ephemeral discovery from
+`research_run`, prove that `maxAgeDays = -1` selects nothing for age pruning,
+and keep applied pruning, pin/unpin, export, and Zotero host writes at the
+CLI-only boundary. Citation tests cover provider union, bounds, cycles, partial
+failure, checkpoints, and resume. Assessment tests cover checksum mismatch,
+missing/conflicting observations, no-policy output, and deterministic policy
+traces without an implicit universal verdict.
 
 ## Provider Fixture Coverage
 

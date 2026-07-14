@@ -13,9 +13,14 @@ import {
   type ConfigMigrationPlan,
 } from "./migration.js";
 import { tryAppendLifecycleEvent } from "../runtime/eventLedger.js";
+import {
+  applyConfigLocationMigration,
+  planConfigLocationMigration,
+  type ConfigLocationMigrationPlan,
+} from "./locationMigration.js";
 
 export interface MigrationBlocker {
-  scope: "config" | "provider-directory";
+  scope: "config-location" | "config" | "provider-directory";
   key: string;
   reason: string;
   blocksAllApply: boolean;
@@ -23,6 +28,7 @@ export interface MigrationBlocker {
 
 export interface CombinedMigrationPlan {
   schemaVersion: 1;
+  configLocation: ConfigLocationMigrationPlan;
   config: ConfigMigrationPlan;
   providerDirectory: {
     status: "ready" | "requires-explicit-source";
@@ -46,6 +52,12 @@ export interface CombinedMigrationResult {
       operationId?: string;
       recovered: string[];
     };
+    configLocation: {
+      applied: boolean;
+      changed: boolean;
+      operationId?: string;
+      receiptPath?: string;
+    };
     providerDirectory: {
       applied: boolean;
       migrated: string[];
@@ -63,6 +75,7 @@ export interface CombinedMigrationOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   legacyInstallDir?: string;
+  legacyConfigRoot?: string;
   explicitConfigPath?: string;
 }
 
@@ -88,6 +101,10 @@ export async function planCombinedMigration(
   options: Omit<CombinedMigrationOptions, "apply"> = {},
 ): Promise<CombinedMigrationPlan> {
   const env = options.env ?? process.env;
+  const configLocation = await planConfigLocationMigration({
+    env,
+    legacyConfigRoot: options.legacyConfigRoot,
+  });
   const config = await planConfigMigration(options);
   const ownership = config.legacyInstallDirectory;
   const requiresExplicit = ownership.requiresExplicitSelection && !options.legacyInstallDir;
@@ -98,6 +115,16 @@ export async function planCombinedMigration(
         env,
       });
   const blockers: MigrationBlocker[] = [
+    ...(["ambiguous", "conflicted", "blocked"].includes(configLocation.status)
+      ? [{
+          scope: "config-location" as const,
+          key: "configRoot",
+          reason: configLocation.requiresExplicitSource
+            ? "Multiple different legacy config roots require --legacy-config-root"
+            : configLocation.blockers.join("; ") || `Config-location migration is ${configLocation.status}`,
+          blocksAllApply: true,
+        }]
+      : []),
     ...config.blockers.map((blocker) => ({
       scope: "config" as const,
       key: blocker.key,
@@ -116,6 +143,7 @@ export async function planCombinedMigration(
   ];
   const base = {
     schemaVersion: 1 as const,
+    configLocation,
     config,
     providerDirectory: {
       status: requiresExplicit ? "requires-explicit-source" as const : "ready" as const,
@@ -136,6 +164,7 @@ function emptyResult(plan: CombinedMigrationPlan): CombinedMigrationResult {
     changed: false,
     components: {
       config: { applied: false, changed: false, recovered: [] },
+      configLocation: { applied: false, changed: false },
       providerDirectory: { applied: false, migrated: [], recovered: [], blocked: [] },
     },
     blockers: plan.blockers,
@@ -164,6 +193,30 @@ export async function executeCombinedMigration(
   }
 
   try {
+    const location = await applyConfigLocationMigration({
+      env,
+      legacyConfigRoot: options.legacyConfigRoot,
+    });
+    result.components.configLocation = {
+      applied: location.applied,
+      changed: location.changed,
+      ...(location.operationId ? { operationId: location.operationId } : {}),
+      ...(location.receiptPath ? { receiptPath: location.receiptPath } : {}),
+    };
+    result.changed ||= location.changed;
+  } catch (error) {
+    result.errors.push(`Config-location migration failed: ${error instanceof Error ? error.message : String(error)}`);
+    return result;
+  }
+
+  // Location migration is ordered first. Re-plan so schema/provider migration
+  // consumes the copied conventional files rather than the now-retired root.
+  const postLocationPlan = await planCombinedMigration(options);
+  result.plan = postLocationPlan;
+  result.blockers = postLocationPlan.blockers;
+  if (postLocationPlan.blockers.some((blocker) => blocker.blocksAllApply)) return result;
+
+  try {
     const config = await executeConfigMigration({
       apply: true,
       cwd: options.cwd,
@@ -173,7 +226,7 @@ export async function executeCombinedMigration(
     });
     result.components.config = {
       applied: true,
-      changed: !plan.config.alreadyMigrated,
+      changed: !postLocationPlan.config.alreadyMigrated,
       ...(config.operationId ? { operationId: config.operationId } : {}),
       recovered: config.recovered ?? [],
     };
@@ -182,7 +235,7 @@ export async function executeCombinedMigration(
       const audit = await tryAppendLifecycleEvent({
         ...(config.operationId ? { operationId: config.operationId } : {}),
         command: "migrate config",
-        planDigest: plan.config.planDigest,
+        planDigest: postLocationPlan.config.planDigest,
         affectedIds: [],
         outcome: result.components.config.changed ? "applied" : "recovered",
       }, env);
@@ -193,7 +246,7 @@ export async function executeCombinedMigration(
     return result;
   }
 
-  const providerPlan = plan.providerDirectory.plan;
+  const providerPlan = postLocationPlan.providerDirectory.plan;
   if (providerPlan) {
     let appliedProviders: AppliedProviderDirectoryMigration;
     try {

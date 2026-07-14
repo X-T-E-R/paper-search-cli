@@ -1,9 +1,14 @@
 import type {
+  CitationGraphCapability,
   ProviderConfigFieldSchema,
   ProviderHelpExample,
   ProviderInventoryEntry,
   ProviderManifest,
   ProviderUsageHelp,
+} from "../sdk/types.js";
+import {
+  CITATION_DIRECTIONS,
+  CITATION_IDENTIFIER_KINDS,
 } from "../sdk/types.js";
 
 const ID_RE = /^[a-z][a-z0-9_-]{1,63}$/;
@@ -119,6 +124,34 @@ function validateControlledArray(
     value.some((entry) => !allowed.includes(entry))
   ) {
     throw new ManifestValidationError(`${field} must contain unique controlled values`);
+  }
+}
+
+function validateCitationGraphCapability(
+  value: unknown,
+): asserts value is CitationGraphCapability {
+  if (!isPlainObject(value)) {
+    throw new ManifestValidationError("capabilities.citationGraph must be an object");
+  }
+  validateControlledArray(
+    value.directions,
+    "capabilities.citationGraph.directions",
+    CITATION_DIRECTIONS,
+  );
+  validateControlledArray(
+    value.targetIdentifierKinds,
+    "capabilities.citationGraph.targetIdentifierKinds",
+    CITATION_IDENTIFIER_KINDS,
+  );
+  if (
+    typeof value.maxPageSize !== "number" ||
+    !Number.isInteger(value.maxPageSize) ||
+    value.maxPageSize < 1 ||
+    value.maxPageSize > 1000
+  ) {
+    throw new ManifestValidationError(
+      "capabilities.citationGraph.maxPageSize must be an integer from 1 to 1000",
+    );
   }
 }
 
@@ -345,6 +378,19 @@ export function parseProviderManifest(raw: string): ProviderManifest {
     inventory = data.inventory;
   }
 
+  let capabilities: ProviderManifest["capabilities"];
+  if (data.capabilities !== undefined) {
+    if (!isPlainObject(data.capabilities)) {
+      throw new ManifestValidationError("capabilities must be an object");
+    }
+    if (data.capabilities.citationGraph !== undefined) {
+      validateCitationGraphCapability(data.capabilities.citationGraph);
+      capabilities = { citationGraph: data.capabilities.citationGraph };
+    } else {
+      capabilities = {};
+    }
+  }
+
   return {
     id,
     name,
@@ -360,6 +406,7 @@ export function parseProviderManifest(raw: string): ProviderManifest {
     rateLimitPerMinute,
     searchTimeoutMs,
     allowedGlobalPrefs,
+    capabilities,
     integrity,
     inventory,
   };

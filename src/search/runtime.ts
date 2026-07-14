@@ -124,7 +124,7 @@ export function resolveSearchOptions(
   };
 }
 
-async function loadRuntimeProvider(
+export async function loadProviderRuntimeFromSummary(
   config: ResolvedConfig,
   provider: InstalledProviderSummary,
 ): Promise<LoadedNodeProvider> {
@@ -230,7 +230,7 @@ export async function runProviderSearch(
   const providersById = new Map(providers.map((provider) => [provider.id, provider]));
 
   const runSingle = async (provider: InstalledProviderSummary): Promise<SearchResult> => {
-    const runtime = await loadRuntimeProvider(config, provider);
+    const runtime = await loadProviderRuntimeFromSummary(config, provider);
     return runtime.provider.search(
       request.query,
       resolveSearchOptions(config, provider.manifest!, request),
@@ -290,6 +290,6 @@ export async function loadInstalledProviderRuntime(
   }
   return {
     provider,
-    runtime: await loadRuntimeProvider(config, provider),
+    runtime: await loadProviderRuntimeFromSummary(config, provider),
   };
 }

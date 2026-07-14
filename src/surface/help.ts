@@ -172,6 +172,8 @@ function buildQuickstart(config: ResolvedConfig, locale: HelpLocale): string[] {
         `先跑 paper-search status --json，确认安装、配置层和 workspace root（当前显式配置参考：${configHint}）。`,
         "再跑 paper-search tools --json，看当前 canonical tool 与 CLI alias 映射。",
         "做论文检索时先用 academic，再对选中的结果用 resource-add。",
+        "普通检索默认不记历史；需要可重放记录时用 run academic_search，引用雪球用 citation plan/run/resume。",
+        "评估只读取校验和绑定的观察快照；先用 assess plan 查看证据、冲突和策略轨迹，再决定是否持久化。",
         "需要带走本地 workspace 结果时，用 workspace-export 输出 JSON、JSONL、CSV 或 BibTeX。",
         "网页检索仅在用户级 external-search.toml 启用后使用 web。",
         "已知 DOI / URL 先走 lookup，不要直接手填 metadata。",
@@ -180,6 +182,8 @@ function buildQuickstart(config: ResolvedConfig, locale: HelpLocale): string[] {
         `Start with paper-search status --json to confirm install/config layers and workspace root (current config hint: ${configHint}).`,
         "Then run paper-search tools --json to inspect the canonical tools and CLI aliases.",
         "Use academic first for paper search, then resource-add for selected results.",
+        "Ordinary search is ephemeral; use run academic_search for a durable record and citation plan/run/resume for snowballing.",
+        "Assessment reads checksum-bound observation snapshots; inspect assess plan before persisting a run.",
         "For patents, use patent first, then patent-detail, then resource-add.",
         "Use workspace-export when you need portable JSON, JSONL, CSV, or BibTeX output from the local workspace.",
         "Use web only after enabling the user-level external-search.toml integration.",
@@ -239,6 +243,12 @@ export async function createHelpSnapshot(
       ? toolSchemas.filter((tool) => tool.name === "resource_lookup")
     : topic === "web"
       ? toolSchemas.filter((tool) => tool.name === "web_search")
+    : topic === "citations"
+      ? toolSchemas.filter((tool) => tool.name === "citation_expand" || tool.name === "citation_run_status")
+    : topic === "assessment"
+      ? toolSchemas.filter((tool) => tool.name.startsWith("assessment_"))
+    : topic === "runs"
+      ? toolSchemas.filter((tool) => tool.name === "research_run" || tool.name.startsWith("run_"))
     : topic === "workspace"
         ? toolSchemas.filter((tool) =>
             tool.name === "resource_add" ||
@@ -269,7 +279,10 @@ export async function createHelpSnapshot(
         "web_search 仅从用户级 external-search.toml 获取执行授权；status 不启动进程，doctor 只运行无网络 probe。",
         "resource_add / collection_list 指向本地 workspace sink；没有宿主应用写入副作用。",
         "workspace_export 是本地导出 sink，可输出 JSON、JSONL、CSV 或 BibTeX。",
-        "resource_pdf 使用本地 attachment sink；itemKey 是 workspace item id。",
+        "resource_pdf 是兼容别名：它通过已安装 material provider 获取 PDF，再把 artifact 投影为 workspace attachment。",
+        "citation_expand 只接受精确标识符并设有深度、节点、边、分页和并发上限；plan 不联网也不写入。",
+        "assessment_run 保留来源、时间、缺失与冲突，不输出隐藏的通用质量分数，也不替用户决定取舍。",
+        "runs 默认永久保留（maxAgeDays=-1）；删除必须先看 run_prune_plan，再在 CLI 显式使用 runs prune --apply。",
         "昂贵烟测仍然必须单独显式启动；这里展示的是默认安全路径。",
       ]
     : [
@@ -278,7 +291,10 @@ export async function createHelpSnapshot(
         "web_search gets execution authority only from user-level external-search.toml; status is static and doctor runs a no-network probe.",
         "resource_add / collection_list target the local workspace sink with no host-application write side effects.",
         "workspace_export is a local export sink for JSON, JSONL, CSV, or BibTeX output.",
-        "resource_pdf uses the local attachment sink; itemKey is a workspace item id.",
+        "resource_pdf is a compatibility alias: it acquires through an installed material provider, then projects the artifact as a workspace attachment.",
+        "citation_expand requires exact identifiers and bounded depth, node, edge, page, and concurrency limits; plan performs no network or writes.",
+        "assessment_run preserves source, time, missing evidence, and conflicts without a hidden universal quality score or user decision.",
+        "Runs are retained indefinitely by default (maxAgeDays=-1); inspect run_prune_plan before the explicit CLI-only runs prune --apply.",
         "Expensive smoke checks remain separate and must be enabled explicitly.",
       ];
 

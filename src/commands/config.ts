@@ -41,6 +41,7 @@ import {
 import type { Io } from "../runtime/io.js";
 import { sanitizeUrlForDisplay } from "../runtime/sanitizeUrl.js";
 import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
+import { planConfigLocationMigration } from "../config/locationMigration.js";
 
 interface RawOption {
   raw?: boolean;
@@ -198,8 +199,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
     .description("Return the user config path, or every conventional config-bundle path.")
     .option("--all", "include the config root and all conventional files")
     .action(async (options: PathOption) =>
-      runConfigAction(io, "config_path", () => {
+      runConfigAction(io, "config_path", async () => {
         const paths = resolveConfigBundlePaths();
+        const configLocationMigration = await planConfigLocationMigration();
         return success(
           "config_path",
           options.all
@@ -210,8 +212,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
                 subscriptions: paths.subscriptions,
                 credentials: paths.credentials,
                 externalSearch: paths.externalSearch,
+                configLocationMigration,
               }
-            : { path: paths.config },
+            : { path: paths.config, migrationStatus: configLocationMigration.status },
           options.all ? [paths.config, paths.subscriptions, paths.credentials, paths.externalSearch] : paths.config,
         );
       }),
