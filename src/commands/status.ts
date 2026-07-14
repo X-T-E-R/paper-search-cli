@@ -12,6 +12,7 @@ import {
 } from "../surface/providerInstallHints.js";
 import { okEnvelope } from "../surface/resultEnvelope.js";
 import { inspectProviderLifecycleHealth } from "./doctor.js";
+import { inspectExternalSearchStatic } from "../external-search/config.js";
 
 interface StatusOptions {
   json?: boolean;
@@ -26,11 +27,12 @@ export function registerStatusCommand(program: Command, io: Io): void {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
       const smoke = resolveSmokePolicy(config.smoke, process.env);
-      const [searchProviders, materialProviders, installation, providerLifecycle] = await Promise.all([
+      const [searchProviders, materialProviders, installation, providerLifecycle, externalSearch] = await Promise.all([
         listInstalledProviders(config.providers.installDir),
         listInstalledMaterialProviders(config.providers.installDir),
         inspectInstallHealth(),
         inspectProviderLifecycleHealth(config.providers.installDir),
+        inspectExternalSearchStatic(),
       ]);
       const compatibilityCounts = summarizeOnboardingInstallCounts(searchProviders, materialProviders);
       const installCounts = {
@@ -68,6 +70,7 @@ export function registerStatusCommand(program: Command, io: Io): void {
         defaults: config.defaults,
         output: config.output,
         smoke,
+        externalSearch,
         providerLifecycle,
         installation: {
           checkout: installation.paths.repoRoot,
@@ -127,6 +130,7 @@ export function registerStatusCommand(program: Command, io: Io): void {
       );
       io.writeLine(`provider lifecycle health: ${payload.providerLifecycle.health.status}`);
       io.writeLine(`workspace root: ${payload.workspace.root}`);
+      io.writeLine(`external search: ${payload.externalSearch.state}`);
       io.writeLine(`checkout: ${payload.installation.checkout}`);
       io.writeLine(`source management: ${payload.installation.sourceManagementMode}`);
       io.writeLine(`installation health: ${payload.installation.health.status}`);

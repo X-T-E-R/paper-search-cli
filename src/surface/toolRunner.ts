@@ -45,8 +45,8 @@ import {
   getCanonicalToolCapability,
   type ToolSchema,
 } from "./toolCatalog.js";
-import { runWebResearch, runWebSearch } from "../web/router.js";
-import type { WebResearchRequest, WebSearchRequest } from "../web/types.js";
+import { runExternalWebSearchEnvelope } from "../external-search/service.js";
+import type { ExternalWebSearchRequest } from "../external-search/types.js";
 import {
   addResourceToWorkspace,
   exportWorkspaceItems,
@@ -58,7 +58,6 @@ import type { ResourceItem } from "../providers/sdk/types.js";
 import type { PatentDetailResult } from "../providers/sdk/types.js";
 import type { PlatformStatusSnapshot } from "./status.js";
 import type { ResourceLookupResult } from "../lookup/resource.js";
-import type { WebResearchResponse, WebSearchResponse } from "../web/types.js";
 import { buildSearchEnvelope } from "./searchEnvelope.js";
 
 export type { ToolArguments } from "./toolArguments.js";
@@ -88,10 +87,9 @@ const PATENT_SORT_FIELD_VALUES = ["applicationDate", "publicationDate"] as const
 const PATENT_SORT_ORDER_VALUES = ["asc", "desc"] as const;
 const PATENT_QUERY_MODE_VALUES = ["simple", "expert"] as const;
 const PATENT_DETAIL_INCLUDE_VALUES = ["core", "legalStatus", "claims", "description", "pdf", "images"] as const;
-const WEB_MODE_VALUES = ["auto", "web", "news", "social", "docs", "research", "github", "pdf"] as const;
-const WEB_INTENT_VALUES = ["auto", "factual", "status", "comparison", "tutorial", "exploratory", "news", "resource"] as const;
-const WEB_STRATEGY_VALUES = ["auto", "fast", "balanced", "verify", "deep"] as const;
-const WEB_PROVIDER_VALUES = ["auto", "tavily", "firecrawl", "exa", "xai", "mysearch"] as const;
+const WEB_MODE_VALUES = ["auto", "fast", "deep", "answer"] as const;
+const WEB_INTENT_VALUES = ["factual", "status", "comparison", "tutorial", "exploratory", "news", "resource"] as const;
+const WEB_FRESHNESS_VALUES = ["pd", "pw", "pm", "py"] as const;
 const WORKSPACE_EXPORT_FORMAT_VALUES = ["json", "jsonl", "csv", "bibtex"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -183,37 +181,6 @@ function invalidArgs(capability: CapabilityGroup, tool: string, message: string)
     tool,
     errors: [message],
     diagnostics: { reason: "invalid_arguments" },
-  });
-}
-
-function webSearchEnvelope(data: WebSearchResponse): ResultEnvelope<WebSearchResponse> {
-  return okEnvelope({
-    capability: "discover",
-    tool: "web_search",
-    data,
-    diagnostics: { sourceCounts: { [data.provider]: data.results.length } },
-    provenance: { providerIds: [data.provider] },
-  });
-}
-
-function webResearchEnvelope(data: WebResearchResponse): ResultEnvelope<WebResearchResponse> {
-  const failedSources = [
-    ...(data.social_error ? ["social"] : []),
-    ...data.pages.filter((page) => page.error).map((page) => page.url),
-  ];
-  return okEnvelope({
-    capability: "discover",
-    tool: "web_research",
-    data,
-    diagnostics: {
-      sourceCounts: {
-        web: data.evidence.web_result_count,
-        pages: data.evidence.page_count,
-        citations: data.evidence.citation_count,
-      },
-      ...(failedSources.length > 0 ? { failedSources } : {}),
-    },
-    provenance: { providerIds: data.evidence.providers_consulted },
   });
 }
 
@@ -409,7 +376,9 @@ export function toolArgumentFailureEnvelope(tool: string, message: string): Resu
 
 async function loadCanonicalToolSchemas(config: ResolvedConfig): Promise<ToolSchema[]> {
   const installed = await listInstalledProviders(config.providers.installDir);
-  return getTools(installed);
+  // Invocation still recognizes web_search while disabled so it can return the
+  // typed external_search_disabled result instead of unknown_tool.
+  return getTools(installed, { externalSearchAvailable: true });
 }
 
 function unknownToolEnvelope(name: string, availableTools: string[]): ResultEnvelope<null> {
@@ -456,9 +425,6 @@ async function dispatchToolCall(
 
     case "web_search":
       return handleWebSearch(config, args);
-
-    case "web_research":
-      return handleWebResearch(config, args);
 
     case "resource_lookup":
       return handleResourceLookup(config, args);
@@ -652,6 +618,11 @@ async function handlePatentDetail(config: ResolvedConfig, args: ToolArguments): 
 }
 
 async function handleWebSearch(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {
+  const allowedFields = new Set(["query", "mode", "intent", "freshness", "maxResults", "max_results"]);
+  const unsupported = Object.keys(args).find((field) => !allowedFields.has(field));
+  if (unsupported) {
+    return invalidArgs("discover", "web_search", `${unsupported} is not a valid External Search v1 argument`);
+  }
   const query = asString(args.query);
   if (!query) {
     return invalidArgs("discover", "web_search", "query is required and must be a string");
@@ -664,70 +635,22 @@ async function handleWebSearch(config: ResolvedConfig, args: ToolArguments): Pro
   if (!intent.ok) {
     return invalidArgs("discover", "web_search", intent.message);
   }
-  const strategy = validateOptionalEnumValue(args, ["strategy"], WEB_STRATEGY_VALUES, "strategy");
-  if (!strategy.ok) {
-    return invalidArgs("discover", "web_search", strategy.message);
+  const freshness = validateOptionalEnumValue(args, ["freshness"], WEB_FRESHNESS_VALUES, "freshness");
+  if (!freshness.ok) {
+    return invalidArgs("discover", "web_search", freshness.message);
   }
-  const provider = validateOptionalEnumValue(args, ["provider"], WEB_PROVIDER_VALUES, "provider");
-  if (!provider.ok) {
-    return invalidArgs("discover", "web_search", provider.message);
+  const maxResults = asNumber(args.maxResults) ?? asNumber(args.max_results);
+  if (maxResults !== undefined && (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 10_000)) {
+    return invalidArgs("discover", "web_search", "maxResults must be an integer from 1 to 10000");
   }
-  const request: WebSearchRequest = {
+  const request: ExternalWebSearchRequest = {
     query,
-    mode: mode.value as WebSearchRequest["mode"],
-    intent: intent.value as WebSearchRequest["intent"],
-    strategy: strategy.value as WebSearchRequest["strategy"],
-    provider: provider.value as WebSearchRequest["provider"],
-    sources: asStringArray(args.sources),
-    maxResults: asNumber(args.maxResults) ?? asNumber(args.max_results),
-    includeContent: asBoolean(args.includeContent) ?? asBoolean(args.include_content),
-    includeAnswer: asBoolean(args.includeAnswer) ?? asBoolean(args.include_answer),
-    includeDomains: asStringArray(args.includeDomains) ?? asStringArray(args.include_domains),
-    excludeDomains: asStringArray(args.excludeDomains) ?? asStringArray(args.exclude_domains),
-    allowedXHandles: asStringArray(args.allowedXHandles) ?? asStringArray(args.allowed_x_handles),
-    excludedXHandles: asStringArray(args.excludedXHandles) ?? asStringArray(args.excluded_x_handles),
-    fromDate: asString(args.fromDate) ?? asString(args.from_date),
-    toDate: asString(args.toDate) ?? asString(args.to_date),
+    mode: mode.value,
+    intent: intent.value,
+    freshness: freshness.value,
+    maxResults,
   };
-  return captureFailure("discover", "web_search", async () =>
-    webSearchEnvelope(await runWebSearch(config, request)));
-}
-
-async function handleWebResearch(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {
-  const query = asString(args.query);
-  if (!query) {
-    return invalidArgs("discover", "web_research", "query is required and must be a string");
-  }
-  const mode = validateOptionalEnumValue(args, ["mode"], WEB_MODE_VALUES, "mode");
-  if (!mode.ok) {
-    return invalidArgs("discover", "web_research", mode.message);
-  }
-  const intent = validateOptionalEnumValue(args, ["intent"], WEB_INTENT_VALUES, "intent");
-  if (!intent.ok) {
-    return invalidArgs("discover", "web_research", intent.message);
-  }
-  const strategy = validateOptionalEnumValue(args, ["strategy"], WEB_STRATEGY_VALUES, "strategy");
-  if (!strategy.ok) {
-    return invalidArgs("discover", "web_research", strategy.message);
-  }
-  const request: WebResearchRequest = {
-    query,
-    webMaxResults: asNumber(args.webMaxResults) ?? asNumber(args.web_max_results),
-    socialMaxResults: asNumber(args.socialMaxResults) ?? asNumber(args.social_max_results),
-    scrapeTopN: asNumber(args.scrapeTopN) ?? asNumber(args.scrape_top_n),
-    includeSocial: asBoolean(args.includeSocial) ?? asBoolean(args.include_social),
-    mode: mode.value as WebResearchRequest["mode"],
-    intent: intent.value as WebResearchRequest["intent"],
-    strategy: strategy.value as WebResearchRequest["strategy"],
-    includeDomains: asStringArray(args.includeDomains) ?? asStringArray(args.include_domains),
-    excludeDomains: asStringArray(args.excludeDomains) ?? asStringArray(args.exclude_domains),
-    allowedXHandles: asStringArray(args.allowedXHandles) ?? asStringArray(args.allowed_x_handles),
-    excludedXHandles: asStringArray(args.excludedXHandles) ?? asStringArray(args.excluded_x_handles),
-    fromDate: asString(args.fromDate) ?? asString(args.from_date),
-    toDate: asString(args.toDate) ?? asString(args.to_date),
-  };
-  return captureFailure("discover", "web_research", async () =>
-    webResearchEnvelope(await runWebResearch(config, request)));
+  return runExternalWebSearchEnvelope(config, request);
 }
 
 async function handleResourceLookup(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {

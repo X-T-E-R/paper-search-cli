@@ -6,6 +6,7 @@ export interface ConfigBundlePaths {
   config: string;
   subscriptions: string;
   credentials: string;
+  externalSearch: string;
 }
 
 export function resolveConfigRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -26,6 +27,7 @@ export function resolveConfigBundlePaths(env: NodeJS.ProcessEnv = process.env): 
     config: path.join(root, "config.toml"),
     subscriptions: path.join(root, "subscriptions.toml"),
     credentials: path.join(root, "credentials.toml"),
+    externalSearch: path.join(root, "external-search.toml"),
   };
 }
 

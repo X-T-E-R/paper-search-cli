@@ -18,8 +18,9 @@ import {
 import type { AcademicSearchRequest } from "../search/academic.js";
 import type { PatentDetailRequest, PatentSearchRequest } from "../search/patent.js";
 import { failEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
-import { runWebResearch, runWebSearch } from "../web/router.js";
-import type { WebResearchRequest, WebSearchRequest } from "../web/types.js";
+import { runExternalWebSearch } from "../external-search/service.js";
+import type { ExternalWebSearchRequest } from "../external-search/types.js";
+import { ExternalSearchError } from "../external-search/errors.js";
 
 export type BatchAddMode = "row" | "none" | "first";
 export type BatchOutputFormat = "json" | "jsonl" | "csv";
@@ -29,7 +30,6 @@ export type BatchTool =
   | "patent_search"
   | "patent_detail"
   | "web_search"
-  | "web_research"
   | "resource_lookup"
   | "resource_add"
   | "resource_pdf"
@@ -397,6 +397,20 @@ export async function executeBatchTask(
         includeRaw,
       );
     }
+    if (task.tool === "web_search" && error instanceof ExternalSearchError) {
+      return cleanResult({
+        index: task.index,
+        id: task.id,
+        status: "error",
+        ok: false,
+        capability: "discover",
+        tool: task.tool,
+        addMode: task.addMode,
+        diagnostics: { reason: error.code, retryable: error.retryable },
+        errors: [error.message],
+        error: error.message,
+      });
+    }
     return {
       index: task.index,
       id: task.id,
@@ -484,9 +498,11 @@ async function executeLocalTool(
     case "patent_detail":
       return runPatentDetail(config, args as unknown as PatentDetailRequest);
     case "web_search":
-      return runWebSearch(config, args as unknown as WebSearchRequest);
-    case "web_research":
-      return runWebResearch(config, args as unknown as WebResearchRequest);
+      {
+        const response = await runExternalWebSearch(config, args as unknown as ExternalWebSearchRequest);
+        if (!response.ok) throw new Error(response.error.message);
+        return response.data;
+      }
     case "resource_lookup":
       return runResourceLookup(config, args as unknown as ResourceLookupRequest);
     case "resource_add":
@@ -783,27 +799,13 @@ function buildToolArgs(
     });
   }
 
-  if (tool === "web_search" || tool === "web_research") {
+  if (tool === "web_search") {
     return cleanObject({
       query: requiredField(row, ["query", "title", "search"], "query"),
       mode: pick(row, ["mode"]),
       intent: pick(row, ["intent"]),
-      strategy: pick(row, ["strategy"]),
-      provider: pick(row, ["provider", "platform"]),
-      sources: splitCsv(pick(row, ["sources"])),
+      freshness: pick(row, ["freshness"]),
       maxResults: parseNumber(pick(row, ["max_results", "maxResults"]), defaults.maxResults),
-      webMaxResults: parseNumber(pick(row, ["web_max_results", "webMaxResults"])),
-      socialMaxResults: parseNumber(pick(row, ["social_max_results", "socialMaxResults"])),
-      scrapeTopN: parseNumber(pick(row, ["scrape_top_n", "scrapeTopN"])),
-      includeSocial: parseOptionalBoolean(pick(row, ["include_social", "includeSocial"])),
-      includeContent: parseOptionalBoolean(pick(row, ["include_content", "includeContent"])),
-      includeAnswer: parseOptionalBoolean(pick(row, ["include_answer", "includeAnswer"])),
-      includeDomains: splitCsv(pick(row, ["include_domains", "includeDomains"])),
-      excludeDomains: splitCsv(pick(row, ["exclude_domains", "excludeDomains"])),
-      allowedXHandles: splitCsv(pick(row, ["allowed_x_handles", "allowedXHandles"])),
-      excludedXHandles: splitCsv(pick(row, ["excluded_x_handles", "excludedXHandles"])),
-      fromDate: pick(row, ["from_date", "fromDate"]),
-      toDate: pick(row, ["to_date", "toDate"]),
     });
   }
 
@@ -894,8 +896,7 @@ function normalizeTool(row: Record<string, string>): BatchTask["tool"] {
   const raw = (pick(row, ["tool", "action", "type"]) || "").trim().toLowerCase();
   if (!raw) {
     if (pick(row, ["source_id", "sourceId", "ane"])) return "patent_detail";
-    if (pick(row, ["mode", "intent", "strategy", "sources", "include_content", "includeContent"])) return "web_search";
-    if (pick(row, ["scrape_top_n", "scrapeTopN", "web_max_results", "webMaxResults"])) return "web_research";
+    if (pick(row, ["mode", "intent", "freshness"])) return "web_search";
     if (pick(row, ["item_key", "itemKey", "record_id", "recordId"])) return "resource_pdf";
     if (pick(row, ["doi", "pmid", "arxiv", "isbn", "identifier", "url"])) return "resource_lookup";
     if (pick(row, ["item", "item_json", "detail", "detail_json"])) return "resource_add";
@@ -912,8 +913,6 @@ function normalizeTool(row: Record<string, string>): BatchTask["tool"] {
     detail: "patent_detail",
     web: "web_search",
     web_search: "web_search",
-    research: "web_research",
-    web_research: "web_research",
     lookup: "resource_lookup",
     add: "resource_add",
     save: "resource_add",

@@ -28,6 +28,7 @@ import {
   parseUserConfigDocument,
   type ConfigKeyMetadata,
 } from "./userConfig.js";
+import { ExternalSearchConfigFileSchema } from "../external-search/config.js";
 
 export interface LoadConfigOptions {
   cwd?: string;
@@ -40,6 +41,7 @@ export interface ValidatedConfigFile {
     | "config-fragment"
     | "subscriptions"
     | "credentials"
+    | "external-search"
     | "project"
     | "project-fragment"
     | "explicit"
@@ -150,7 +152,15 @@ async function loadNonSecretTomlConfig(
 ): Promise<LoadedConfigFile | null> {
   if (!(await fileExists(filePath))) return null;
   const raw = await readFile(filePath, "utf8");
-  const parsed = parseUserConfigDocument(parse(raw), {
+  const document = parse(raw) as Record<string, unknown>;
+  for (const key of ["externalSearch", "external_search", "external-search"]) {
+    if (Object.prototype.hasOwnProperty.call(document, key)) {
+      throw new Error(
+        `forbidden_config_authority: external search execution settings are allowed only in the user-level external-search.toml (${filePath})`,
+      );
+    }
+  }
+  const parsed = parseUserConfigDocument(document, {
     allowLegacy: originKind !== "user" || options.allowMissingSchemaVersion,
   });
   const legacy = options.inheritedLegacy ?? parsed.legacy;
@@ -399,6 +409,13 @@ export async function validateConfigFiles(options: LoadConfigOptions = {}): Prom
 
   const credentials = await loadCredentialsTomlConfig(bundlePaths.credentials, providerMetadata);
   results.push({ kind: "credentials", path: bundlePaths.credentials, exists: Boolean(credentials), legacy: false });
+
+  if (await fileExists(bundlePaths.externalSearch)) {
+    ExternalSearchConfigFileSchema.parse(parse(await readFile(bundlePaths.externalSearch, "utf8")));
+    results.push({ kind: "external-search", path: bundlePaths.externalSearch, exists: true, legacy: false });
+  } else {
+    results.push({ kind: "external-search", path: bundlePaths.externalSearch, exists: false, legacy: false });
+  }
 
   const projectLayers: LoadedConfigLayer[] = [];
   for (const projectPath of resolveProjectConfigCandidates(cwd)) {

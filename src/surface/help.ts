@@ -3,6 +3,7 @@ import type { ProviderHelpExample, ProviderUsageHelp, SourceType } from "../prov
 import { listInstalledProviders, type InstalledProviderSummary } from "../providers/registry/sync.js";
 import { createPlatformStatusSnapshot } from "./status.js";
 import { CLI_ONLY_COMMANDS, CLI_TOOL_MAPPINGS, getTools } from "./tools.js";
+import { inspectExternalSearchStatic } from "../external-search/config.js";
 
 type HelpLocale = "zh" | "en";
 
@@ -172,7 +173,7 @@ function buildQuickstart(config: ResolvedConfig, locale: HelpLocale): string[] {
         "再跑 paper-search tools --json，看当前 canonical tool 与 CLI alias 映射。",
         "做论文检索时先用 academic，再对选中的结果用 resource-add。",
         "需要带走本地 workspace 结果时，用 workspace-export 输出 JSON、JSONL、CSV 或 BibTeX。",
-        "做网页检索或研究时先看 platform-status 的 web 分组，再用 web 或 web-research。",
+        "网页检索仅在用户级 external-search.toml 启用后使用 web。",
         "已知 DOI / URL 先走 lookup，不要直接手填 metadata。",
       ]
     : [
@@ -181,7 +182,7 @@ function buildQuickstart(config: ResolvedConfig, locale: HelpLocale): string[] {
         "Use academic first for paper search, then resource-add for selected results.",
         "For patents, use patent first, then patent-detail, then resource-add.",
         "Use workspace-export when you need portable JSON, JSONL, CSV, or BibTeX output from the local workspace.",
-        "For web search or research, inspect the web group in platform-status before using web or web-research.",
+        "Use web only after enabling the user-level external-search.toml integration.",
         "Use lookup for known DOI/URL records instead of hand-authoring metadata.",
       ];
 }
@@ -201,7 +202,8 @@ export async function createHelpSnapshot(
 }> {
   const locale = resolveLocale(options.locale);
   const installed = await listInstalledProviders(config.providers.installDir);
-  const toolSchemas = getTools(installed);
+  const externalSearch = await inspectExternalSearchStatic();
+  const toolSchemas = getTools(installed, { externalSearchAvailable: externalSearch.state === "configured" });
   const platformStatus = await createPlatformStatusSnapshot(config);
   const statusMap = new Map(
     [...platformStatus.academic, ...platformStatus.patent, ...platformStatus.web].map((entry) => [
@@ -236,7 +238,7 @@ export async function createHelpSnapshot(
     : topic === "lookup"
       ? toolSchemas.filter((tool) => tool.name === "resource_lookup")
     : topic === "web"
-      ? toolSchemas.filter((tool) => tool.name === "web_search" || tool.name === "web_research")
+      ? toolSchemas.filter((tool) => tool.name === "web_search")
     : topic === "workspace"
         ? toolSchemas.filter((tool) =>
             tool.name === "resource_add" ||
@@ -262,18 +264,18 @@ export async function createHelpSnapshot(
 
   const notes = locale === "zh"
     ? [
-        "resource_lookup 会返回规范化 metadata；完整网页检索 / 研究应使用 web 或 web-research。",
+        "resource_lookup 会返回规范化 metadata；通用网页检索使用可选的 External Search v1 web 命令。",
         "patent_detail 是显式只读详情拉取；后续如需保存，走 patent-detail -> resource-add。",
-        "web_search / web_research 只在配置了对应 `[api.<provider>]` 凭据后可用；live 调用不进入默认测试链。",
+        "web_search 仅从用户级 external-search.toml 获取执行授权；status 不启动进程，doctor 只运行无网络 probe。",
         "resource_add / collection_list 指向本地 workspace sink；没有宿主应用写入副作用。",
         "workspace_export 是本地导出 sink，可输出 JSON、JSONL、CSV 或 BibTeX。",
         "resource_pdf 使用本地 attachment sink；itemKey 是 workspace item id。",
         "昂贵烟测仍然必须单独显式启动；这里展示的是默认安全路径。",
       ]
     : [
-        "resource_lookup returns normalized metadata; use web or web-research for full web search / research.",
+        "resource_lookup returns normalized metadata; use optional External Search v1 web_search for general web discovery.",
         "patent_detail is an explicit read-only detail step; store the result later through patent-detail -> resource-add.",
-        "web_search / web_research require configured `[api.<provider>]` credentials; live calls stay outside the default test chain.",
+        "web_search gets execution authority only from user-level external-search.toml; status is static and doctor runs a no-network probe.",
         "resource_add / collection_list target the local workspace sink with no host-application write side effects.",
         "workspace_export is a local export sink for JSON, JSONL, CSV, or BibTeX output.",
         "resource_pdf uses the local attachment sink; itemKey is a workspace item id.",

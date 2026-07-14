@@ -1,6 +1,6 @@
 ---
 name: paper-search-cli
-description: Use the local paper-search-cli for academic/patent/configured-web search, source presets and search plans, identifier lookup, artifact acquisition, extraction, material ingest/status, workspace storage/export, provider and registry-subscription management, config/migration/status checks, and MCP serving. Trigger for paper-search-cli, paper-search MCP, mcp serve, provider registries, academic_search, patent_search, patent_detail, search-plan, web_search, web_research, resource_lookup, resource_add, resource_pdf, artifact_download, extract, material_ingest, workspace_export, platform_status, batch, doctor, config, migrate, registries, providers, or material-providers. Use the Zotero skill instead for Zotero writes or Zotero Resource Search; do not use this skill for general web search that does not need Paper Search.
+description: Use the local paper-search-cli for academic/patent search, optional generic External Search v1 web_search, source presets and search plans, identifier lookup, artifact acquisition, extraction, material ingest/status, workspace storage/export, provider and registry-subscription management, config/migration/status checks, and MCP serving. Trigger for paper-search-cli, paper-search MCP, mcp serve, provider registries, academic_search, patent_search, patent_detail, search-plan, web_search, resource_lookup, resource_add, resource_pdf, artifact_download, extract, material_ingest, workspace_export, platform_status, batch, doctor, config, migrate, registries, providers, or material-providers. Use the Zotero skill instead for Zotero writes or Zotero Resource Search; do not use this skill for general web search that does not need Paper Search.
 ---
 
 # Paper Search CLI
@@ -34,7 +34,7 @@ Do not use this skill for ordinary news lookup, broad web browsing, or general c
 
 | Group | Use for |
 | --- | --- |
-| `discover` | Academic, patent, and configured web search. |
+| `discover` | Academic and patent search, plus optional generic External Search v1. |
 | `identify` | DOI/PMID/arXiv/ISBN/URL metadata lookup and patent detail. |
 | `assess` | Reserved group with no implemented tools; do not route work here (promotion criteria: [ADR-0003](../../docs/decisions/ADR-0003-assess-capability-group-disposition.md)). |
 | `acquire` | Artifact acquisition/recording from a URL, workspace item, or DOI, plus PDF attachment records. |
@@ -74,4 +74,4 @@ node scripts/paper-search.mjs status --json
 
 ## Validation Boundary
 
-Report the exact command evidence used. Keep smoke or live-network validation explicit: do not claim live provider, live web backend, remote PDF, networked material extraction, or MCP behavior unless the matching smoke gate, provider inspection, contract test, or JSON-RPC call was actually run.
+Report the exact command evidence used. Keep smoke or live-network validation explicit: do not claim live provider, external web search, remote PDF, networked material extraction, or MCP behavior unless the matching smoke gate, provider inspection, contract test, or JSON-RPC call was actually run. `status` is static; `doctor` may run only the External Search v1 no-network probe.

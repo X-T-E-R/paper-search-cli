@@ -44,11 +44,6 @@ describe("discovery commands", () => {
       "utf8",
     );
     await writeFile(
-      path.join(appData, "paper-search", "credentials.toml"),
-      ["schemaVersion = 1", "", "[api.tavily]", 'apiKey = "tvly-test"', ""].join("\n"),
-      "utf8",
-    );
-    await writeFile(
       path.join(installDir, "alpha", "manifest.json"),
       JSON.stringify({
         id: "alpha",
@@ -116,14 +111,13 @@ describe("discovery commands", () => {
     const academicTool = tools.tools.find((entry: { name: string }) => entry.name === "academic_search");
     const patentSearchTool = tools.tools.find((entry: { name: string }) => entry.name === "patent_search");
     const patentDetailTool = tools.tools.find((entry: { name: string }) => entry.name === "patent_detail");
-    const webSearchTool = tools.tools.find((entry: { name: string }) => entry.name === "web_search");
     const resourcePdfTool = tools.tools.find((entry: { name: string }) => entry.name === "resource_pdf");
     expect(academicTool.inputSchema.properties.platform.enum).toBeUndefined();
     expect(academicTool.inputSchema.properties.sources.items.enum).toBeUndefined();
     expect(patentSearchTool.inputSchema.properties.platform.enum).toBeUndefined();
     expect(patentSearchTool.inputSchema.properties.sources.items.enum).toBeUndefined();
     expect(patentDetailTool.inputSchema.properties.platform.enum).toEqual(["patent-alpha"]);
-    expect(webSearchTool.inputSchema.properties.provider.enum).toContain("tavily");
+    expect(tools.tools.find((entry: { name: string }) => entry.name === "web_search")).toBeUndefined();
     expect(resourcePdfTool.inputSchema.required).toEqual(["itemKey"]);
     expect(tools.cliMappings).toEqual(
       expect.arrayContaining([
@@ -140,7 +134,7 @@ describe("discovery commands", () => {
       }),
     ]);
     expect(help.notes).toEqual(
-      expect.arrayContaining([expect.stringContaining("web search")]),
+      expect.arrayContaining([expect.stringContaining("web_search")]),
     );
 
     const status = JSON.parse(statusStdout);
@@ -160,14 +154,7 @@ describe("discovery commands", () => {
         configured: true,
       }),
     ]);
-    expect(status.data.web).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "tavily",
-          enabled: true,
-          configured: true,
-        }),
-      ]),
-    );
+    expect(status.data.web).toEqual([]);
+    expect(status.data.externalSearch.state).toBe("disabled");
   });
 });

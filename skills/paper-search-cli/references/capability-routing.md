@@ -13,7 +13,7 @@ node scripts/paper-search.mjs help
 | --- | --- | --- | --- |
 | Search papers or scholarly records | `discover` | `academic`, `academic-search`, `academic_search` | `academic_search` |
 | Search patents | `discover` | `patent`, `patent-search`, `patent_search` | `patent_search` |
-| Search configured web backends | `discover` | `web`, `web-search`, `web_search`, `web-research`, `web_research` | `web_search`, `web_research` |
+| Search through configured External Search v1 | `discover` | `web`, `web-search`, `web_search` | `web_search` |
 | Resolve DOI/PMID/arXiv/ISBN/URL metadata | `identify` | `lookup`, `resource-lookup`, `resource_lookup` | `resource_lookup` |
 | Fetch patent detail blocks | `identify` | `patent-detail`, `patent_detail` | `patent_detail` |
 | Rank, dedupe, or inspect source metrics | `assess` | Reserved group ([ADR-0003](../../../docs/decisions/ADR-0003-assess-capability-group-disposition.md)): no implemented tools or commands. Use live catalog output and result diagnostics only. | None; reserved. |
@@ -32,9 +32,9 @@ node scripts/paper-search.mjs help
 - With no positive selector, academic search uses `general` and patent search uses `patents`. Repeat `--preset`, `--source`, or `--category` to union selections; request-level `--exclude-source` is final.
 - Use `search-plan --type academic|patent` with the same selector flags to inspect canonical ids, preset/category expansion, skipped providers, and readiness without searching. Literal `--platform all` means command-scoped non-view sources, not `general`.
 - Use `lookup` when the input is already a DOI, PMID, arXiv ID, ISBN, or URL that should become normalized metadata.
-- Use `web` or `web-research` only for configured paper-search web backends. General web browsing belongs to the normal browser/search route unless the user explicitly wants paper-search.
+- Use `web` only when the user-level `external-search.toml` integration is configured. General web browsing belongs to the normal browser/search route unless the user explicitly wants paper-search.
 
-Keep first passes small with `--max-results`, `--web-max-results`, or provider-specific limits. Use `platform-status --json` when a provider is unavailable or credentials may be missing.
+Keep first passes small with `--max-results`. Use `platform-status --json` for static external-search readiness and `doctor --json` for its no-network probe.
 
 ## Material Acquisition, Extraction, and Ingest
 

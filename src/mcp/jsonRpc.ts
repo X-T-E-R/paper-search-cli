@@ -3,6 +3,8 @@ import { listInstalledProviders } from "../providers/registry/sync.js";
 import { getTools } from "../surface/tools.js";
 import { createPlatformStatusSnapshot } from "../surface/status.js";
 import { handleMcpToolCall } from "./toolHandlers.js";
+import { inspectExternalSearchStatic } from "../external-search/config.js";
+import { getSystemVersion } from "../runtime/version.js";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -49,7 +51,7 @@ export class PaperSearchMcpServer {
   ) {
     this.serverInfo = {
       name: options.name ?? "paper-search-cli-mcp",
-      version: options.version ?? "0.1.0",
+      version: options.version ?? getSystemVersion(),
     };
   }
 
@@ -186,8 +188,13 @@ export class PaperSearchMcpServer {
   }
 
   private async handleToolsList(id: string | number | null): Promise<JsonRpcResponse> {
-    const installed = await listInstalledProviders(this.config.providers.installDir);
-    return this.createResponse(id, { tools: getTools(installed) });
+    const [installed, externalSearch] = await Promise.all([
+      listInstalledProviders(this.config.providers.installDir),
+      inspectExternalSearchStatic(),
+    ]);
+    return this.createResponse(id, {
+      tools: getTools(installed, { externalSearchAvailable: externalSearch.state === "configured" }),
+    });
   }
 
   private async handleToolsCall(

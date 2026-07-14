@@ -78,9 +78,9 @@ node scripts/paper-search.mjs config list
 node scripts/paper-search.mjs config get defaults.maxResults
 node scripts/paper-search.mjs config set defaults.maxResults 25
 node scripts/paper-search.mjs config unset defaults.maxResults
-node scripts/paper-search.mjs config credentials set api.tavily.apiKey --from-env TAVILY_API_KEY
-node scripts/paper-search.mjs config credentials get api.tavily.apiKey
-node scripts/paper-search.mjs config credentials unset api.tavily.apiKey
+node scripts/paper-search.mjs config credentials set platform.wos.apiKey --from-env WOS_API_KEY
+node scripts/paper-search.mjs config credentials get platform.wos.apiKey
+node scripts/paper-search.mjs config credentials unset platform.wos.apiKey
 node scripts/paper-search.mjs config import-env ./.env
 node scripts/paper-search.mjs config import-env ./.env --apply
 ```

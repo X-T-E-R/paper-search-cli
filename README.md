@@ -123,6 +123,8 @@ bundle:
 - `credentials.toml` optionally stores plaintext credentials with restricted
   filesystem access. It is not encrypted, so use environment variables instead
   when plaintext-at-rest is unsuitable.
+- `external-search.toml` optionally grants External Search v1 process authority;
+  it is not part of the layered config merge.
 
 Only `config.toml` is required. An example lives at
 [`paper-search.example.toml`](./paper-search.example.toml). Project settings are
@@ -146,13 +148,13 @@ promoted into trusted subscriptions. Use `paper-search config explain <key>` to
 see the winning value and origin, and `paper-search config validate` to validate
 the conventional, project, and explicit files against their owning schemas.
 
-Use dedicated credential commands instead of generic `config set`:
+Use dedicated credential commands instead of generic `config set` for installed
+academic, patent, or material providers:
 
 ```bash
-printf '%s' "$TAVILY_API_KEY" | paper-search config credentials set api.tavily.apiKey --stdin
-paper-search config credentials set api.tavily.apiKey --from-env TAVILY_API_KEY
-paper-search config credentials get api.tavily.apiKey
-paper-search config credentials unset api.tavily.apiKey
+printf '%s' "$WOS_API_KEY" | paper-search config credentials set platform.wos.apiKey --stdin
+paper-search config credentials get platform.wos.apiKey
+paper-search config credentials unset platform.wos.apiKey
 ```
 
 Credential values are never accepted as positional arguments, and `get` masks
@@ -308,8 +310,6 @@ Common environment overrides use `PAPER_SEARCH_*` names:
 - `PAPER_SEARCH_WORKSPACE_ROOT`
 - `PAPER_SEARCH_PLATFORM__PATENTSTAR__LOGIN_NAME`
 - `PAPER_SEARCH_PLATFORM__PATENTSTAR__PASSWORD`
-- `PAPER_SEARCH_API__TAVILY__API_KEY`
-- `PAPER_SEARCH_API__FIRECRAWL__API_KEY`
 
 ## Capability Map
 
@@ -319,7 +319,7 @@ skill.
 
 | Capability | What it does | Common entrypoints |
 | --- | --- | --- |
-| `discover` | Search academic, patent, and web sources with per-source diagnostics. | `academic`, `patent`, `web`, `web-research` |
+| `discover` | Search academic and patent sources, plus optional generic external web search. | `academic`, `patent`, `web` |
 | `identify` | Resolve a known identifier, URL, or provider-native id to normalized metadata. | `lookup`, `patent-detail` |
 | `assess` | **Reserved** — rank, dedupe, and source/journal-level metrics (no shipped tools; promotion criteria in [ADR-0003](./docs/decisions/ADR-0003-assess-capability-group-disposition.md)). | — |
 | `acquire` | Fetch or record artifacts with provenance and attempt history. | `artifact download`, `artifact list`, `artifact show`, `resource-pdf` |
@@ -469,8 +469,7 @@ so material registries require the exact JSON URL.
 paper-search academic "retrieval augmented generation"
 paper-search patent "solid state battery" --platform patentstar --database CN --patent-type invention
 paper-search patent-detail patentstar ANE123 --include legalStatus,claims,pdf
-paper-search web "latest RAG evaluation benchmarks" --provider tavily --max-results 5
-paper-search web-research "OpenAI API documentation updates" --mode docs --web-max-results 5 --scrape-top-n 2
+paper-search web "latest RAG evaluation benchmarks" --mode deep --freshness pm --max-results 5
 paper-search lookup "10.1145/3366423.3380130"
 paper-search resource-add --item-file ./search.json --index 0 --collection-path Research/Inbox --tags rag --json
 paper-search resource-pdf <workspace-item-id> --url https://example.org/paper.pdf --filename paper.pdf --json
@@ -638,8 +637,19 @@ capability tags, and workspace sink as the CLI.
 The HTTP endpoints are a project-specific JSON-RPC bridge, not a complete MCP
 HTTP+SSE transport. Use `--transport stdio` for standards-based MCP clients.
 
-Live provider, web, and material network behavior follows the same explicit
-smoke policy as CLI commands.
+External `web_search` is advertised only when the dedicated user-level
+`external-search.toml` passes static checks. `status` never starts the process;
+`doctor` runs the protocol-defined no-network probe. See
+`external-search.example.toml`. Project and `--config` files cannot grant
+execution authority. The configured executable and trusted `.mjs` adapters
+under `<configRoot>/adapters/` run in child processes with bounded I/O and
+deadlines; trusted adapter code is fault-isolated, not sandboxed.
+
+Version 0.4 removes the built-in Tavily, Firecrawl, Exa, xAI, and MySearch Web
+adapters and removes `web_research`. Existing retired `[api.*]` values are not
+deleted; doctor may report populated secret-like values as masked and unused.
+No workspace or provider data migration is required. See
+[Migrating to 0.4](./docs/migration-0.4.md).
 
 ## Test Layers
 

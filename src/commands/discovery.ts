@@ -8,6 +8,7 @@ import { createHelpSnapshot } from "../surface/help.js";
 import { createPlatformStatusSnapshot } from "../surface/status.js";
 import type { PlatformStatusSnapshot } from "../surface/status.js";
 import { getTools, CLI_ONLY_COMMANDS, CLI_TOOL_MAPPINGS } from "../surface/tools.js";
+import { inspectExternalSearchStatic } from "../external-search/config.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 
 function splitCsv(value?: string): string[] {
@@ -81,13 +82,17 @@ export function registerDiscoveryCommands(program: Command, io: Io): void {
     .action(async (options: { json?: boolean }, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
-      const installed = await listInstalledProviders(config.providers.installDir);
-      const tools = getTools(installed);
+      const [installed, externalSearch] = await Promise.all([
+        listInstalledProviders(config.providers.installDir),
+        inspectExternalSearchStatic(),
+      ]);
+      const tools = getTools(installed, { externalSearchAvailable: externalSearch.state === "configured" });
+      const cliMappings = CLI_TOOL_MAPPINGS.filter((mapping) => tools.some((tool) => tool.name === mapping.tool));
       if (options.json) {
         io.writeJson({
           surface: "capability-first",
           tools,
-          cliMappings: CLI_TOOL_MAPPINGS,
+          cliMappings,
           cliOnlyCommands: CLI_ONLY_COMMANDS,
         });
         return;
@@ -131,6 +136,7 @@ export function registerDiscoveryCommands(program: Command, io: Io): void {
       }
       io.writeLine(`provider install dir: ${snapshot.providerInstallDir}`);
       io.writeLine(`available tools: ${snapshot.availableTools.join(", ")}`);
+      io.writeLine(`external search: ${snapshot.externalSearch.state}`);
       for (const group of [
         ["academic", snapshot.academic],
         ["patent", snapshot.patent],

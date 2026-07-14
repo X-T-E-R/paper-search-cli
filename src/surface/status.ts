@@ -2,7 +2,7 @@ import type { ResolvedConfig } from "../config/schema.js";
 import type { ProviderManifest, SourceType } from "../providers/sdk/types.js";
 import type { InstalledProviderSummary } from "../providers/registry/sync.js";
 import { getCanonicalToolNames } from "./toolCatalog.js";
-import { getWebProviderHealth } from "../web/router.js";
+import { inspectExternalSearchStatic, type ExternalSearchStaticStatus } from "../external-search/config.js";
 import { resolveProviderAvailability } from "../providers/runtime/availability.js";
 import {
   resolveProviderSelection,
@@ -41,12 +41,12 @@ export interface PlatformStatusSnapshot {
     installed: number;
     available: number;
     invalid: number;
-    webBackends: number;
-    configuredWebBackends: number;
+    externalSearchConfigured: boolean;
   };
   academic: PlatformStatusEntry[];
   patent: PlatformStatusEntry[];
   web: PlatformStatusEntry[];
+  externalSearch: ExternalSearchStaticStatus;
   invalidProviders: Array<{
     id: string;
     path: string;
@@ -115,6 +115,7 @@ export async function createPlatformStatusSnapshot(
   config: ResolvedConfig,
 ): Promise<PlatformStatusSnapshot> {
   const selectionCandidates = await listProviderSelectionCandidates(config);
+  const externalSearch = await inspectExternalSearchStatic();
   const installed = selectionCandidates.installed;
   const candidates = selectionCandidates.candidates;
   const validEntries = installed.filter((entry) => entry.valid && entry.manifest);
@@ -141,20 +142,6 @@ export async function createPlatformStatusSnapshot(
       plans.allPlan,
     );
   });
-  const webEntries: PlatformStatusEntry[] = getWebProviderHealth(config).map((entry) => ({
-    ...entry,
-    runnable: entry.available,
-    includedInAll: false,
-    includedInDefault: false,
-    defaultPresets: [],
-    defaultSelectionReasons: [],
-    selectionReason: "web backend is selected by web routing, not search presets",
-    entryKind: "source",
-    aliases: [],
-    domains: [],
-    contentKinds: [],
-    access: [],
-  }));
   const invalidProviders = installed
     .filter((entry) => !entry.valid)
     .map((entry) => ({
@@ -166,21 +153,21 @@ export async function createPlatformStatusSnapshot(
   return {
     surface: "capability-first",
     providerInstallDir: config.providers.installDir,
-    availableTools: getCanonicalToolNames(),
+    availableTools: getCanonicalToolNames().filter(
+      (name) => name !== "web_search" || externalSearch.state === "configured",
+    ),
     summary: {
       installed: validEntries.length,
       available: [
         ...statusEntries.filter((entry) => entry.available),
-        ...webEntries.filter((entry) => entry.available),
       ].length,
       invalid: invalidProviders.length,
-      webBackends: webEntries.length,
-      configuredWebBackends: webEntries.filter((entry) => entry.available).length,
+      externalSearchConfigured: externalSearch.state === "configured",
     },
     academic: groupBySourceType(statusEntries, "academic"),
     patent: groupBySourceType(statusEntries, "patent"),
-    web: [...groupBySourceType(statusEntries, "web"), ...webEntries]
-      .sort((left, right) => left.id.localeCompare(right.id)),
+    web: groupBySourceType(statusEntries, "web"),
+    externalSearch,
     invalidProviders,
   };
 }

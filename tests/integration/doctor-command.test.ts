@@ -157,6 +157,7 @@ describe("doctor command", () => {
           key: "apiKey",
           status: "present",
           value: "<masked>",
+          unused: true,
         }),
         expect.objectContaining({
           scope: "api",
@@ -164,6 +165,7 @@ describe("doctor command", () => {
           key: "apiKey",
           status: "present",
           value: "<masked>",
+          unused: true,
         }),
         expect.objectContaining({
           scope: "platform",
@@ -174,12 +176,14 @@ describe("doctor command", () => {
         }),
       ]),
     );
-    expect(parsed.data.apiKeys.missing).toEqual(
+    expect(parsed.data.apiKeys.missing).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ scope: "api", providerId: "firecrawl", key: "apiKey" }),
         expect.objectContaining({ scope: "api", providerId: "xai", key: "apiKey" }),
       ]),
     );
+    expect(parsed.data.externalSearch.state).toBe("disabled");
+    expect(parsed.data.mcp.status.serverInfo.version).toBe("0.4.0");
   });
 
   it("does not fetch remote registries during readiness checks", async () => {

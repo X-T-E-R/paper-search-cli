@@ -243,90 +243,31 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "web_search",
     description:
-      'Unified web search over configured web backends. Auto-routes to Tavily, Firecrawl, Exa, xAI, or MySearch based on query intent. Supports modes like "web", "news", "social", "docs", "research", "github", and "pdf".',
+      "Generic web search through an explicitly configured External Search v1 process.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Search query string" },
         mode: {
           type: "string",
-          enum: ["auto", "web", "news", "social", "docs", "research", "github", "pdf"],
+          enum: ["auto", "fast", "deep", "answer"],
           description: "Search mode (default: auto)",
         },
         intent: {
           type: "string",
-          enum: ["auto", "factual", "status", "comparison", "tutorial", "exploratory", "news", "resource"],
-          description: "Query intent hint (default: auto)",
+          enum: ["factual", "status", "comparison", "tutorial", "exploratory", "news", "resource"],
+          description: "Optional query intent hint",
         },
-        strategy: {
+        freshness: {
           type: "string",
-          enum: ["auto", "fast", "balanced", "verify", "deep"],
-          description: "Search strategy (default: auto)",
+          enum: ["pd", "pw", "pm", "py"],
+          description: "Optional freshness window",
         },
-        provider: {
-          type: "string",
-          enum: ["auto", "tavily", "firecrawl", "exa", "xai", "mysearch"],
-          description: "Force a specific configured provider (default: auto)",
-        },
-        sources: {
-          type: "array",
-          items: { type: "string", enum: ["web", "x"] },
-          description: 'Search sources, e.g. ["web"], ["x"], or ["web","x"]',
-        },
-        max_results: {
+        maxResults: {
           type: "number",
-          description: "Maximum results. 0 = global/default backend value, -1 = configured backend default.",
-        },
-        include_content: {
-          type: "boolean",
-          description: "Include page full text where supported (default: false)",
-        },
-        include_answer: {
-          type: "boolean",
-          description: "Include provider-generated answer (default: true)",
-        },
-        include_domains: {
-          type: "array",
-          items: { type: "string" },
-          description: "Only search these domains",
-        },
-        exclude_domains: {
-          type: "array",
-          items: { type: "string" },
-          description: "Exclude these domains",
-        },
-        from_date: { type: "string", description: "Start date filter (YYYY-MM-DD)" },
-        to_date: { type: "string", description: "End date filter (YYYY-MM-DD)" },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "web_research",
-    description:
-      "Multi-step web research workflow: web search plus top-N page extraction and optional X/social search. Returns evidence with citations and extraction status.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Research question" },
-        web_max_results: { type: "number", description: "Web search result count (default: 5)" },
-        social_max_results: { type: "number", description: "Social search result count (default: 5)" },
-        scrape_top_n: { type: "number", description: "How many top URLs to extract (default: 3)" },
-        include_social: { type: "boolean", description: "Include X/social search when configured (default: true)" },
-        mode: {
-          type: "string",
-          enum: ["auto", "web", "news", "social", "docs", "research", "github", "pdf"],
-          description: "Search mode (default: auto)",
-        },
-        include_domains: {
-          type: "array",
-          items: { type: "string" },
-          description: "Only search these domains",
-        },
-        exclude_domains: {
-          type: "array",
-          items: { type: "string" },
-          description: "Exclude these domains",
+          minimum: 1,
+          maximum: 10000,
+          description: "Maximum normalized results",
         },
       },
       required: ["query"],
@@ -719,7 +660,6 @@ const TOOL_CAPABILITIES: Record<string, CapabilityGroup> = {
   patent_search: "discover",
   patent_detail: "identify",
   web_search: "discover",
-  web_research: "discover",
   resource_add: "organize",
   collection_list: "organize",
   workspace_export: "organize",

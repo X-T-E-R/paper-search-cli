@@ -76,7 +76,7 @@ describe("PaperSearchMcpServer", () => {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "paper-search-cli-mcp" },
+        serverInfo: { name: "paper-search-cli-mcp", version: "0.4.0" },
       },
     });
 

@@ -24,7 +24,7 @@ npm run test:integration
 
 The layers cover:
 
-- `unit`: identifier detection, lookup normalization, web routing/status logic,
+- `unit`: identifier detection, lookup normalization, external-search protocol/process/status logic,
   capability and envelope contracts, plan envelopes, tool argument parsing, MCP
   JSON-RPC behavior, batch task shaping/serialization, workspace storage, and
   smoke gating
@@ -34,7 +34,7 @@ The layers cover:
   compatibility with offline stubs
 - `integration`: CLI behavior with temporary config files, realistic command
   wiring, local registry/package fixtures, discovery/help flows, MCP HTTP server
-  flows, lookup-to-add flows, patent detail-to-add flows, stubbed web
+  flows, lookup-to-add flows, patent detail-to-add flows, offline external-search
   search/research commands, stubbed `resource-pdf` downloads, material artifact
   and extraction workflows, batch workflows, resumable JSONL output, workspace
   sink checks, and workspace export checks

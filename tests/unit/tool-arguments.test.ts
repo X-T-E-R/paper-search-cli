@@ -15,7 +15,7 @@ function schema(name: string) {
 
 describe("tool argument parsing and validation", () => {
   it("keeps search selectors open for catalogue-known sources on partial installs", () => {
-    const tools = getTools([]);
+  const tools = getTools([], { externalSearchAvailable: true });
     const academic = tools.find((entry) => entry.name === "academic_search")!;
     const patentDetail = tools.find((entry) => entry.name === "patent_detail")!;
     const platform = academic.inputSchema.properties.platform as { enum?: string[] };
@@ -73,15 +73,15 @@ describe("tool argument parsing and validation", () => {
     expect(() => assertToolArgumentsMatchSchema(webSearch, { query: "RAG", mode: "invalid" })).toThrow(
       /mode must be one of/u,
     );
-    expect(() => assertToolArgumentsMatchSchema(webSearch, { query: "RAG", max_results: "5" })).toThrow(
-      /max_results must be a number/u,
+    expect(() => assertToolArgumentsMatchSchema(webSearch, { query: "RAG", maxResults: "5" })).toThrow(
+      /maxResults must be a number/u,
     );
     expect(() =>
-      assertToolArgumentsMatchSchema(webSearch, { query: "RAG", include_domains: ["example.test"] }),
+      assertToolArgumentsMatchSchema(webSearch, { query: "RAG", freshness: "pw" }),
     ).not.toThrow();
     expect(() =>
-      assertToolArgumentsMatchSchema(webSearch, { query: "RAG", include_domains: [5] }),
-    ).toThrow(/include_domains\[0\] must be a string/u);
+      assertToolArgumentsMatchSchema(webSearch, { query: "RAG", freshness: "week" }),
+    ).toThrow(/freshness must be one of/u);
     expect(() => assertToolArgumentsMatchSchema(schema("academic_search"), {
       query: "RAG",
       extra: { provider: "fixture" },

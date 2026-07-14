@@ -90,7 +90,6 @@ resource_lookup
 patent_search
 patent_detail
 web_search
-web_research
 resource_add
 collection_list
 workspace_export
@@ -116,7 +115,6 @@ Use aliases only when the freshly built live catalog reports them:
 | `patent_search` | `patent`, `patent-search`, `patent_search` |
 | `patent_detail` | `patent-detail`, `patent_detail` |
 | `web_search` | `web`, `web-search`, `web_search` |
-| `web_research` | `web-research`, `web_research` |
 | `resource_add` | `resource-add`, `resource_add`, `add` |
 | `collection_list` | `collection-list`, `collection_list`, `collections` |
 | `workspace_export` | `workspace-export`, `resource-export`, `resource_export` |
@@ -168,7 +166,6 @@ academic_search
 patent_search
 patent_detail
 web_search
-web_research
 resource_lookup
 resource_add
 resource_pdf
@@ -195,8 +192,9 @@ Do not claim host-application writes. The CLI writes to its configured local wor
 
 The conventional bundle contains user non-secret `config.toml`, user-only
 `subscriptions.toml`, and optional ACL-restricted plaintext
-`credentials.toml`. Only `config.toml` is required. Plaintext credentials are
-not encrypted.
+`credentials.toml`. Optional external process authority lives separately in
+`external-search.toml`. Only `config.toml` is required. Plaintext credentials
+are not encrypted.
 
 Configuration layers resolve in this order: built-in defaults, user
 `config.toml`, project config, explicit `--config`, `credentials.toml` for
@@ -219,7 +217,8 @@ are not promoted into trusted subscriptions.
   migration together. Add `--apply` only after reviewing its source, target,
   blockers, and digests; custom provider roots require
   `--legacy-install-dir <path>`.
-- Web backend credentials live under `[api.<provider>]` or matching `PAPER_SEARCH_API__...` environment variables.
+- `external-search.toml` is the only authority for `web_search`; project,
+  explicit, credential, and environment layers cannot select its executable or adapter.
 - Provider-specific config lives under the provider id section used by the runtime.
 
 Never print raw API keys, tokens, passwords, or credentials. If a command needs live credentials, report only whether the required key is present or missing.

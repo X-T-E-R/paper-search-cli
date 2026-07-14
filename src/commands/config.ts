@@ -209,9 +209,10 @@ export function registerConfigCommands(program: Command, io: Io): void {
                 configFragments: resolveConfigFragmentDirectory(paths.config),
                 subscriptions: paths.subscriptions,
                 credentials: paths.credentials,
+                externalSearch: paths.externalSearch,
               }
             : { path: paths.config },
-          options.all ? [paths.config, paths.subscriptions, paths.credentials] : paths.config,
+          options.all ? [paths.config, paths.subscriptions, paths.credentials, paths.externalSearch] : paths.config,
         );
       }),
     );

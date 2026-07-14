@@ -33,12 +33,7 @@ export const CLI_TOOL_MAPPINGS: CliToolMapping[] = [
   {
     tool: "web_search",
     commands: ["web", "web-search", "web_search"],
-    note: "Uses configured web API backends; live/network checks stay out of the default test chain.",
-  },
-  {
-    tool: "web_research",
-    commands: ["web-research", "web_research"],
-    note: "Runs web search, page extraction, and optional social/X search through configured backends.",
+    note: "Uses the optional user-level External Search v1 process configuration.",
   },
   {
     tool: "resource_add",
@@ -131,7 +126,7 @@ export const CLI_ONLY_COMMANDS = [
   },
   {
     command: "config path --all",
-    purpose: "Show config.toml, config.d, subscriptions.toml, and credentials.toml paths.",
+    purpose: "Show config.toml, config.d, subscriptions.toml, credentials.toml, and external-search.toml paths.",
   },
   {
     command: "config validate",
@@ -215,8 +210,13 @@ export const CLI_ONLY_COMMANDS = [
   },
 ];
 
-export function getTools(installedProviders: InstalledProviderSummary[]): ToolSchema[] {
-  const tools = cloneToolSchemas();
+export function getTools(
+  installedProviders: InstalledProviderSummary[],
+  options: { externalSearchAvailable?: boolean } = {},
+): ToolSchema[] {
+  const tools = cloneToolSchemas().filter(
+    (tool) => tool.name !== "web_search" || options.externalSearchAvailable === true,
+  );
   const patentSelectors = providerSelectorTokens(installedProviders, "patent");
   const patentDetailTool = tools.find((tool) => tool.name === "patent_detail");
   if (patentDetailTool && patentSelectors.length > 0) {

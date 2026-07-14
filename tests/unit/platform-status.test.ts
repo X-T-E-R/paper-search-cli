@@ -41,11 +41,6 @@ function createConfig(installDir: string): ResolvedConfig {
         enabled: true,
       },
     },
-    api: {
-      tavily: {
-        apiKey: "tvly-test",
-      },
-    },
   };
 }
 
@@ -96,22 +91,10 @@ describe("platform status snapshot", () => {
 
     const snapshot = await createPlatformStatusSnapshot(createConfig(installDir));
     expect(snapshot.availableTools).toContain("platform_status");
-    expect(snapshot.availableTools).toContain("web_search");
-    expect(snapshot.summary.configuredWebBackends).toBe(1);
-    expect(snapshot.web).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "tavily",
-          configured: true,
-          available: true,
-        }),
-        expect.objectContaining({
-          id: "firecrawl",
-          configured: false,
-          missingConfigKeys: ["apiKey"],
-        }),
-      ]),
-    );
+    expect(snapshot.availableTools).not.toContain("web_search");
+    expect(snapshot.summary.externalSearchConfigured).toBe(false);
+    expect(snapshot.externalSearch.state).toBe("disabled");
+    expect(snapshot.web).toEqual([]);
     expect(snapshot.academic).toEqual([
       expect.objectContaining({
         id: "alpha",

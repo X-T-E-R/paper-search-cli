@@ -82,7 +82,6 @@ describe("canonical MCP tool result envelopes", () => {
       patent_search: { query: "solid state battery" },
       patent_detail: { platform: "missing-provider", sourceId: "PAT-001" },
       web_search: { query: "RAG evaluation" },
-      web_research: { query: "API docs", includeSocial: false },
       resource_add: {
         item: {
           itemType: "journalArticle",

@@ -32,6 +32,10 @@ import { readCurrentRegistrySnapshot } from "../subscriptions/registry.js";
 import { listSubscriptions } from "../subscriptions/service.js";
 import { resolveSubscriptionPaths } from "../subscriptions/paths.js";
 import type { SubscriptionView } from "../subscriptions/types.js";
+import { inspectExternalSearchStatic, type ExternalSearchStaticStatus } from "../external-search/config.js";
+import { probeExternalSearch } from "../external-search/service.js";
+import { ExternalSearchError } from "../external-search/errors.js";
+import { getSystemVersion } from "../runtime/version.js";
 
 interface DoctorOptions {
   json?: boolean;
@@ -76,6 +80,7 @@ interface ApiKeyReportEntry {
   value?: "<masked>";
   source?: "config" | "env";
   env?: string;
+  unused?: boolean;
 }
 
 export interface DoctorReport {
@@ -100,6 +105,13 @@ export interface DoctorReport {
   };
   providerLifecycle: ProviderLifecycleHealthReport;
   workspace: WorkspaceWritability;
+  externalSearch: ExternalSearchStaticStatus | {
+    state: "ready" | "protocol-incompatible" | "adapter-invalid";
+    enabled: true;
+    configPath: string;
+    reason: string;
+    tool?: { name: string; version: string };
+  };
   mcp: {
     ready: boolean;
     config: {
@@ -112,7 +124,7 @@ export interface DoctorReport {
     status: {
       protocolVersion: "2024-11-05";
       initialized: false;
-      serverInfo: { name: "paper-search-cli-mcp"; version: "0.1.0" };
+      serverInfo: { name: "paper-search-cli-mcp"; version: string };
       toolsAvailable: number;
     };
   };
@@ -251,7 +263,7 @@ export interface ProviderLifecycleHealthReport {
   };
 }
 
-const WEB_API_KEY_PROVIDERS = ["tavily", "firecrawl", "exa", "xai"] as const;
+const RETIRED_WEB_API_SECTIONS = new Set(["tavily", "firecrawl", "exa", "xai", "mysearch"]);
 const SECRET_KEY_RE = /(?:api[-_]?key|token|secret|password|credential)/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -827,14 +839,54 @@ export function registerDoctorCommand(program: Command, io: Io): void {
 }
 
 async function createDoctorReport(config: ResolvedConfig): Promise<DoctorReport> {
-  const [searchProviders, materialProviders, registry, workspace, installation, providerLifecycle] = await Promise.all([
+  const [searchProviders, materialProviders, registry, workspace, installation, providerLifecycle, externalStatic] = await Promise.all([
     listInstalledProviders(config.providers.installDir),
     listInstalledMaterialProviders(config.providers.installDir),
     inspectRegistryReachability(config.providers.registryUrl, config.meta.cwd),
     checkWorkspaceWritability(config.workspace.root),
     inspectInstallHealth(),
     inspectProviderLifecycleHealth(config.providers.installDir),
+    inspectExternalSearchStatic(),
   ]);
+  let externalSearch: DoctorReport["externalSearch"] = externalStatic;
+  if (externalStatic.state === "configured") {
+    try {
+      const probe = await probeExternalSearch();
+      externalSearch = probe.ok
+        ? {
+            state: "ready",
+            enabled: true,
+            configPath: externalStatic.configPath,
+            reason: "External Search v1 no-network probe succeeded",
+            tool: probe.data.tool,
+          }
+        : probe.error.code === "adapter_invalid"
+          ? {
+              state: "adapter-invalid",
+              enabled: true,
+              configPath: externalStatic.configPath,
+              reason: probe.error.message,
+            }
+          : { ...externalStatic, reason: probe.error.message };
+    } catch (error) {
+      const code = error instanceof ExternalSearchError ? error.code : "protocol_schema_mismatch";
+      externalSearch = code === "adapter_invalid"
+        ? {
+            state: "adapter-invalid",
+            enabled: true,
+            configPath: externalStatic.configPath,
+            reason: formatError(error),
+          }
+        : ["malformed_json", "protocol_schema_mismatch", "protocol_incompatible", "request_id_mismatch", "operation_mismatch"].includes(code)
+          ? {
+              state: "protocol-incompatible",
+              enabled: true,
+              configPath: externalStatic.configPath,
+              reason: formatError(error),
+            }
+          : { ...externalStatic, reason: formatError(error) };
+    }
+  }
   const smoke = resolveSmokePolicy(config.smoke, process.env);
   const apiKeys = collectApiKeyReport(config, searchProviders, materialProviders);
   const validSearchPaths = new Set(searchProviders.filter((entry) => entry.valid).map((entry) => path.resolve(entry.path)));
@@ -875,6 +927,7 @@ async function createDoctorReport(config: ResolvedConfig): Promise<DoctorReport>
     },
     providerLifecycle,
     workspace,
+    externalSearch,
     mcp: {
       ready: config.server.transport === "stdio" || Boolean(config.server.host && config.server.port),
       config: {
@@ -887,8 +940,10 @@ async function createDoctorReport(config: ResolvedConfig): Promise<DoctorReport>
       status: {
         protocolVersion: "2024-11-05",
         initialized: false,
-        serverInfo: { name: "paper-search-cli-mcp", version: "0.1.0" },
-        toolsAvailable: getCanonicalToolNames().length,
+        serverInfo: { name: "paper-search-cli-mcp", version: getSystemVersion() },
+        toolsAvailable: getCanonicalToolNames().filter(
+          (name) => name !== "web_search" || externalStatic.state === "configured",
+        ).length,
       },
     },
     smoke: {
@@ -990,20 +1045,10 @@ function collectApiKeyReport(
 ): { known: ApiKeyReportEntry[]; missing: ApiKeyReportEntry[] } {
   const entries = new Map<string, ApiKeyReportEntry>();
 
-  for (const providerId of WEB_API_KEY_PROVIDERS) {
-    addApiKeyEntry(entries, {
-      scope: "api",
-      providerId,
-      key: "apiKey",
-      status: hasConfigValue(getRecord(config.api[providerId]).apiKey) ? "present" : "missing",
-      masked: hasConfigValue(getRecord(config.api[providerId]).apiKey),
-      source: "config",
-    });
-  }
-
   for (const [providerId, section] of Object.entries(config.api)) {
     for (const [key, value] of Object.entries(getRecord(section))) {
       if (!SECRET_KEY_RE.test(key)) continue;
+      if (RETIRED_WEB_API_SECTIONS.has(providerId) && !hasConfigValue(value)) continue;
       addApiKeyEntry(entries, {
         scope: "api",
         providerId,
@@ -1011,6 +1056,7 @@ function collectApiKeyReport(
         status: hasConfigValue(value) ? "present" : "missing",
         masked: hasConfigValue(value),
         source: "config",
+        ...(RETIRED_WEB_API_SECTIONS.has(providerId) ? { unused: true } : {}),
       });
     }
   }

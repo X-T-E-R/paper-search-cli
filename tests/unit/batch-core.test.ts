@@ -132,17 +132,17 @@ describe("batch helpers", () => {
     expect(task!.skipReason).toBe("status:imported");
   });
 
-  it("builds web research rows with source-compatible arguments", () => {
+  it("builds generic external web search rows", () => {
     const [task] = buildBatchTasks(
       [
         {
           task_id: "B3b",
-          tool: "web_research",
+          tool: "web_search",
           query: "OpenAI API docs",
-          mode: "docs",
-          web_max_results: "2",
-          scrape_top_n: "1",
-          include_social: "false",
+          mode: "deep",
+          intent: "resource",
+          freshness: "pw",
+          max_results: "2",
         },
       ],
       {
@@ -157,13 +157,13 @@ describe("batch helpers", () => {
     expect(task).toBeDefined();
     expect(task!).toMatchObject({
       id: "B3b",
-      tool: "web_research",
+      tool: "web_search",
       args: {
         query: "OpenAI API docs",
-        mode: "docs",
-        webMaxResults: 2,
-        scrapeTopN: 1,
-        includeSocial: false,
+        mode: "deep",
+        intent: "resource",
+        freshness: "pw",
+        maxResults: 2,
       },
     });
   });

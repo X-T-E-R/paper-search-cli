@@ -20,8 +20,7 @@ result contracts. Human-facing commands are adapters over those contracts.
    - compatibility alias: `material-providers` maps to `providers --kind material`
    - session-aware `withCredentials` cookie transport for login-gated search
      providers
-   - built-in web backend router for Tavily, Firecrawl, Exa, xAI, and MySearch
-     Proxy
+   - optional generic External Search v1 child-process boundary
 3. **Entry surfaces**
    - CLI commands for humans
    - canonical tool catalog for deterministic tool calls
@@ -139,9 +138,10 @@ Search provider entrypoints include:
 - `patent-detail` / `patent_detail`
 - provider management commands with `--kind search`
 
-Web search and web research are built-in API backend adapters rather than
-provider packages. They use TOML `[api.*]` config sections or matching
-environment variables.
+Generic `web_search` is an optional process capability. Execution authority is
+loaded only from the conventional user config root's `external-search.toml`.
+Native tools receive one v1 JSON request on stdin; trusted custom adapters run
+in a bundled Node child host and are never imported by the main process.
 
 ### Material Providers
 
@@ -295,11 +295,11 @@ Generated Markdown and structured provider output live under
 
 - `tools` returns the canonical tool catalog used by CLI and MCP mappings.
 - `help` returns provider-aware local help snapshots.
-- `platform-status` reports installed provider health and web backend readiness.
+- `platform-status` reports installed provider health and static external-search readiness.
 - `lookup` normalizes DOI, PMID, arXiv ID, ISBN, and URL metadata.
 - `patent` and `patent-detail` expose patent search/detail over installed
   providers.
-- `web` and `web-research` use configured web API backends.
+- `web` uses the configured External Search v1 process; `web_research` was removed in 0.4.
 
 ### Workspace and Export
 

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "@iarna/toml";
 import { describe, expect, it } from "vitest";
 import { SubscriptionsConfigFileSchema } from "../../src/config/schema.js";
+import { ExternalSearchConfigFileSchema } from "../../src/external-search/config.js";
 import {
   classifyConfigKey,
   flattenUserConfig,
@@ -43,5 +44,12 @@ describe("published split configuration examples", () => {
       await readToml("credentials.example.toml"),
     );
     expect(flattenUserConfig(credentials).length).toBeGreaterThan(0);
+  });
+
+  it("validates the dedicated external-search example independently", async () => {
+    const external = ExternalSearchConfigFileSchema.parse(
+      await readToml("external-search.example.toml"),
+    );
+    expect(external).toMatchObject({ schemaVersion: 1, enabled: true, adapter: "native" });
   });
 });

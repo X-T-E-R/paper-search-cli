@@ -102,6 +102,10 @@ async function main() {
       throw new Error(`Runtime bundle retained non-built-in imports: ${[...new Set(externalImports)].join(", ")}`);
     }
     await chmod(path.join(outputRoot, "cli.js"), 0o755);
+    await copyFile(
+      path.join(repoRoot, "src", "external-search", "adapter-host.mjs"),
+      path.join(outputRoot, "adapter-host.mjs"),
+    );
 
     const digest = process.env.PAPER_SEARCH_BUILD_INPUT_DIGEST
       ? {

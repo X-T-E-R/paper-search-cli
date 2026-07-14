@@ -1,0 +1,11 @@
+# Copy this file to the conventional Paper Search user config root as
+# external-search.toml. It is intentionally separate from layered config.
+schemaVersion = 1
+enabled = true
+adapter = "native"
+timeoutMs = 300000
+
+[process]
+executable = "python"
+args = ["C:/Programs/AI/Search/systems/search-layer/scripts/paper_search_external.py"]
+workingDirectory = "C:/Programs/AI/Search/systems/search-layer"
