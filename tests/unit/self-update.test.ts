@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { InstallPaths, InstallState } from "../../src/runtime/installLayout.js";
 import {
@@ -508,8 +509,11 @@ describe("sealed self-update policy and retained-checkout updater", () => {
   it("uses the canonical repo lock and times out behind a concurrent setup/update owner", async () => {
     const fixture = await createFixture("self-update");
     await advanceRemote(fixture);
+    const lockModuleUrl = pathToFileURL(
+      path.join(fixture.repoRoot, "scripts", "lib", "owned-file-lock.mjs"),
+    ).href.replace(/%7E/giu, "~");
     const lockModule = await import(
-      path.join(fixture.repoRoot, "scripts", "lib", "owned-file-lock.mjs")
+      /* @vite-ignore */ lockModuleUrl
     ) as {
       acquireOwnedFileLock(
         filePath: string,

@@ -524,7 +524,10 @@ async function acquireRepoLock(
   command: string,
 ): Promise<OwnedFileLock> {
   const modulePath = path.join(paths.repoRoot, "scripts", "lib", "owned-file-lock.mjs");
-  const lockModule = (await import(pathToFileURL(modulePath).href)) as OwnedFileLockModule;
+  const moduleUrl = pathToFileURL(modulePath).href.replace(/%7E/giu, "~");
+  const lockModule = (await import(
+    /* @vite-ignore */ moduleUrl
+  )) as OwnedFileLockModule;
   return lockModule.acquireOwnedFileLock(
     path.join(paths.repoRoot, ".paper-search-runtime", "locks", "repo.lock"),
     { timeoutMs, command },
