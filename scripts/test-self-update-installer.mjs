@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
   symlink,
@@ -113,7 +114,7 @@ try {
     `${JSON.stringify({
       schemaVersion: 1,
       installId: "fixture-install",
-      checkoutRealpath: repoRoot,
+      checkoutRealpath: await realpath(repoRoot),
       binRoot,
       sourceManagementMode: "self-update",
       launcherProtocol: 1,
