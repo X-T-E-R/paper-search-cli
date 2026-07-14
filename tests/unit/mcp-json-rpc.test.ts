@@ -99,6 +99,7 @@ describe("PaperSearchMcpServer", () => {
       };
     };
     expect(list.status).toBe(200);
+    expect(list.body).not.toContain('"enum":[]');
     expect(listBody.result.tools.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         "mcp_help",

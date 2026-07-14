@@ -185,11 +185,32 @@ so search packages remain in the independent `resource-search-providers`
 registry. Its existing provider entries remain backward compatible, while an
 optional inventory section classifies countable sources, source-backed views,
 aliases, service families, source domains, content kinds, access classes,
-default aggregate membership, and retained-unpublished entries. Installed
+legacy `defaultInAll` membership, and retained-unpublished entries. Installed
 manifests freeze this metadata for runtime selection; a mutable registry can
 change catalogue display but cannot silently change the behavior of an already
-installed package. Provider enablement remains a hard runtime switch, while the
-layered `[search.selection]` policy controls only `platform=all`.
+installed package.
+
+The shared selection resolver expands built-in and user presets, inventory
+classifications, aliases, exact source selectors, and exclusions into canonical
+provider ids. Academic commands default to the `general` preset, patent
+commands default to `patents`, and literal `all` selects only runnable installed
+non-view sources without consulting legacy `defaultInAll`. Readiness is
+evaluated after taxonomy membership for presets: uninstalled, invalid,
+disabled, or unconfigured members remain visible and are reported as skipped.
+Validated active subscription snapshots provide classification for uninstalled
+catalogue entries, while an installed manifest remains authoritative for an
+installed package. CLI commands, canonical tools, MCP calls, `platform-status`,
+and `search-plan` consume this resolver.
+
+Layered TOML stores command defaults, user `tag:*` classifications, user
+presets, hard enablement, and provider configuration. Named tag/preset
+definitions are atomic across layers, while explicit `extends` owns preset
+composition. Each main non-secret config file may have a lexically ordered
+adjacent fragment directory (`config.toml` + `config.d/*.toml`, for example)
+using the same schema and precedence rules.
+Known aliases written through `config set` are canonicalized at the persistent
+config boundary; unknown ids remain portable for subscriptions that are not
+active locally.
 Material `registry.json` entries carry `id`, `version`, `kind`, `downloadUrl`,
 `sha256`, and `minCliVersion`. The registry loader reads `minPluginVersion` as
 a compatibility alias mapped to the same min-version gate. The loader accepts

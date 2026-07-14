@@ -74,7 +74,10 @@ const RegistryInventoryEntrySchema = z
       context.addIssue({ code: "custom", message: "view inventory entry requires backingSourceIds" });
     }
     if (entry.entryKind === "view" && entry.selection.defaultInAll) {
-      context.addIssue({ code: "custom", message: "view inventory cannot default into platform=all" });
+      context.addIssue({
+        code: "custom",
+        message: "view inventory cannot set legacy selection.defaultInAll",
+      });
     }
   });
 

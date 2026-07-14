@@ -85,7 +85,42 @@ node scripts/paper-search.mjs config import-env ./.env
 node scripts/paper-search.mjs config import-env ./.env --apply
 ```
 
-Search-source aggregation uses the same layered configuration:
+Search-source selection uses the same layered configuration. Academic search
+defaults to `general`; patent search defaults to `patents`. Repeat selectors to
+form a union, or inspect the result without searching:
+
+```bash
+node scripts/paper-search.mjs search-plan --type academic --preset general
+node scripts/paper-search.mjs academic "graph neural networks" --preset general --preset computer-science
+node scripts/paper-search.mjs academic "single-cell transcriptomics" --category domain:biomedicine --source crossref
+node scripts/paper-search.mjs academic "foundation models" --preset general --exclude-source wos
+node scripts/paper-search.mjs academic "formal verification" --platform all
+```
+
+User tags and presets are normal non-secret config:
+
+```toml
+[search]
+defaultAcademicPresets = ["my-general", "preprints"]
+defaultPatentPresets = ["patents"]
+
+[search.classifications.lab-preferred]
+sources = ["crossref", "openalex"]
+
+[search.presets.my-general]
+extends = ["general"]
+include = ["tag:lab-preferred", "source:pubmed"]
+exclude = ["source:semantic"]
+```
+
+Built-in names are reserved. Named tag/preset definitions replace the whole
+lower-priority definition, and `extends` is the explicit composition mechanism.
+The main file may be accompanied by lexical `config.d/*.toml` fragments using
+the same schema; project and explicit main files derive matching adjacent `.d`
+directories. The main file must exist.
+
+The following keys remain as compatibility adjustments for the implicit
+command default:
 
 ```bash
 node scripts/paper-search.mjs config set search.selection.excludeDomains '["biomedicine"]'
@@ -93,10 +128,18 @@ node scripts/paper-search.mjs config set search.selection.includeIds '["pubmed"]
 node scripts/paper-search.mjs config set search.selection.mode allowlist
 ```
 
-`platform.<id>.enabled` is the provider hard switch. `search.selection` only
-controls runnable sources selected by `platform=all`. Explicit provider ids and
-unique inventory aliases bypass the aggregate policy, but not installation,
-enablement, or required configuration. Views are always excluded from `all`.
+`platform.<id>.enabled` is the provider hard switch. `search.selection` no
+longer defines literal `all`. Exact ids and unique aliases participate in the
+same union, but no selector bypasses installation, validation, enablement, or
+required configuration. Views are excluded from automatic presets,
+classification selectors, and `all`; select one by exact id or list it in a
+user preset.
+Literal `all` contains only runnable installed non-view sources. Presets retain
+taxonomy membership independently: validated active search-subscription
+snapshots keep uninstalled members visible in `search-plan`, where they are
+reported as skipped. Installed manifest classification wins over catalogue
+metadata. `config set` canonicalizes known aliases in tag source arrays and
+preset `source:*` selectors while preserving unknown portable ids.
 Profiles reuse explicit configuration directories such as
 `<config-root>/profiles/biomed/config.toml` with `--config
 <config-root>/profiles/biomed`; do not create another profile registry.
@@ -172,11 +215,12 @@ receipt; they do not switch to another publisher automatically.
 
 `providers inventory [source]` is search-registry-only. It reports declared
 entries, independently counted sources, source-backed views, aliases, service
-families, source types, domains, content kinds, access classes, default aggregate
-membership, retained-unpublished entries, and legacy published entries without
-an inventory classification. With no `source`, it reads the configured search
-registry URL. A view never increments the source count or enters `platform=all`,
-but the caller may select it explicitly.
+families, source types, domains, content kinds, access classes, `general`
+membership, legacy `defaultInAll` metadata, retained-unpublished entries, and
+published entries without an inventory classification. With no `source`, it
+reads the configured search registry URL. A view never increments the source
+count or enters automatic presets, classification selectors, or literal `all`,
+but the caller may select it explicitly or through an explicit user preset.
 
 Bound installs live below the provider root as `search/<id>` or `material/<id>`.
 Ids are globally unique across both kinds. Flat legacy packages remain a read

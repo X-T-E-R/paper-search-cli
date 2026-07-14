@@ -6,6 +6,7 @@ import { isPlainConfigObject, setNestedValue } from "./env.js";
 import { resolveConfigBundlePaths, resolveDefaultUserConfigPath } from "./paths.js";
 import {
   CredentialsConfigFileSchema,
+  SearchDefinitionNameSchema,
   UserConfigFileSchema,
   UserConfigSchema,
   type UserConfig,
@@ -32,6 +33,8 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "output.prettyJson",
   "smoke.enabled",
   "smoke.envVar",
+  "search.defaultAcademicPresets",
+  "search.defaultPatentPresets",
   "search.selection.mode",
   "search.selection.includeIds",
   "search.selection.excludeIds",
@@ -46,6 +49,10 @@ export const CONFIGURABLE_FIXED_KEYS = [
 export const CONFIGURABLE_DYNAMIC_KEY_PATTERNS = [
   "api.<section>.<key>",
   "platform.<provider>.<key>",
+  "search.classifications.<tag>.sources",
+  "search.presets.<preset>.extends",
+  "search.presets.<preset>.include",
+  "search.presets.<preset>.exclude",
 ] as const;
 
 export const LEGACY_OWNED_CONFIG_KEYS = [
@@ -138,6 +145,20 @@ export function isSupportedConfigKey(pathSegments: readonly string[]): boolean {
   if ((CONFIGURABLE_FIXED_KEYS as readonly string[]).includes(key)) return true;
   if (pathSegments[0] === "api" && pathSegments.length >= 3) return true;
   if (pathSegments[0] === "platform" && pathSegments.length >= 3) return true;
+  if (
+    pathSegments[0] === "search" &&
+    pathSegments[1] === "classifications" &&
+    pathSegments.length === 4 &&
+    SearchDefinitionNameSchema.safeParse(pathSegments[2]).success &&
+    pathSegments[3] === "sources"
+  ) return true;
+  if (
+    pathSegments[0] === "search" &&
+    pathSegments[1] === "presets" &&
+    pathSegments.length === 4 &&
+    SearchDefinitionNameSchema.safeParse(pathSegments[2]).success &&
+    ["extends", "include", "exclude"].includes(pathSegments[3] ?? "")
+  ) return true;
   return false;
 }
 
@@ -176,6 +197,11 @@ export function classifyConfigKey(
   const key = configKeyToString(segments);
   if ((LEGACY_OWNED_CONFIG_KEYS as readonly string[]).includes(key)) return "owned";
   if ((CONFIGURABLE_FIXED_KEYS as readonly string[]).includes(key)) return "non-secret";
+  if (
+    segments[0] === "search" &&
+    (segments[1] === "classifications" || segments[1] === "presets") &&
+    isSupportedConfigKey(segments)
+  ) return "non-secret";
   if (segments[0] !== "api" && segments[0] !== "platform") return "ambiguous";
   const described = metadata[key];
   if (described) return described;

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CONFIG } from "../../src/config/defaults.js";
 import {
+  SearchConfigSchema,
   SearchSelectionConfigSchema,
+  SearchSelectorSchema,
   SubscriptionsConfigFileSchema,
 } from "../../src/config/schema.js";
 import {
@@ -107,5 +110,94 @@ describe("strict split-config schemas", () => {
         search: { selection: { excludeDomains: ["not-a-domain"] } },
       }),
     ).toThrow();
+  });
+
+  it("accepts user tags and presets while validating selector and definition names", () => {
+    expect(
+      parseUserConfigDocument({
+        schemaVersion: 1,
+        search: {
+          defaultAcademicPresets: ["my-general"],
+          classifications: {
+            "lab-preferred": { sources: ["crossref", "openalex"] },
+          },
+          presets: {
+            "my-general": {
+              extends: ["general"],
+              include: ["tag:lab-preferred", "source:pubmed"],
+              exclude: ["source:semantic"],
+            },
+          },
+        },
+      }).data,
+    ).toMatchObject({
+      search: {
+        defaultAcademicPresets: ["my-general"],
+        classifications: {
+          "lab-preferred": { sources: ["crossref", "openalex"] },
+        },
+      },
+    });
+    expect(classifyConfigKey("search.presets.my-general.include")).toBe("non-secret");
+    expect(classifyConfigKey("search.classifications.lab-preferred.sources")).toBe("non-secret");
+
+    expect(() => SearchSelectorSchema.parse("domain:not-a-domain")).toThrow(
+      /invalid domain selector value/,
+    );
+    expect(() => SearchSelectorSchema.parse("crossref")).toThrow(/namespace separator/);
+    expect(() =>
+      parseUserConfigDocument({
+        schemaVersion: 1,
+        search: { classifications: { "Bad Name": { sources: ["crossref"] } } },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseUserConfigDocument({
+        schemaVersion: 1,
+        search: { presets: { general: { include: ["source:crossref"] } } },
+      }),
+    ).toThrow(/reserved/);
+  });
+
+  it("validates merged preset references, tags, and inheritance cycles", () => {
+    expect(
+      SearchConfigSchema.parse({
+        ...DEFAULT_CONFIG.search,
+        defaultAcademicPresets: ["my-general"],
+        classifications: { "lab-preferred": { sources: ["crossref"] } },
+        presets: {
+          "my-general": {
+            extends: ["general"],
+            include: ["tag:lab-preferred"],
+          },
+        },
+      }).presets["my-general"],
+    ).toEqual({
+      extends: ["general"],
+      include: ["tag:lab-preferred"],
+      exclude: [],
+    });
+
+    expect(() =>
+      SearchConfigSchema.parse({
+        ...DEFAULT_CONFIG.search,
+        defaultAcademicPresets: ["missing"],
+      }),
+    ).toThrow(/unknown search preset: missing/);
+    expect(() =>
+      SearchConfigSchema.parse({
+        ...DEFAULT_CONFIG.search,
+        presets: { custom: { include: ["tag:missing"] } },
+      }),
+    ).toThrow(/unknown search tag: missing/);
+    expect(() =>
+      SearchConfigSchema.parse({
+        ...DEFAULT_CONFIG.search,
+        presets: {
+          alpha: { extends: ["beta"] },
+          beta: { extends: ["alpha"] },
+        },
+      }),
+    ).toThrow(/cyclic search preset inheritance/);
   });
 });

@@ -6,6 +6,8 @@ import type { Io } from "../runtime/io.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import type { PatentDetailResult } from "../providers/sdk/types.js";
 import { buildSearchEnvelope } from "../surface/searchEnvelope.js";
+import { createProviderSelectionPlan } from "../search/runtime.js";
+import type { ProviderSelectionRequest } from "../search/selection.js";
 
 function parseIntegerOption(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -23,6 +25,52 @@ function splitCsv(value?: string): string[] {
     .filter(Boolean);
 }
 
+function collectRepeatable(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function stringArrayOption(options: Record<string, unknown>, key: string): string[] | undefined {
+  const value = options[key];
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  return strings.length > 0 ? strings : undefined;
+}
+
+function selectionRequestFromOptions(options: Record<string, unknown>): ProviderSelectionRequest {
+  return {
+    platform: typeof options.platform === "string" ? options.platform : undefined,
+    provider: typeof options.provider === "string" ? options.provider : undefined,
+    presets: stringArrayOption(options, "preset"),
+    sources: stringArrayOption(options, "source"),
+    categories: stringArrayOption(options, "category"),
+    excludeSources: stringArrayOption(options, "excludeSource"),
+    excludeCategories: stringArrayOption(options, "excludeCategory"),
+  };
+}
+
+function addSelectionOptions(command: Command): Command {
+  return command
+    .option("--platform <id>", 'legacy singular provider id, or literal "all"')
+    .option("--provider <id>", "alias of --platform")
+    .option("--preset <name>", "named source preset; repeat to union presets", collectRepeatable)
+    .option("--source <id>", "provider id or alias; repeat to union sources", collectRepeatable)
+    .option(
+      "--category <selector>",
+      "classification selector such as domain:biomedicine; repeat to union",
+      collectRepeatable,
+    )
+    .option(
+      "--exclude-source <id>",
+      "provider id or alias to remove after the union; repeatable",
+      collectRepeatable,
+    )
+    .option(
+      "--exclude-category <selector>",
+      "classification selector to remove before exact source inclusion; repeatable",
+      collectRepeatable,
+    );
+}
+
 function patentDetailEnvelope(data: PatentDetailResult): ResultEnvelope<PatentDetailResult> {
   return okEnvelope({
     capability: "identify",
@@ -35,13 +83,11 @@ function patentDetailEnvelope(data: PatentDetailResult): ResultEnvelope<PatentDe
 }
 
 export function registerSearchCommands(program: Command, io: Io): void {
-  program
+  addSelectionOptions(program
     .command("academic <query>")
     .alias("academic-search")
     .alias("academic_search")
-    .description("Search installed academic providers through the local provider-compatible runtime.")
-    .option("--platform <id>", 'provider id, or "all" (default: all)')
-    .option("--provider <id>", "alias of --platform")
+    .description("Search installed academic providers through the local provider-compatible runtime."))
     .option("--max-results <n>", "maximum results per provider", parseIntegerOption)
     .option("--page <n>", "page number", parseIntegerOption)
     .option("--year <value>", "year or year range, e.g. 2020-2024")
@@ -57,10 +103,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
           : undefined;
       const result = await runAcademicSearch(config, {
         query,
-        platform:
-          (typeof options.platform === "string" && options.platform) ||
-          (typeof options.provider === "string" && options.provider) ||
-          "all",
+        ...selectionRequestFromOptions(options),
         maxResults: typeof options.maxResults === "number" ? options.maxResults : undefined,
         page: typeof options.page === "number" ? options.page : undefined,
         year: typeof options.year === "string" ? options.year : undefined,
@@ -74,13 +117,11 @@ export function registerSearchCommands(program: Command, io: Io): void {
       io.writeJson(buildSearchEnvelope("academic_search", result));
     });
 
-  program
+  addSelectionOptions(program
     .command("patent <query>")
     .alias("patent-search")
     .alias("patent_search")
-    .description("Search installed patent providers through the local provider-compatible runtime.")
-    .option("--platform <id>", 'provider id, or "all" (default: all)')
-    .option("--provider <id>", "alias of --platform")
+    .description("Search installed patent providers through the local provider-compatible runtime."))
     .option("--max-results <n>", "maximum results per provider", parseIntegerOption)
     .option("--page <n>", "page number", parseIntegerOption)
     .option("--sort-by <value>", "relevance or date")
@@ -101,10 +142,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
           : undefined;
       const result = await runPatentSearch(config, {
         query,
-        platform:
-          (typeof options.platform === "string" && options.platform) ||
-          (typeof options.provider === "string" && options.provider) ||
-          "all",
+        ...selectionRequestFromOptions(options),
         maxResults: typeof options.maxResults === "number" ? options.maxResults : undefined,
         page: typeof options.page === "number" ? options.page : undefined,
         sortBy: options.sortBy === "relevance" || options.sortBy === "date" ? options.sortBy : undefined,
@@ -118,6 +156,35 @@ export function registerSearchCommands(program: Command, io: Io): void {
         extra,
       });
       io.writeJson(buildSearchEnvelope("patent_search", result));
+    });
+
+  addSelectionOptions(program
+    .command("search-plan")
+    .alias("search-selection-plan")
+    .description("Explain source preset expansion, exclusions, and runtime readiness without searching."))
+    .option("--type <type>", "academic or patent", "academic")
+    .action(async (options: Record<string, unknown>, command: Command) => {
+      const globalOptions = command.optsWithGlobals<{ config?: string }>();
+      const config = await loadConfig({ explicitConfigPath: globalOptions.config });
+      const sourceType = options.type === "patent" ? "patent" : options.type === "academic" ? "academic" : null;
+      if (!sourceType) throw new Error(`Invalid search source type: ${String(options.type)}`);
+      const plan = await createProviderSelectionPlan(
+        config,
+        sourceType,
+        selectionRequestFromOptions(options),
+      );
+      io.writeJson(okEnvelope({
+        capability: "operate",
+        tool: "search_selection_plan",
+        data: plan,
+        diagnostics: {
+          selectedProviders: plan.selectedProviderIds.length,
+          runnableProviders: plan.runnableProviderIds.length,
+          skippedProviders: plan.skippedProviderIds.length,
+        },
+        ...(plan.warnings.length > 0 ? { warnings: plan.warnings } : {}),
+        provenance: { providerIds: plan.selectedProviderIds },
+      }));
     });
 
   program

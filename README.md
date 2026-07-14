@@ -170,27 +170,93 @@ not silently override the environment that currently wins.
 
 ### Search source selection
 
-Provider enablement and aggregate selection are separate. `platform.<id>.enabled`
-is a hard runtime switch. `[search.selection]` controls only which runnable
-sources participate in `--platform all`; an explicitly named source bypasses
-that aggregate policy but still must be installed, enabled, and configured.
+Source classification, request selection, and runtime readiness are independent.
+For example, Web of Science remains a multidisciplinary source when its
+credentials are absent; it is selected by `general`, reported as skipped, and
+starts running after valid configuration without a taxonomy edit.
 
-```toml
-[search.selection]
-mode = "defaults" # or "allowlist"
-includeIds = []
-excludeIds = []
-includeDomains = []
-excludeDomains = ["biomedicine"]
-includeContentKinds = []
-excludeContentKinds = []
-includeAccess = []
-excludeAccess = ["institutional"]
+Academic search without a positive selector uses `general`; patent search uses
+`patents`. The built-in presets are `general`, `computer-science`, `biomedicine`,
+`preprints`, `repositories`, `publishers`, and `patents`. With the current
+published inventory, `general` contains these 11 multidisciplinary sources
+before readiness filtering: `arxiv`, `core`, `crossref`, `openaire`, `openalex`,
+`sciencedirect`, `scopus`, `semantic`, `springer`, `wos`, and `zjusummon`. DBLP
+belongs to `computer-science`, not `general`.
+
+CLI selectors are repeatable. Positive selectors form a canonical-id union; as
+soon as one is present, the implicit command default is not added. Exact source
+exclusions are final. Use `search-plan` to inspect expansion, alias
+canonicalization, exclusions, and readiness without sending a search request:
+
+```bash
+paper-search academic "retrieval augmented generation"
+paper-search academic "graph neural networks" --preset general --preset computer-science
+paper-search academic "single-cell transcriptomics" --category domain:biomedicine --source crossref
+paper-search academic "foundation models" --preset general --exclude-source wos
+paper-search academic "formal verification" --platform all
+paper-search search-plan --type academic --preset general --category domain:computer-science
 ```
 
-Specific ids override classification rules, with `excludeIds` taking final
-precedence. Arrays replace lower-precedence arrays rather than merging them.
-The same settings can be written with `config set`, for example:
+Legacy singular `--platform` and `--provider` inputs remain valid. Literal
+`--platform all` selects every installed, valid, configured, enabled, non-view
+source for that command type. It does not mean `general`, and it does not select
+unavailable sources. Views are selected only by exact id or by an explicit user
+preset.
+
+Validated snapshots from active search subscriptions supply taxonomy for
+packages that are available but not installed. This keeps their preset
+membership visible in `search-plan`: for example, an uninstalled `general`
+member stays selected but is reported as skipped with `provider package is not
+installed`. An installed manifest remains authoritative for its own runtime
+classification, so a later registry snapshot cannot silently reclassify an
+installed package.
+
+Tags and presets live in the normal layered TOML configuration:
+
+```toml
+[search]
+defaultAcademicPresets = ["my-general", "preprints"]
+defaultPatentPresets = ["patents"]
+
+[search.classifications.lab-preferred]
+sources = ["crossref", "openalex"]
+
+[search.presets.my-general]
+extends = ["general"]
+include = ["tag:lab-preferred", "source:pubmed"]
+exclude = ["source:semantic"]
+```
+
+Built-in preset names are reserved; customize one by extending it under a new
+name. Supported selector namespaces are `source:`, `tag:`, `type:`, `domain:`,
+`content:`, `access:`, and `transport:`. Arrays replace lower-precedence arrays.
+A higher-priority definition of the same tag or preset replaces that complete
+definition; use `extends` for intentional composition.
+
+`config set` stores known provider aliases as canonical ids when writing tag
+source arrays or preset `source:*` selectors. Unknown ids remain unchanged so a
+portable config can refer to a provider from a subscription not active on the
+current machine. Hand-edited TOML should prefer canonical provider ids.
+
+Keep a small `config.toml` and split optional settings into its adjacent
+`config.d/*.toml` directory. Files load in lexical order after the main file and
+use the same schema; the main file must exist. Project files use matching names
+such as `paper-search.toml` plus `paper-search.d/*.toml`, and an explicit
+`--config /path/to/config.toml` uses `/path/to/config.d/*.toml`.
+
+```text
+config.toml
+config.d/
+  10-tags.toml
+  20-presets.toml
+  30-provider-settings.toml
+```
+
+The old `[search.selection]` block remains a compatibility adjustment for the
+implicit command default. It no longer defines `all`. `platform.<id>.enabled`
+is still a hard runtime switch, and no selector bypasses installation,
+validation, required configuration, or enablement. Existing keys remain
+writable with `config set`, for example:
 
 ```bash
 paper-search config set search.selection.excludeDomains '["biomedicine"]'
@@ -198,10 +264,9 @@ paper-search config set search.selection.includeIds '["pubmed"]'
 paper-search config explain search.selection.excludeDomains
 ```
 
-Reusable profiles need no second configuration system. Put ordinary files at,
-for example, `<config-root>/profiles/general/config.toml` and
-`<config-root>/profiles/biomed/config.toml`, then select one with
-`paper-search --config <profile-directory> ...`.
+For entirely separate reusable profiles, put an ordinary `config.toml` (and
+optional `config.d`) under each profile directory, then select the directory
+with `paper-search --config <profile-directory> ...`.
 
 Legacy single-file configuration and flat provider directories are migration
 inputs, not a second supported write layout. `migrate` plans the config and
@@ -332,10 +397,11 @@ publish a newer version.
 `providers inventory [source]` reads a search registry and reports separately
 the number of selectable entries, independently counted sources, source-backed
 views, aliases, service families, retained-unpublished entries, source types,
-domains, content kinds, access classes, default aggregate membership, and legacy
-entries without classification. Without `source`, it uses the configured search
-registry URL. Views such as ACM over Crossref do not inflate the source count or
-enter `--platform all`, but remain available by explicit id.
+domains, content kinds, access classes, `general` membership, legacy
+`defaultInAll` metadata, and entries without classification. Without `source`,
+it uses the configured search registry URL. Views such as ACM over Crossref do
+not inflate the source count or enter automatic presets, categories, or literal
+`all`, but remain available by explicit id or an explicit user preset.
 
 The catalogue describes endpoints and technical configuration; it does not make
 jurisdiction-specific legality, licence, entitlement, or authorization decisions.

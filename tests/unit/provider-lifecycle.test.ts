@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
 import { afterEach, describe, expect, it } from "vitest";
-import { listAvailableProviders } from "../../src/providers/catalog.js";
+import { DEFAULT_CONFIG } from "../../src/config/defaults.js";
+import type { ResolvedConfig } from "../../src/config/schema.js";
+import {
+  listAvailableProviders,
+  listAvailableSearchInventory,
+} from "../../src/providers/catalog.js";
 import { listInstalledMaterialProviders } from "../../src/material/registry/plan.js";
 import { listInstalledProviders } from "../../src/providers/registry/sync.js";
 import {
@@ -15,6 +20,8 @@ import {
 } from "../../src/providers/lifecycle.js";
 import { PROVIDER_RECEIPT_FILENAME } from "../../src/providers/install/manualZip.js";
 import { providerTargetPath, resolveProviderLifecyclePaths } from "../../src/providers/paths.js";
+import { listProviderSelectionCandidates } from "../../src/search/candidates.js";
+import { resolveProviderSelection } from "../../src/search/selection.js";
 import {
   executeSubscriptionMutation,
   refreshSubscriptions,
@@ -71,8 +78,9 @@ async function materialArchive(outputPath: string, id: string, version: string):
 async function writeRegistry(
   registryPath: string,
   entries: Array<{ id: string; version: string; downloadUrl: string; sha256?: string }>,
+  inventory: unknown[] = [],
 ): Promise<void> {
-  await writeFile(registryPath, JSON.stringify({ providers: entries }), "utf8");
+  await writeFile(registryPath, JSON.stringify({ providers: entries, inventory }), "utf8");
 }
 
 async function addAndRefresh(
@@ -94,6 +102,133 @@ afterEach(async () => {
 });
 
 describe("subscription-bound provider lifecycle", () => {
+  it("retains validated search inventory metadata from active snapshots", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-inventory-catalog-"));
+    roots.push(root);
+    const env = testEnv(root);
+    const registryDir = path.join(root, "registry");
+    await mkdir(registryDir);
+    const registryPath = path.join(registryDir, "registry.json");
+    await writeRegistry(
+      registryPath,
+      [{
+        id: "alpha",
+        version: "1.0.0",
+        downloadUrl: "alpha.zip",
+        sha256: "a".repeat(64),
+      }, {
+        id: "beta",
+        version: "1.0.0",
+        downloadUrl: "beta.zip",
+        sha256: "b".repeat(64),
+      }],
+      [
+        {
+          id: "alpha",
+          kind: "search",
+          sourceType: "academic",
+          entryKind: "source",
+          sourceId: "example.alpha",
+          aliases: ["a"],
+          serviceFamily: "example.api",
+          transport: "api",
+          domains: ["multidisciplinary"],
+          contentKinds: ["journal-article"],
+          access: ["public"],
+          selection: { defaultInAll: false },
+          publication: { status: "published" },
+        },
+        {
+          id: "beta",
+          kind: "search",
+          sourceType: "academic",
+          entryKind: "source",
+          sourceId: "example.beta",
+          serviceFamily: "example.api",
+          transport: "api",
+          domains: ["multidisciplinary"],
+          contentKinds: ["journal-article"],
+          access: ["public"],
+          selection: { defaultInAll: false },
+          publication: { status: "published" },
+        },
+        {
+          id: "retained",
+          kind: "search",
+          sourceType: "academic",
+          entryKind: "source",
+          sourceId: "example.retained",
+          serviceFamily: "example.retained-html",
+          transport: "html",
+          domains: ["multidisciplinary"],
+          contentKinds: ["journal-article"],
+          access: ["public"],
+          selection: { defaultInAll: false },
+          publication: { status: "retained-unpublished", blockers: ["fixture"] },
+        },
+      ],
+    );
+    await addAndRefresh(env, "searches", registryPath);
+
+    const catalog = await listAvailableSearchInventory(env);
+    expect(catalog.issues).toEqual([]);
+    expect(catalog.entries).toMatchObject([
+      {
+        id: "alpha",
+        version: "1.0.0",
+        subscriptionId: "searches",
+        ambiguous: false,
+        sourceCount: 1,
+        inventory: {
+          aliases: ["a"],
+          domains: ["multidisciplinary"],
+          publication: { status: "published" },
+        },
+      },
+      {
+        id: "beta",
+        version: "1.0.0",
+        subscriptionId: "searches",
+      },
+    ]);
+
+    const config: ResolvedConfig = {
+      ...structuredClone(DEFAULT_CONFIG),
+      providers: {
+        ...structuredClone(DEFAULT_CONFIG.providers),
+        installDir: path.join(root, "empty-providers"),
+      },
+      meta: {
+        cwd: root,
+        userConfigPath: path.join(root, "config.toml"),
+        projectConfigPath: null,
+        explicitConfigPath: null,
+        loadedFiles: [],
+        appliedEnvOverrides: [],
+      },
+    };
+    const invalidProviderDir = path.join(config.providers.installDir, "search", "beta");
+    await mkdir(invalidProviderDir, { recursive: true });
+    await writeFile(path.join(invalidProviderDir, "manifest.json"), "not-json", "utf8");
+    const selectionCandidates = await listProviderSelectionCandidates(config, env);
+    expect(selectionCandidates.candidates).toMatchObject([
+      { id: "alpha", installed: false, valid: true },
+      { id: "beta", installed: true, valid: false },
+    ]);
+    expect(selectionCandidates.candidates.find((entry) => entry.id === "beta")?.manifest)
+      .toBeUndefined();
+    expect(selectionCandidates.warnings).toContain(
+      "Installed provider beta is invalid; registry classification was ignored",
+    );
+    expect(
+      resolveProviderSelection(config, "academic", selectionCandidates.candidates),
+    ).toMatchObject({
+      selectedProviderIds: ["alpha"],
+      runnableProviderIds: [],
+      skippedProviderIds: ["alpha"],
+    });
+  });
+
   it("installs material archives into a kind-separated data-root location", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-bound-material-"));
     roots.push(root);

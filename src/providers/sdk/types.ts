@@ -82,6 +82,8 @@ export interface SearchResult {
   page: number;
   elapsed?: number;
   hasMore?: boolean;
+  /** The provider was selected but was not executed because a runtime gate failed. */
+  skipped?: boolean;
   error?: string;
 }
 

@@ -200,7 +200,7 @@ describe("search provider runtime paths", () => {
     ).resolves.toMatchObject({ platform: "acm" });
   });
 
-  it("keeps domain-specific sources explicit when they are excluded from all by default", async () => {
+  it("keeps domain-specific sources out of general while literal all and explicit aliases include them", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-runtime-selection-"));
     tempDirs.push(root);
     const config = createConfig(root);
@@ -227,8 +227,11 @@ describe("search provider runtime paths", () => {
     config.platform = { pubmed: { enabled: true } };
 
     await expect(
+      runProviderSearch(config, "academic", { query: "cancer" }),
+    ).resolves.toMatchObject({ error: expect.stringContaining("default presets") });
+    await expect(
       runProviderSearch(config, "academic", { query: "cancer", platform: "all" }),
-    ).resolves.toMatchObject({ error: expect.stringContaining("current search selection") });
+    ).resolves.toMatchObject({ platform: "pubmed" });
     await expect(
       runProviderSearch(config, "academic", { query: "cancer", platform: "pubmed" }),
     ).resolves.toMatchObject({ platform: "pubmed" });

@@ -23,12 +23,14 @@ node scripts/paper-search.mjs help
 | Add, list, or export local workspace records | `organize` | `resource-add`, `resource_add`, `add`, `collection-list`, `collection_list`, `collections`, `workspace-export`, `resource-export`, `resource_export` | `resource_add`, `collection_list`, `workspace_export` |
 | Run row-based local flows | `orchestrate` | `batch` | Uses canonical row tool names. |
 | Plan or run material ingest and status | `orchestrate` | `material ingest`, `material status` | `material_ingest`, `material_status` |
-| Inspect readiness, retained-checkout state, config, registries/providers, help, tools, or MCP | `operate` | `status`, `doctor`, `paths`, `setup`, `self`, `config`, `registries`, `providers`, `material-providers`, `platform-status`, `platform_status`, `tools`, `help`, `mcp serve`, `run` | `mcp_help`, `material_provider_list_installed`, `platform_status` plus management command envelopes |
+| Inspect source expansion/readiness, retained-checkout state, config, registries/providers, help, tools, or MCP | `operate` | `search-plan`, `status`, `doctor`, `paths`, `setup`, `self`, `config`, `registries`, `providers`, `material-providers`, `platform-status`, `platform_status`, `tools`, `help`, `mcp serve`, `run` | `mcp_help`, `material_provider_list_installed`, `platform_status` plus management command envelopes |
 
 ## Search and Identification
 
 - Use `academic` for installed academic providers.
 - Use `patent` for patent discovery, then `patent-detail` before saving detailed patent data.
+- With no positive selector, academic search uses `general` and patent search uses `patents`. Repeat `--preset`, `--source`, or `--category` to union selections; request-level `--exclude-source` is final.
+- Use `search-plan --type academic|patent` with the same selector flags to inspect canonical ids, preset/category expansion, skipped providers, and readiness without searching. Literal `--platform all` means command-scoped non-view sources, not `general`.
 - Use `lookup` when the input is already a DOI, PMID, arXiv ID, ISBN, or URL that should become normalized metadata.
 - Use `web` or `web-research` only for configured paper-search web backends. General web browsing belongs to the normal browser/search route unless the user explicitly wants paper-search.
 

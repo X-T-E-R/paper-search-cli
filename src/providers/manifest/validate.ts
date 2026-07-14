@@ -210,7 +210,9 @@ function validateInventory(
       throw new ManifestValidationError("view inventory.backingSourceIds cannot be empty");
     }
     if (inventory.selection.defaultInAll) {
-      throw new ManifestValidationError("view inventory cannot default into platform=all");
+      throw new ManifestValidationError(
+        "view inventory cannot set legacy selection.defaultInAll",
+      );
     }
   }
 }

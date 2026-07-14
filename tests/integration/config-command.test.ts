@@ -1,9 +1,13 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config/load.js";
-import { resolveConfigBundlePaths, resolveDefaultUserConfigPath } from "../../src/config/paths.js";
+import {
+  resolveConfigBundlePaths,
+  resolveConfigFragmentDirectory,
+  resolveDefaultUserConfigPath,
+} from "../../src/config/paths.js";
 import { buildProgram } from "../../src/program.js";
 import { isResultEnvelope, type ResultEnvelope } from "../../src/surface/resultEnvelope.js";
 
@@ -68,6 +72,7 @@ describe("config command", () => {
         data: {
           configRoot: resolveConfigBundlePaths().root,
           config: resolveConfigBundlePaths().config,
+          configFragments: resolveConfigFragmentDirectory(resolveConfigBundlePaths().config),
           subscriptions: resolveConfigBundlePaths().subscriptions,
           credentials: resolveConfigBundlePaths().credentials,
         },
@@ -130,6 +135,76 @@ describe("config command", () => {
         tool: "config_get",
         data: { key: "defaults.maxResults", exists: false, value: null, masked: false },
       });
+    });
+  });
+
+  it("persists installed provider aliases as canonical ids in tags and presets", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-config-canonical-source-"));
+    tempDirs.push(root);
+
+    await withAppData(root, async () => {
+      const providerRoot = (await loadConfig({ cwd: root })).providers.installDir;
+      const providerDir = path.join(providerRoot, "search", "pubmed");
+      tempDirs.push(providerDir);
+      await mkdir(providerDir, { recursive: true });
+      await writeFile(path.join(providerDir, "manifest.json"), JSON.stringify({
+        id: "pubmed",
+        name: "PubMed",
+        version: "1.0.0",
+        sourceType: "academic",
+        permissions: { urls: ["https://example.test/*"] },
+        inventory: {
+          schemaVersion: 1,
+          id: "pubmed",
+          kind: "search",
+          sourceType: "academic",
+          entryKind: "source",
+          sourceId: "example.pubmed",
+          aliases: ["medline"],
+          serviceFamily: "example.pubmed-api",
+          transport: "api",
+          domains: ["biomedicine"],
+          contentKinds: ["journal-article"],
+          access: ["public"],
+          selection: { defaultInAll: false },
+          publication: { status: "published" },
+        },
+      }));
+      await writeFile(
+        path.join(providerDir, "provider.js"),
+        "globalThis.__zrs_exports={createProvider(){return {async search(){return {platform:'pubmed',query:'',totalResults:0,items:[],page:1}}}}}",
+      );
+      const configPath = resolveDefaultUserConfigPath();
+
+      const tagResult = await runConfigCommand([
+        "config",
+        "set",
+        "search.classifications.lab.sources",
+        '["medline"]',
+      ]);
+      expect(tagResult.envelope, JSON.stringify(tagResult.envelope)).toMatchObject({
+        ok: true,
+        data: { value: ["pubmed"] },
+      });
+      const presetResult = await runConfigCommand([
+        "config",
+        "set",
+        "search.presets.custom.include",
+        '["source:medline","domain:biomedicine"]',
+      ]);
+      expect(presetResult.envelope).toMatchObject({
+        ok: true,
+        data: { value: ["source:pubmed", "domain:biomedicine"] },
+      });
+
+      const raw = await readFile(configPath, "utf8");
+      expect(raw).not.toContain("medline");
+      const resolved = await loadConfig({ cwd: root });
+      expect(resolved.search.classifications.lab?.sources).toEqual(["pubmed"]);
+      expect(resolved.search.presets.custom?.include).toEqual([
+        "source:pubmed",
+        "domain:biomedicine",
+      ]);
     });
   });
 

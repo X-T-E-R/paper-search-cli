@@ -73,7 +73,7 @@ Many source-compatible commands already emit JSON directly. Do not parse human t
 Use the precise `run <canonical_tool>` entrypoint for deterministic tool calls:
 
 ```bash
-node scripts/paper-search.mjs run academic_search --json-args "{\"query\":\"retrieval augmented generation\",\"platform\":\"all\",\"maxResults\":5}"
+node scripts/paper-search.mjs run academic_search --json-args "{\"query\":\"retrieval augmented generation\",\"presets\":[\"general\",\"computer-science\"],\"maxResults\":5}"
 node scripts/paper-search.mjs run resource_lookup --arg identifier=10.1145/3366423.3380130
 node scripts/paper-search.mjs run material_ingest --json-args "{\"input\":\"./paper.pdf\",\"dryRun\":true}"
 node scripts/paper-search.mjs run artifact_download --json-args "{\"input\":\"10.1038/nature12373\",\"resolverId\":\"unpaywall\",\"dryRun\":true}"

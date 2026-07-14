@@ -40,6 +40,12 @@ export function resolveExplicitConfigPath(input: string, cwd: string): string {
     : path.join(resolved, "config.toml");
 }
 
+export function resolveConfigFragmentDirectory(configPath: string): string {
+  const extension = path.extname(configPath);
+  const stem = extension ? path.basename(configPath, extension) : path.basename(configPath);
+  return path.join(path.dirname(configPath), `${stem}.d`);
+}
+
 export function resolveProjectConfigCandidates(cwd: string): string[] {
   return [path.join(cwd, "paper-search.toml"), path.join(cwd, ".paper-search.toml")];
 }

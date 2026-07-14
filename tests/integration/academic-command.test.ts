@@ -48,6 +48,7 @@ describe("academic command", () => {
     );
 
     let stdout = "";
+    let planStdout = "";
     let stderr = "";
     const originalCwd = process.cwd();
     process.chdir(root);
@@ -56,6 +57,22 @@ describe("academic command", () => {
         stdout: { write(chunk: string) { stdout += chunk; } },
         stderr: { write(chunk: string) { stderr += chunk; } },
       }).parseAsync(["node", "paper-search", "academic", "rag evaluation"]);
+      await buildProgram({
+        stdout: { write(chunk: string) { planStdout += chunk; } },
+        stderr: { write(chunk: string) { stderr += chunk; } },
+      }).parseAsync([
+        "node",
+        "paper-search",
+        "search-plan",
+        "--type",
+        "academic",
+        "--preset",
+        "general",
+        "--source",
+        "fixture-academic-searchable",
+        "--category",
+        "domain:multidisciplinary",
+      ]);
     } finally {
       process.chdir(originalCwd);
     }
@@ -69,5 +86,21 @@ describe("academic command", () => {
     });
     expect(parsed.data.platform).toBe("fixture-academic-searchable");
     expect(parsed.data.items).toHaveLength(2);
+    const plan = JSON.parse(planStdout);
+    expect(plan).toMatchObject({
+      ok: true,
+      capability: "operate",
+      tool: "search_selection_plan",
+      data: {
+        usedDefaults: false,
+        requested: {
+          presets: ["general"],
+          sources: ["fixture-academic-searchable"],
+          categories: ["domain:multidisciplinary"],
+        },
+        selectedProviderIds: ["fixture-academic-searchable"],
+        runnableProviderIds: ["fixture-academic-searchable"],
+      },
+    });
   });
 });

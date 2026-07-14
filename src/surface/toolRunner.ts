@@ -522,7 +522,13 @@ async function handleAcademicSearch(
   }
   const request: AcademicSearchRequest = {
     query,
-    platform: asString(args.platform) ?? "all",
+    platform: asString(args.platform),
+    provider: asString(args.provider),
+    presets: asStringArray(args.presets),
+    sources: asStringArray(args.sources),
+    categories: asStringArray(args.categories),
+    excludeSources: asStringArray(args.excludeSources) ?? asStringArray(args.exclude_sources),
+    excludeCategories: asStringArray(args.excludeCategories) ?? asStringArray(args.exclude_categories),
     maxResults: asNumber(args.maxResults) ?? asNumber(args.max_results),
     page: asNumber(args.page),
     year: asString(args.year),
@@ -595,7 +601,13 @@ async function handlePatentSearch(config: ResolvedConfig, args: ToolArguments): 
   }
   const request: PatentSearchRequest = {
     query,
-    platform: asString(args.platform) ?? "all",
+    platform: asString(args.platform),
+    provider: asString(args.provider),
+    presets: asStringArray(args.presets),
+    sources: asStringArray(args.sources),
+    categories: asStringArray(args.categories),
+    excludeSources: asStringArray(args.excludeSources) ?? asStringArray(args.exclude_sources),
+    excludeCategories: asStringArray(args.excludeCategories) ?? asStringArray(args.exclude_categories),
     maxResults: asNumber(args.maxResults) ?? asNumber(args.max_results),
     page: asNumber(args.page),
     sortBy: sortBy.value,

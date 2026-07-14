@@ -104,7 +104,9 @@ describe("parseProviderManifest", () => {
     };
     expect(() => parseProviderManifest(JSON.stringify(base))).toThrow(/sourceType/);
     base.inventory.sourceType = "academic";
-    expect(() => parseProviderManifest(JSON.stringify(base))).toThrow(/platform=all/);
+    expect(() => parseProviderManifest(JSON.stringify(base))).toThrow(
+      /legacy selection\.defaultInAll/,
+    );
   });
 
   it("rejects invalid provider IDs", () => {

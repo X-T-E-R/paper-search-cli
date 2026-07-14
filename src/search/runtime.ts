@@ -14,11 +14,16 @@ import {
   getProviderConfig,
   resolveProviderAvailability,
 } from "../providers/runtime/availability.js";
-import { evaluateProviderInAll, resolveExplicitProvider } from "./selection.js";
+import {
+  resolveExplicitProvider,
+  resolveProviderSelection,
+  type ProviderSelectionPlan,
+  type ProviderSelectionRequest,
+} from "./selection.js";
+import { listProviderSelectionCandidates } from "./candidates.js";
 
-export interface ProviderSearchRequest extends SearchOptions {
+export interface ProviderSearchRequest extends SearchOptions, ProviderSelectionRequest {
   query: string;
-  platform?: string;
 }
 
 function flattenNestedRecord(prefix: string, value: unknown, target: Record<string, unknown>): void {
@@ -155,6 +160,22 @@ function toProviderErrorResult(
   };
 }
 
+function toSkippedProviderResult(
+  request: ProviderSearchRequest,
+  providerId: string,
+  reasons: readonly string[],
+): SearchResult {
+  return {
+    platform: providerId,
+    query: request.query,
+    totalResults: 0,
+    items: [],
+    page: request.page ?? 1,
+    skipped: true,
+    error: reasons.length > 0 ? reasons.join("; ") : "provider is not runnable",
+  };
+}
+
 export async function getInstalledProvidersByType(
   config: ResolvedConfig,
   sourceType: SourceType,
@@ -173,43 +194,40 @@ export async function runProviderSearch(
   sourceType: SourceType,
   request: ProviderSearchRequest,
 ): Promise<SearchResult | SearchResult[]> {
-  const providers = await getInstalledProvidersByType(config, sourceType);
-  if (providers.length === 0) {
-    return [
-      {
-        platform: request.platform ?? "all",
-        query: request.query,
-        totalResults: 0,
-        items: [],
-        page: request.page ?? 1,
-        error: `No enabled ${sourceType} providers are installed`,
-      },
-    ];
-  }
-
-  const requestedPlatform = request.platform ?? "all";
-  const selected =
-    requestedPlatform === "all"
-      ? providers.filter(
-          (entry) => entry.manifest && evaluateProviderInAll(config, entry.manifest).included,
-        )
-      : [resolveExplicitProvider(providers, requestedPlatform)].filter(
-          (entry): entry is InstalledProviderSummary => Boolean(entry),
-        );
-
-  if (selected.length === 0) {
+  const selectionCandidates = await listProviderSelectionCandidates(config);
+  const providers = selectionCandidates.installed;
+  let plan: ProviderSelectionPlan;
+  try {
+    plan = resolveProviderSelection(config, sourceType, selectionCandidates.candidates, request);
+    plan.warnings = [...new Set([...selectionCandidates.warnings, ...plan.warnings])]
+      .sort((left, right) => left.localeCompare(right));
+  } catch (error) {
     return {
-      platform: requestedPlatform,
+      platform: request.platform ?? request.provider ?? request.sources?.[0] ?? "default",
       query: request.query,
       totalResults: 0,
       items: [],
       page: request.page ?? 1,
-      error:
-        requestedPlatform === "all"
-          ? `No runnable ${sourceType} providers are included by the current search selection`
-          : `${sourceType} provider not installed, disabled, or unconfigured: ${requestedPlatform}`,
+      error: error instanceof Error ? error.message : String(error),
     };
   }
+
+  const selectedEntries = plan.entries.filter((entry) => entry.selected);
+  if (selectedEntries.length === 0) {
+    const selectionLabel = plan.usedDefaults
+      ? `default presets (${plan.defaultPresets.join(", ") || "none"})`
+      : "requested selectors";
+    return {
+      platform: plan.usedDefaults ? "default" : request.platform ?? "selection",
+      query: request.query,
+      totalResults: 0,
+      items: [],
+      page: request.page ?? 1,
+      error: `No installed ${sourceType} providers match ${selectionLabel}`,
+    };
+  }
+
+  const providersById = new Map(providers.map((provider) => [provider.id, provider]));
 
   const runSingle = async (provider: InstalledProviderSummary): Promise<SearchResult> => {
     const runtime = await loadRuntimeProvider(config, provider);
@@ -219,21 +237,42 @@ export async function runProviderSearch(
     );
   };
 
-  if (selected.length === 1) {
-    try {
-      return await runSingle(selected[0]!);
-    } catch (error) {
-      return toProviderErrorResult(request, selected[0]!.id, error);
-    }
-  }
-
-  const settled = await Promise.allSettled(selected.map((provider) => runSingle(provider)));
-  return settled.map((result, index) => {
-    const provider = selected[index]!;
+  const settled = await Promise.allSettled(
+    selectedEntries.map(async (entry): Promise<SearchResult> => {
+      if (!entry.runnable) {
+        return toSkippedProviderResult(request, entry.id, entry.readinessReasons);
+      }
+      const provider = providersById.get(entry.id);
+      if (!provider) {
+        return toSkippedProviderResult(request, entry.id, ["provider package is not installed"]);
+      }
+      return runSingle(provider);
+    }),
+  );
+  const results = settled.map((result, index) => {
+    const entry = selectedEntries[index]!;
     return result.status === "fulfilled"
       ? result.value
-      : toProviderErrorResult(request, provider.id, result.reason);
+      : toProviderErrorResult(request, entry.id, result.reason);
   });
+  return results.length === 1 ? results[0]! : results;
+}
+
+export async function createProviderSelectionPlan(
+  config: ResolvedConfig,
+  sourceType: SourceType,
+  request: ProviderSelectionRequest = {},
+): Promise<ProviderSelectionPlan> {
+  const selectionCandidates = await listProviderSelectionCandidates(config);
+  const plan = resolveProviderSelection(
+    config,
+    sourceType,
+    selectionCandidates.candidates,
+    request,
+  );
+  plan.warnings = [...new Set([...selectionCandidates.warnings, ...plan.warnings])]
+    .sort((left, right) => left.localeCompare(right));
+  return plan;
 }
 
 export async function loadInstalledProviderRuntime(

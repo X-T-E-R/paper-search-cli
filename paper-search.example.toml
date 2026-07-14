@@ -29,6 +29,22 @@ prettyJson = true
 enabled = true
 envVar = "PAPER_SEARCH_RUN_SMOKE"
 
+[search]
+defaultAcademicPresets = ["general"]
+defaultPatentPresets = ["patents"]
+
+# User tags are additive local source sets. Built-in taxonomy is unchanged.
+[search.classifications.lab-preferred]
+sources = ["crossref", "openalex"]
+
+# Built-in preset names are reserved. Extend one under a new name instead.
+[search.presets.my-general]
+extends = ["general"]
+include = ["tag:lab-preferred"]
+exclude = ["source:semantic"]
+
+# Compatibility policy for implicit defaults. New requests should prefer
+# presets/categories/sources; this section does not redefine literal `all`.
 [search.selection]
 mode = "defaults"
 includeIds = []

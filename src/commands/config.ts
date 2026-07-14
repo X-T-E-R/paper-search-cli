@@ -7,8 +7,13 @@ import {
   parseEnvFile,
 } from "../config/env.js";
 import { loadConfig, validateConfigFiles } from "../config/load.js";
-import { resolveConfigBundlePaths } from "../config/paths.js";
+import {
+  resolveConfigBundlePaths,
+  resolveConfigFragmentDirectory,
+} from "../config/paths.js";
 import { loadInstalledProviderConfigMetadata } from "../config/providerDescriptors.js";
+import { listProviderSelectionCandidates } from "../search/candidates.js";
+import { resolveExplicitProvider } from "../search/selection.js";
 import { readCredentialInput } from "../config/credentialInput.js";
 import { applyConfigTransaction } from "../config/transactions.js";
 import {
@@ -123,8 +128,60 @@ function explicitConfigPath(program: Command): string | undefined {
 }
 
 async function installedConfigMetadata(program: Command): Promise<ConfigKeyMetadata> {
+  return (await installedConfigContext(program)).metadata;
+}
+
+async function installedConfigContext(program: Command): Promise<{
+  resolved: Awaited<ReturnType<typeof loadConfig>>;
+  metadata: ConfigKeyMetadata;
+}> {
   const resolved = await loadConfig({ explicitConfigPath: explicitConfigPath(program) });
-  return loadInstalledProviderConfigMetadata(resolved.providers.installDir);
+  return {
+    resolved,
+    metadata: await loadInstalledProviderConfigMetadata(resolved.providers.installDir),
+  };
+}
+
+async function canonicalizeSearchDefinitionValue(
+  resolved: Awaited<ReturnType<typeof loadConfig>>,
+  pathSegments: readonly string[],
+  value: unknown,
+): Promise<unknown> {
+  const isClassificationSources =
+    pathSegments[0] === "search" &&
+    pathSegments[1] === "classifications" &&
+    pathSegments[3] === "sources";
+  const isPresetSelectors =
+    pathSegments[0] === "search" &&
+    pathSegments[1] === "presets" &&
+    (pathSegments[3] === "include" || pathSegments[3] === "exclude");
+  if ((!isClassificationSources && !isPresetSelectors) || !Array.isArray(value)) return value;
+
+  const { candidates } = await listProviderSelectionCandidates(resolved);
+  const canonicalized: unknown[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      canonicalized.push(item);
+      continue;
+    }
+    const requestedId = isClassificationSources
+      ? item
+      : item.startsWith("source:")
+        ? item.slice("source:".length)
+        : null;
+    if (requestedId === null || requestedId.length === 0) {
+      canonicalized.push(item);
+      continue;
+    }
+    const provider = resolveExplicitProvider(candidates, requestedId);
+    const normalized = provider
+      ? isClassificationSources
+        ? provider.id
+        : `source:${provider.id}`
+      : item;
+    if (!canonicalized.includes(normalized)) canonicalized.push(normalized);
+  }
+  return canonicalized;
 }
 
 function sha256(value: string): string {
@@ -149,6 +206,7 @@ export function registerConfigCommands(program: Command, io: Io): void {
             ? {
                 configRoot: paths.root,
                 config: paths.config,
+                configFragments: resolveConfigFragmentDirectory(paths.config),
                 subscriptions: paths.subscriptions,
                 credentials: paths.credentials,
               }
@@ -269,10 +327,14 @@ export function registerConfigCommands(program: Command, io: Io): void {
     .description("Set one known non-secret key in config.toml.")
     .action(async (key: string, value: string) =>
       runConfigAction(io, "config_set", async () => {
-        const metadata = await installedConfigMetadata(program);
+        const { resolved, metadata } = await installedConfigContext(program);
         const pathSegments = assertWritableNonSecretConfigKey(key, metadata);
         const canonicalKey = configKeyToString(pathSegments);
-        const parsedValue = parseConfigScalar(value);
+        const parsedValue = await canonicalizeSearchDefinitionValue(
+          resolved,
+          pathSegments,
+          parseConfigScalar(value),
+        );
         const configFile = await readUserConfigFile();
         const next = setUserConfigValue(configFile.data, pathSegments, parsedValue);
         await writeUserConfigFile(next, configFile.path, { expectedDigest: configFile.digest, metadata });

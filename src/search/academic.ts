@@ -1,11 +1,8 @@
 import type { ResolvedConfig } from "../config/schema.js";
-import type { SearchOptions, SearchResult } from "../providers/sdk/types.js";
-import { runProviderSearch } from "./runtime.js";
+import type { SearchResult } from "../providers/sdk/types.js";
+import { runProviderSearch, type ProviderSearchRequest } from "./runtime.js";
 
-export interface AcademicSearchRequest extends SearchOptions {
-  query: string;
-  platform?: string;
-}
+export type AcademicSearchRequest = ProviderSearchRequest;
 
 export async function runAcademicSearch(
   config: ResolvedConfig,

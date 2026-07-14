@@ -129,6 +129,7 @@ describe("provider registry commands", () => {
           publishedEntries: 2,
           publishedSearchSources: 1,
           publishedViews: 1,
+          publishedGeneralPresetMembers: 1,
           publishedDefaultInAll: 1,
           retainedUnpublishedEntries: 1,
           aliases: 1,

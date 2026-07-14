@@ -5,5 +5,20 @@
   "sourceType": "academic",
   "permissions": {
     "urls": ["https://fixture.example/*"]
+  },
+  "inventory": {
+    "schemaVersion": 1,
+    "id": "fixture-academic-searchable",
+    "kind": "search",
+    "sourceType": "academic",
+    "entryKind": "source",
+    "sourceId": "example.fixture-academic-searchable",
+    "serviceFamily": "example.fixture-academic-searchable",
+    "transport": "api",
+    "domains": ["multidisciplinary"],
+    "contentKinds": ["journal-article"],
+    "access": ["public"],
+    "selection": { "defaultInAll": true },
+    "publication": { "status": "published" }
   }
 }

@@ -70,7 +70,116 @@ export const AccessClassSchema = z.enum([
   "session-gated",
 ]);
 
-const ProviderIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{1,63}$/);
+export const ProviderIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{1,63}$/);
+
+export const BUILT_IN_SEARCH_PRESET_NAMES = [
+  "general",
+  "computer-science",
+  "biomedicine",
+  "preprints",
+  "repositories",
+  "publishers",
+  "patents",
+] as const;
+
+export const SearchDefinitionNameSchema = z.string().regex(
+  /^[a-z][a-z0-9-]{0,62}$/,
+  "definition name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens",
+);
+
+export const SearchSelectorNamespaceSchema = z.enum([
+  "source",
+  "tag",
+  "type",
+  "domain",
+  "content",
+  "access",
+  "transport",
+]);
+
+const SearchSourceTypeSchema = z.enum(["academic", "patent"]);
+const SearchTransportSchema = z.enum(["api", "html"]);
+
+const SEARCH_SELECTOR_VALUE_SCHEMAS: Record<
+  z.infer<typeof SearchSelectorNamespaceSchema>,
+  z.ZodTypeAny
+> = {
+  source: ProviderIdSchema,
+  tag: SearchDefinitionNameSchema,
+  type: SearchSourceTypeSchema,
+  domain: SourceDomainSchema,
+  content: ContentKindSchema,
+  access: AccessClassSchema,
+  transport: SearchTransportSchema,
+};
+
+export const SearchSelectorSchema = z.string().superRefine((selector, context) => {
+  const match = /^([^:]+):([^:]+)$/.exec(selector);
+  if (!match) {
+    context.addIssue({
+      code: "custom",
+      message: `selector must use exactly one namespace separator: ${selector}`,
+    });
+    return;
+  }
+
+  const namespace = SearchSelectorNamespaceSchema.safeParse(match[1]);
+  if (!namespace.success) {
+    context.addIssue({
+      code: "custom",
+      message: `unknown selector namespace: ${match[1]}`,
+    });
+    return;
+  }
+
+  if (!SEARCH_SELECTOR_VALUE_SCHEMAS[namespace.data].safeParse(match[2]).success) {
+    context.addIssue({
+      code: "custom",
+      message: `invalid ${namespace.data} selector value: ${match[2]}`,
+    });
+  }
+});
+
+export const SearchClassificationConfigSchema = z.object({
+  sources: z.array(ProviderIdSchema),
+}).strict();
+
+const SearchPresetFieldsSchema = z.object({
+  extends: z.array(SearchDefinitionNameSchema),
+  include: z.array(SearchSelectorSchema),
+  exclude: z.array(SearchSelectorSchema),
+}).strict();
+
+export const SearchPresetConfigSchema = z.object({
+  extends: z.array(SearchDefinitionNameSchema).default([]),
+  include: z.array(SearchSelectorSchema).default([]),
+  exclude: z.array(SearchSelectorSchema).default([]),
+}).strict();
+
+const BUILT_IN_SEARCH_PRESET_NAME_SET = new Set<string>(BUILT_IN_SEARCH_PRESET_NAMES);
+
+function rejectReservedPresetNames(
+  presets: Record<string, unknown>,
+  context: z.RefinementCtx,
+): void {
+  for (const name of Object.keys(presets)) {
+    if (BUILT_IN_SEARCH_PRESET_NAME_SET.has(name)) {
+      context.addIssue({
+        code: "custom",
+        path: [name],
+        message: `built-in search preset name is reserved: ${name}`,
+      });
+    }
+  }
+}
+
+const SearchPresetDefinitionsSchema = z
+  .record(SearchDefinitionNameSchema, SearchPresetConfigSchema)
+  .superRefine(rejectReservedPresetNames);
+
+const UserSearchPresetDefinitionsSchema = z
+  .record(SearchDefinitionNameSchema, SearchPresetFieldsSchema.partial())
+  .superRefine(rejectReservedPresetNames);
 
 const SearchSelectionFieldsSchema = z.object({
   mode: z.enum(["defaults", "allowlist"]),
@@ -97,12 +206,97 @@ export const SearchSelectionConfigSchema = SearchSelectionFieldsSchema.superRefi
   }
 });
 
-export const SearchConfigSchema = z.object({
+const SearchConfigFieldsSchema = z.object({
   selection: SearchSelectionConfigSchema,
+  defaultAcademicPresets: z.array(SearchDefinitionNameSchema),
+  defaultPatentPresets: z.array(SearchDefinitionNameSchema),
+  classifications: z.record(SearchDefinitionNameSchema, SearchClassificationConfigSchema),
+  presets: SearchPresetDefinitionsSchema,
 }).strict();
+
+function selectorTagName(selector: string): string | null {
+  return selector.startsWith("tag:") ? selector.slice("tag:".length) : null;
+}
+
+export const SearchConfigSchema = SearchConfigFieldsSchema.superRefine((search, context) => {
+  const knownPresets = new Set<string>([
+    ...BUILT_IN_SEARCH_PRESET_NAMES,
+    ...Object.keys(search.presets),
+  ]);
+
+  for (const [field, defaults] of [
+    ["defaultAcademicPresets", search.defaultAcademicPresets],
+    ["defaultPatentPresets", search.defaultPatentPresets],
+  ] as const) {
+    defaults.forEach((name, index) => {
+      if (!knownPresets.has(name)) {
+        context.addIssue({
+          code: "custom",
+          path: [field, index],
+          message: `unknown search preset: ${name}`,
+        });
+      }
+    });
+  }
+
+  const knownTags = new Set(Object.keys(search.classifications));
+  for (const [name, preset] of Object.entries(search.presets)) {
+    preset.extends.forEach((extended, index) => {
+      if (!knownPresets.has(extended)) {
+        context.addIssue({
+          code: "custom",
+          path: ["presets", name, "extends", index],
+          message: `unknown search preset: ${extended}`,
+        });
+      }
+    });
+    for (const field of ["include", "exclude"] as const) {
+      preset[field].forEach((selector, index) => {
+        const tagName = selectorTagName(selector);
+        if (tagName !== null && !knownTags.has(tagName)) {
+          context.addIssue({
+            code: "custom",
+            path: ["presets", name, field, index],
+            message: `unknown search tag: ${tagName}`,
+          });
+        }
+      });
+    }
+  }
+
+  const states = new Map<string, "visiting" | "visited">();
+  const stack: string[] = [];
+  const visit = (name: string): void => {
+    if (BUILT_IN_SEARCH_PRESET_NAME_SET.has(name) || !search.presets[name]) return;
+    const state = states.get(name);
+    if (state === "visited") return;
+    if (state === "visiting") {
+      const cycleStart = stack.indexOf(name);
+      const cycle = [...stack.slice(cycleStart), name];
+      context.addIssue({
+        code: "custom",
+        path: ["presets", name, "extends"],
+        message: `cyclic search preset inheritance: ${cycle.join(" -> ")}`,
+      });
+      return;
+    }
+    states.set(name, "visiting");
+    stack.push(name);
+    for (const extended of search.presets[name]!.extends) visit(extended);
+    stack.pop();
+    states.set(name, "visited");
+  };
+  for (const name of Object.keys(search.presets)) visit(name);
+});
 
 const UserSearchConfigSchema = z.object({
   selection: SearchSelectionFieldsSchema.partial().optional(),
+  defaultAcademicPresets: z.array(SearchDefinitionNameSchema).optional(),
+  defaultPatentPresets: z.array(SearchDefinitionNameSchema).optional(),
+  classifications: z
+    .record(SearchDefinitionNameSchema, SearchClassificationConfigSchema)
+    .optional(),
+  presets: UserSearchPresetDefinitionsSchema.optional(),
 }).strict();
 
 export const ConfigOriginSchema = z.object({
@@ -170,5 +364,8 @@ export const SubscriptionsConfigFileSchema = z.object({
 
 export type ResolvedConfig = z.infer<typeof ResolvedConfigSchema>;
 export type UserConfig = z.infer<typeof UserConfigSchema>;
+export type SearchSelector = z.infer<typeof SearchSelectorSchema>;
+export type SearchClassificationConfig = z.infer<typeof SearchClassificationConfigSchema>;
+export type SearchPresetConfig = z.infer<typeof SearchPresetConfigSchema>;
 export type CredentialsConfigFile = z.infer<typeof CredentialsConfigFileSchema>;
 export type SubscriptionsConfigFile = z.infer<typeof SubscriptionsConfigFileSchema>;

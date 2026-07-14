@@ -5,6 +5,12 @@ import { loadInstalledProviderRuntime, runProviderSearch, type ProviderSearchReq
 export interface PatentSearchRequest extends SearchOptions {
   query: string;
   platform?: string;
+  provider?: string;
+  presets?: readonly string[];
+  sources?: readonly string[];
+  categories?: readonly string[];
+  excludeSources?: readonly string[];
+  excludeCategories?: readonly string[];
   patentType?: string;
   legalStatus?: string;
   database?: string;
@@ -48,6 +54,12 @@ export async function runPatentSearch(
   const normalized: ProviderSearchRequest = {
     query: request.query,
     platform: request.platform,
+    provider: request.provider,
+    presets: request.presets,
+    sources: request.sources,
+    categories: request.categories,
+    excludeSources: request.excludeSources,
+    excludeCategories: request.excludeCategories,
     maxResults: request.maxResults,
     page: request.page,
     sortBy: request.sortBy,

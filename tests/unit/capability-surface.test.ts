@@ -10,6 +10,7 @@ import {
   isResultEnvelope,
   okEnvelope,
 } from "../../src/surface/resultEnvelope.js";
+import { buildSearchEnvelope } from "../../src/surface/searchEnvelope.js";
 
 describe("capability map", () => {
   it("describes every declared group exactly once", () => {
@@ -78,5 +79,32 @@ describe("result envelope", () => {
     expect(isResultEnvelope(null)).toBe(false);
     expect(isResultEnvelope({ ok: true })).toBe(false);
     expect(isResultEnvelope({ ok: true, capability: "discover", tool: "x" })).toBe(false);
+  });
+
+  it("reports selected but unconfigured providers as skipped rather than failed", () => {
+    const envelope = buildSearchEnvelope("academic_search", [
+      {
+        platform: "openalex",
+        query: "RAG",
+        totalResults: 0,
+        items: [],
+        page: 1,
+      },
+      {
+        platform: "wos",
+        query: "RAG",
+        totalResults: 0,
+        items: [],
+        page: 1,
+        skipped: true,
+        error: "missing required config: apiKey",
+      },
+    ]);
+    expect(envelope.ok).toBe(true);
+    expect(envelope.diagnostics).toMatchObject({ skippedSources: ["wos"] });
+    expect(envelope.diagnostics?.failedSources).toBeUndefined();
+    expect(envelope.warnings).toEqual([
+      "wos: skipped (missing required config: apiKey)",
+    ]);
   });
 });

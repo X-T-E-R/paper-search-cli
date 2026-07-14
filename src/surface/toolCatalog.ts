@@ -20,6 +20,42 @@ type RawToolSchema = Omit<ToolSchema, "capability" | "annotations"> & {
   annotations?: Omit<NonNullable<ToolSchema["annotations"]>, "capabilityGroup" | "capabilityLayer">;
 };
 
+const SEARCH_SELECTION_PROPERTIES: Record<string, unknown> = {
+  platform: {
+    type: "string",
+    description: 'Legacy singular provider id, or literal "all". Omit to use configured defaults.',
+  },
+  provider: {
+    type: "string",
+    description: "Legacy alias of platform; participates in the same source union.",
+  },
+  presets: {
+    type: "array",
+    items: { type: "string" },
+    description: "Named presets to expand and union.",
+  },
+  sources: {
+    type: "array",
+    items: { type: "string" },
+    description: "Provider ids or aliases to add explicitly.",
+  },
+  categories: {
+    type: "array",
+    items: { type: "string" },
+    description: "Classification selectors such as domain:biomedicine or content:preprint.",
+  },
+  excludeSources: {
+    type: "array",
+    items: { type: "string" },
+    description: "Provider ids or aliases removed after all positive selectors.",
+  },
+  excludeCategories: {
+    type: "array",
+    items: { type: "string" },
+    description: "Classification selectors removed before exact source inclusion.",
+  },
+};
+
 const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "mcp_help",
@@ -57,11 +93,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Search query string" },
-        platform: {
-          type: "string",
-          enum: [],
-          description: 'Provider id, or "all" for every enabled academic provider.',
-        },
+        ...SEARCH_SELECTION_PROPERTIES,
         maxResults: {
           type: "number",
           description: "Maximum results per provider. 0 uses the global default.",
@@ -128,11 +160,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Patent search query string" },
-        platform: {
-          type: "string",
-          enum: [],
-          description: 'Patent provider id, or "all" for every enabled patent provider.',
-        },
+        ...SEARCH_SELECTION_PROPERTIES,
         maxResults: {
           type: "number",
           description: "Maximum results per provider. 0 uses the global default, -1 uses the source maximum.",
@@ -194,7 +222,6 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       properties: {
         platform: {
           type: "string",
-          enum: [],
           description: "Patent provider id",
         },
         sourceId: {

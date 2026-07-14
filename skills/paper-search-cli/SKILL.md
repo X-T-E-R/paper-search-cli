@@ -1,6 +1,6 @@
 ---
 name: paper-search-cli
-description: Use the local paper-search-cli for academic/patent/configured-web search, identifier lookup, artifact acquisition, extraction, material ingest/status, workspace storage/export, provider and registry-subscription management, config/migration/status checks, and MCP serving. Trigger for paper-search-cli, paper-search MCP, mcp serve, provider registries, academic_search, patent_search, patent_detail, web_search, web_research, resource_lookup, resource_add, resource_pdf, artifact_download, extract, material_ingest, workspace_export, platform_status, batch, doctor, config, migrate, registries, providers, or material-providers. Use the Zotero skill instead for Zotero writes or Zotero Resource Search; do not use this skill for general web search that does not need Paper Search.
+description: Use the local paper-search-cli for academic/patent/configured-web search, source presets and search plans, identifier lookup, artifact acquisition, extraction, material ingest/status, workspace storage/export, provider and registry-subscription management, config/migration/status checks, and MCP serving. Trigger for paper-search-cli, paper-search MCP, mcp serve, provider registries, academic_search, patent_search, patent_detail, search-plan, web_search, web_research, resource_lookup, resource_add, resource_pdf, artifact_download, extract, material_ingest, workspace_export, platform_status, batch, doctor, config, migrate, registries, providers, or material-providers. Use the Zotero skill instead for Zotero writes or Zotero Resource Search; do not use this skill for general web search that does not need Paper Search.
 ---
 
 # Paper Search CLI
@@ -41,7 +41,7 @@ Do not use this skill for ordinary news lookup, broad web browsing, or general c
 | `extract` | Markdown/JSON/assets extraction from an artifact, URL, or local file through material providers. |
 | `organize` | Local workspace add/list/export operations. |
 | `orchestrate` | Batch rows, material ingest, and material status over stored records. |
-| `operate` | Status, doctor, config, provider management, help/tools, and MCP serving. |
+| `operate` | Status, search-plan, config, provider management, help/tools, and MCP serving. |
 
 ## Reference Rule
 
@@ -49,7 +49,7 @@ Before parameter-heavy work, read the matching reference:
 
 - Read `references/capability-routing.md` before mapping a request to the eight groups and current entrypoints.
 - Read `references/cli-contract.md` before touching working directory, build/probe, JSON output, `ResultEnvelope`, `run <canonical_tool>`, aliases, batch rows, dry-run/plan, local records, or secrets/config.
-- Read `references/management-layer.md` before using `status`, `doctor`, `config`, `migrate`, `registries`, subscription-bound `providers available|install|update`, `providers inventory`, `providers --kind search|material`, `material-providers`, `mcp serve`, `platform-status`, `help`, `tools`, or smoke gates.
+- Read `references/management-layer.md` before using `status`, `doctor`, `search-plan`, source presets/config fragments, `config`, `migrate`, `registries`, subscription-bound `providers available|install|update`, `providers inventory`, `providers --kind search|material`, `material-providers`, `mcp serve`, `platform-status`, `help`, `tools`, or smoke gates.
 - Read `references/management-layer.md` before planning or applying `self mode`
   or `self update`. These commands are plan-first. Production authority is
   source-sealed to the official HTTPS `main` origin and cannot be changed by

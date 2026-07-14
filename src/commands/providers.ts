@@ -49,6 +49,7 @@ import type { Io } from "../runtime/io.js";
 import { tryAppendLifecycleEvent } from "../runtime/eventLedger.js";
 import { withLocks } from "../subscriptions/locks.js";
 import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
+import { inventoryIsGeneralMember } from "../search/selection.js";
 
 type ProviderKind = "search" | "material";
 
@@ -758,6 +759,7 @@ async function registryInventoryEnvelope(
     publishedEntries: published.length,
     publishedSearchSources: sourceIds.size,
     publishedViews: published.filter((entry) => entry.entryKind === "view").length,
+    publishedGeneralPresetMembers: published.filter(inventoryIsGeneralMember).length,
     publishedDefaultInAll: published.filter(
       (entry) => entry.entryKind === "source" && entry.selection.defaultInAll,
     ).length,
@@ -1086,6 +1088,7 @@ function writeRegistryInventoryHuman(io: Io, envelope: ResultEnvelope<unknown>):
       publishedEntries: number;
       publishedSearchSources: number;
       publishedViews: number;
+      publishedGeneralPresetMembers: number;
       publishedDefaultInAll: number;
       retainedUnpublishedEntries: number;
       aliases: number;
@@ -1112,7 +1115,7 @@ function writeRegistryInventoryHuman(io: Io, envelope: ResultEnvelope<unknown>):
     `published: ${payload.counts.publishedSearchSources} sources / ${payload.counts.publishedEntries} entries / ${payload.counts.publishedViews} views`,
   );
   io.writeLine(
-    `default in all: ${payload.counts.publishedDefaultInAll}; service families: ${payload.counts.publishedServiceFamilies}; aliases: ${payload.counts.aliases}; retained: ${payload.counts.retainedUnpublishedEntries}; unknown: ${payload.counts.unknownClassification}`,
+    `general preset: ${payload.counts.publishedGeneralPresetMembers}; legacy defaultInAll: ${payload.counts.publishedDefaultInAll}; service families: ${payload.counts.publishedServiceFamilies}; aliases: ${payload.counts.aliases}; retained: ${payload.counts.retainedUnpublishedEntries}; unknown: ${payload.counts.unknownClassification}`,
   );
   for (const entry of payload.inventory) {
     const identity =
@@ -1120,7 +1123,7 @@ function writeRegistryInventoryHuman(io: Io, envelope: ResultEnvelope<unknown>):
         ? entry.sourceId
         : `view of ${(entry.backingSourceIds ?? []).join(", ")}`;
     io.writeLine(
-      `- ${entry.id}: ${entry.entryKind} (${identity}) [${entry.publication.status}; all=${entry.selection.defaultInAll ? "default" : "explicit"}; domains=${entry.domains.join(",")}; content=${entry.contentKinds.join(",")}; access=${entry.access.join(",")}]`,
+      `- ${entry.id}: ${entry.entryKind} (${identity}) [${entry.publication.status}; general=${inventoryIsGeneralMember(entry) ? "yes" : "no"}; legacyDefaultInAll=${entry.selection.defaultInAll ? "yes" : "no"}; domains=${entry.domains.join(",")}; content=${entry.contentKinds.join(",")}; access=${entry.access.join(",")}]`,
     );
   }
 }

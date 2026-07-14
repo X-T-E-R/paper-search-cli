@@ -33,6 +33,10 @@ export const DEFAULT_CONFIG: Omit<ResolvedConfig, "meta"> = {
     envVar: "PAPER_SEARCH_RUN_SMOKE",
   },
   search: {
+    defaultAcademicPresets: ["general"],
+    defaultPatentPresets: ["patents"],
+    classifications: {},
+    presets: {},
     selection: {
       mode: "defaults",
       includeIds: [],

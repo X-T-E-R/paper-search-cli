@@ -131,7 +131,7 @@ export const CLI_ONLY_COMMANDS = [
   },
   {
     command: "config path --all",
-    purpose: "Show config.toml, subscriptions.toml, and credentials.toml paths.",
+    purpose: "Show config.toml, config.d, subscriptions.toml, and credentials.toml paths.",
   },
   {
     command: "config validate",
@@ -148,6 +148,10 @@ export const CLI_ONLY_COMMANDS = [
   {
     command: "config import-env --apply",
     purpose: "Plan, classify, and optionally route environment entries to config or credential files.",
+  },
+  {
+    command: "search-plan",
+    purpose: "Explain preset/category expansion, exclusions, aliases, and provider readiness without searching.",
   },
   {
     command: "migrate",
@@ -213,27 +217,22 @@ export const CLI_ONLY_COMMANDS = [
 
 export function getTools(installedProviders: InstalledProviderSummary[]): ToolSchema[] {
   const tools = cloneToolSchemas();
-  const academicIds = installedProviders
-    .filter((entry) => entry.valid && entry.manifest?.sourceType === "academic")
-    .map((entry) => entry.id);
-  const patentIds = installedProviders
-    .filter((entry) => entry.valid && entry.manifest?.sourceType === "patent")
-    .map((entry) => entry.id);
-
-  const academicTool = tools.find((tool) => tool.name === "academic_search");
-  if (academicTool) {
-    const platformProp = academicTool.inputSchema.properties.platform as { enum?: string[] };
-    platformProp.enum = ["all", ...academicIds];
-  }
-  const patentSearchTool = tools.find((tool) => tool.name === "patent_search");
-  if (patentSearchTool) {
-    const platformProp = patentSearchTool.inputSchema.properties.platform as { enum?: string[] };
-    platformProp.enum = ["all", ...patentIds];
-  }
+  const patentSelectors = providerSelectorTokens(installedProviders, "patent");
   const patentDetailTool = tools.find((tool) => tool.name === "patent_detail");
-  if (patentDetailTool) {
+  if (patentDetailTool && patentSelectors.length > 0) {
     const platformProp = patentDetailTool.inputSchema.properties.platform as { enum?: string[] };
-    platformProp.enum = patentIds;
+    platformProp.enum = patentSelectors;
   }
   return tools;
+}
+
+function providerSelectorTokens(
+  providers: InstalledProviderSummary[],
+  sourceType: "academic" | "patent",
+): string[] {
+  return [...new Set(
+    providers
+      .filter((entry) => entry.valid && entry.manifest?.sourceType === sourceType)
+      .flatMap((entry) => [entry.id, ...(entry.manifest?.inventory?.aliases ?? [])]),
+  )].sort((left, right) => left.localeCompare(right));
 }

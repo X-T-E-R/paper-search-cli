@@ -11,12 +11,14 @@ export function buildSearchEnvelope(
   data: SearchResult | SearchResult[],
 ): ResultEnvelope<SearchResult | SearchResult[] | null> {
   const results = Array.isArray(data) ? data : [data];
-  const failed = results.filter((entry) => Boolean(entry.error));
+  const skipped = results.filter((entry) => entry.skipped === true);
+  const failed = results.filter((entry) => Boolean(entry.error) && entry.skipped !== true);
   const succeeded = results.filter((entry) => !entry.error);
   const sourceCounts = Object.fromEntries(
     results.map((entry) => [entry.platform, entry.items.length]),
   );
   const failedSources = failed.map((entry) => entry.platform);
+  const skippedSources = skipped.map((entry) => entry.platform);
   const elapsedValues = results
     .map((entry) => entry.elapsed)
     .filter(
@@ -26,6 +28,7 @@ export function buildSearchEnvelope(
   const diagnostics: ResultDiagnostics = {
     sourceCounts,
     ...(failedSources.length > 0 ? { failedSources } : {}),
+    ...(skippedSources.length > 0 ? { skippedSources } : {}),
     ...(elapsedValues.length > 0
       ? { elapsedMs: Math.max(...elapsedValues) }
       : {}),
@@ -33,7 +36,7 @@ export function buildSearchEnvelope(
   const provenance = { providerIds: results.map((entry) => entry.platform) };
 
   if (results.length === 0 || succeeded.length === 0) {
-    const errors = failed
+    const errors = [...failed, ...skipped]
       .map((entry) => entry.error?.trim())
       .filter((entry): entry is string => Boolean(entry));
     return failEnvelope({
@@ -48,9 +51,10 @@ export function buildSearchEnvelope(
     });
   }
 
-  const warnings = failed.map(
-    (entry) => `${entry.platform}: ${entry.error ?? "provider failed"}`,
-  );
+  const warnings = [
+    ...failed.map((entry) => `${entry.platform}: ${entry.error ?? "provider failed"}`),
+    ...skipped.map((entry) => `${entry.platform}: skipped (${entry.error ?? "not runnable"})`),
+  ];
   return okEnvelope({
     capability: "discover",
     tool,

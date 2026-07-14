@@ -5,6 +5,7 @@ import {
   ToolArgumentValidationError,
 } from "../../src/surface/toolArguments.js";
 import { cloneToolSchemas } from "../../src/surface/toolCatalog.js";
+import { getTools } from "../../src/surface/tools.js";
 
 function schema(name: string) {
   const tool = cloneToolSchemas().find((entry) => entry.name === name);
@@ -13,6 +14,27 @@ function schema(name: string) {
 }
 
 describe("tool argument parsing and validation", () => {
+  it("keeps search selectors open for catalogue-known sources on partial installs", () => {
+    const tools = getTools([]);
+    const academic = tools.find((entry) => entry.name === "academic_search")!;
+    const patentDetail = tools.find((entry) => entry.name === "patent_detail")!;
+    const platform = academic.inputSchema.properties.platform as { enum?: string[] };
+    const sources = academic.inputSchema.properties.sources as {
+      items?: { enum?: string[] };
+    };
+    const detailPlatform = patentDetail.inputSchema.properties.platform as { enum?: string[] };
+
+    expect(platform.enum).toBeUndefined();
+    expect(sources.items?.enum).toBeUndefined();
+    expect(detailPlatform.enum).toBeUndefined();
+    expect(() => assertToolArgumentsMatchSchema(academic, {
+      query: "RAG",
+      platform: "catalogue-only",
+      sources: ["catalogue-only"],
+      excludeSources: ["portable-source"],
+    })).not.toThrow();
+  });
+
   it("merges JSON args with repeated key=value args and parses scalar/JSON-looking values", () => {
     const args = mergeToolArguments({
       jsonArgs: '{"query":"RAG"}',
@@ -64,6 +86,17 @@ describe("tool argument parsing and validation", () => {
       query: "RAG",
       extra: { provider: "fixture" },
     })).not.toThrow();
+    expect(() => assertToolArgumentsMatchSchema(schema("academic_search"), {
+      query: "RAG",
+      presets: ["general", "biomedicine"],
+      sources: ["pubmed"],
+      categories: ["content:preprint"],
+      excludeSources: ["medrxiv"],
+    })).not.toThrow();
+    expect(() => assertToolArgumentsMatchSchema(schema("academic_search"), {
+      query: "RAG",
+      sources: [5],
+    })).toThrow(/sources\[0\] must be a string/u);
     expect(() => assertToolArgumentsMatchSchema(webSearch, { query: "RAG", unknown: true })).toThrow(
       /unknown is not a valid argument/u,
     );
