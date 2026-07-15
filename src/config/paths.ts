@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolvePaperSearchPaths } from "./home.js";
@@ -43,7 +44,28 @@ export function resolveConfigFragmentDirectory(configPath: string): string {
 }
 
 export function resolveProjectConfigCandidates(cwd: string): string[] {
-  return [path.join(cwd, "paper-search.toml"), path.join(cwd, ".paper-search.toml")];
+  let current = path.resolve(cwd);
+  for (;;) {
+    const candidates = [
+      path.join(current, "paper-search.toml"),
+      path.join(current, ".paper-search.toml"),
+    ];
+    if (candidates.some((candidate) => {
+      try {
+        lstatSync(candidate);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    })) return candidates;
+    const parent = path.dirname(current);
+    if (parent === current) return [
+      path.join(path.resolve(cwd), "paper-search.toml"),
+      path.join(path.resolve(cwd), ".paper-search.toml"),
+    ];
+    current = parent;
+  }
 }
 
 export function expandHome(input: string, env: NodeJS.ProcessEnv = process.env): string {

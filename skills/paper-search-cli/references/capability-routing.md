@@ -25,6 +25,7 @@ node scripts/paper-search.mjs help
 | Plan or run material ingest and status | `orchestrate` | `material ingest`, `material status` | `material_ingest`, `material_status` |
 | Durably wrap an allowlisted discovery tool | `orchestrate` | `run <tool>` | `research_run` |
 | Plan, run, resume, or inspect citation traversal | `orchestrate` | `citation plan`, `citation run`, `citation resume`, `citation status` | `citation_expand`, `citation_run_status` |
+| Initialize or inspect the nearest search context | `operate` | `context init`, `context status` | CLI-only |
 | Inspect durable runs or plan pruning | `operate` | `runs list`, `runs show`, `runs prune` | `run_list`, `run_show`, `run_prune_plan` |
 | Inspect source expansion/readiness, retained-checkout state, config, registries/providers, help, tools, or MCP | `operate` | `search-plan`, `status`, `doctor`, `paths`, `setup`, `self`, `config`, `registries`, `providers`, `material-providers`, `platform-status`, `platform_status`, `tools`, `help`, `mcp serve` | `mcp_help`, `material_provider_list_installed`, `platform_status` plus management command envelopes |
 
@@ -43,8 +44,14 @@ Keep first passes small with `--max-results`. Use `platform-status --json` for s
 
 Direct `academic`, `patent`, `lookup`, optional `web`, canonical/MCP, and batch
 discovery calls retain a sanitized request, resolved source selection,
-diagnostics, provenance, failures, and terminal result by default. Use CLI/batch
-`--no-history`, canonical/MCP `recordHistory: false`, or
+diagnostics, provenance, failures, and terminal result by default. Paper Search
+uses the nearest ancestor `paper-search.toml` or `.paper-search.toml`; without
+one, it falls back to the user-global context and emits a short hint. Run
+`context init` once for a standalone project and `context status` to inspect the
+effective context. Fresh Paperflow workspaces already mount the run root as
+`search_runs`, so Paperflow reads the same files without per-search import.
+
+Use CLI/batch `--no-history`, canonical/MCP `recordHistory: false`, or
 `runs.recordByDefault = false` only for an explicit opt-out. `run
 <canonical-tool>` and canonical/MCP `research_run` remain the explicitly durable
 forms. The durable discovery set is `academic_search`, `patent_search`,

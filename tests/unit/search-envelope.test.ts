@@ -26,6 +26,23 @@ describe("search result envelope", () => {
     });
   });
 
+  it("omits internal relevance-ordering metadata from compact output", () => {
+    const envelope = buildSearchEnvelope("academic_search", result("alpha", {
+      ordering: {
+        requested: "relevance",
+        origin: "builtin",
+        scope: "provider",
+        mode: "provider",
+        applied: true,
+        valueCount: 0,
+        missingCount: 0,
+        reordered: false,
+      },
+    }));
+    expect(envelope.data).not.toHaveProperty("ordering");
+    expect(envelope.diagnostics).not.toHaveProperty("ordering");
+  });
+
   it("fails when every provider result contains an error", () => {
     const envelope = buildSearchEnvelope("academic_search", [
       result("alpha", { error: "HTTP 429" }),
@@ -52,5 +69,31 @@ describe("search result envelope", () => {
     expect(envelope.warnings).toEqual(["beta: timed out"]);
     expect(envelope.diagnostics?.failedSources).toEqual(["beta"]);
     expect(Array.isArray(envelope.data)).toBe(true);
+  });
+
+  it("projects per-source ordering diagnostics and warns on unverified ordering", () => {
+    const envelope = buildSearchEnvelope("academic_search", [
+      result("alpha", {
+        totalResults: 1,
+        items: [{ itemType: "journalArticle", title: "No count" }],
+        ordering: {
+          requested: "citations",
+          origin: "search_config",
+          scope: "returned_page",
+          mode: "unsupported",
+          applied: false,
+          direction: "desc",
+          valueCount: 0,
+          missingCount: 1,
+          reordered: false,
+        },
+      }),
+    ]);
+
+    expect(envelope.diagnostics?.ordering).toEqual({ alpha: "citations:unsupported" });
+    expect(envelope.data).not.toHaveProperty("ordering");
+    expect(envelope.warnings).toEqual([
+      "alpha: citations ordering could not be verified because returned items expose no usable citationCount; provider order was preserved",
+    ]);
   });
 });

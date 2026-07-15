@@ -191,6 +191,11 @@ async function loadNonSecretTomlConfig(
   const parsed = parseUserConfigDocument(document, {
     allowLegacy: originKind !== "user" || options.allowMissingSchemaVersion,
   });
+  if (originKind === "user" && parsed.data.context !== undefined) {
+    throw new Error(
+      `forbidden_config_authority: context is allowed only in project or explicit config (${filePath})`,
+    );
+  }
   if (originKind !== "user" && parsed.data.zotero !== undefined) {
     throw new Error(
       `forbidden_config_authority: Zotero host-write settings are allowed only in the conventional user config (${filePath})`,

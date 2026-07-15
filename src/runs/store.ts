@@ -89,6 +89,8 @@ export interface RunStoreOptions {
   lockTimeoutMs?: number;
   now?: () => Date;
   randomUuid?: () => string;
+  /** Called after a new run file is created and before work starts. */
+  onCreated?: (record: ResearchRunRecord, root: string) => Promise<void>;
 }
 
 export interface PruneRunsOptions {
@@ -358,6 +360,7 @@ export class ResearchRunStore {
   private readonly lockTimeoutMs: number;
   private readonly clock: () => Date;
   private readonly randomUuid: () => string;
+  private readonly onCreated?: RunStoreOptions["onCreated"];
 
   private constructor(root: string, options: RunStoreOptions) {
     this.root = root;
@@ -366,6 +369,7 @@ export class ResearchRunStore {
     this.lockTimeoutMs = options.lockTimeoutMs ?? 10_000;
     this.clock = options.now ?? (() => new Date());
     this.randomUuid = options.randomUuid ?? randomUUID;
+    this.onCreated = options.onCreated;
   }
 
   static async open(options: RunStoreOptions): Promise<ResearchRunStore> {
@@ -499,6 +503,22 @@ export class ResearchRunStore {
         throw new RunStoreError("run_already_exists", `Run already exists: ${runId}`, { cause: error });
       }
       throw error;
+    }
+    if (this.onCreated) {
+      try {
+        await this.onCreated(record, this.root);
+      } catch (error) {
+        try {
+          await rm(this.recordPath(runId));
+        } catch (cleanupError) {
+          throw new RunStoreError(
+            "run_conflict",
+            `Run creation hook failed (${formatError(error)}) and the new run could not be rolled back: ${runId}`,
+            { cause: cleanupError },
+          );
+        }
+        throw error;
+      }
     }
     return record;
   }

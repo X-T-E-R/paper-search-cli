@@ -85,6 +85,20 @@ export interface SearchResult {
   /** The provider was selected but was not executed because a runtime gate failed. */
   skipped?: boolean;
   error?: string;
+  /** Host-resolved ordering semantics for this provider result group. */
+  ordering?: SearchResultOrdering;
+}
+
+export interface SearchResultOrdering {
+  requested: "relevance" | "date" | "citations";
+  origin: "request" | "provider_config" | "search_config" | "builtin";
+  scope: "provider" | "returned_page";
+  mode: "provider" | "post_page" | "unsupported";
+  applied: boolean;
+  direction?: "desc";
+  valueCount: number;
+  missingCount: number;
+  reordered: boolean;
 }
 
 export const CITATION_DIRECTIONS = ["backward", "forward"] as const;

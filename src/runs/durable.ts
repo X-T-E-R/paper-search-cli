@@ -263,7 +263,11 @@ export async function runDurableCanonicalTool(
       ...(envelope.diagnostics ?? {}),
       historyRecorded: true,
       runId: created.runId,
-      runPath,
+      context: config.context,
+      savedTo: runPath,
+      ...(config.context.kind === "global"
+        ? { hint: "No local context; saved to global history." }
+        : {}),
     },
   };
   const finishedAt = new Date().toISOString();

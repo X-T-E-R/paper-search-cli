@@ -11,6 +11,8 @@ export function buildSearchEnvelope(
   data: SearchResult | SearchResult[],
 ): ResultEnvelope<SearchResult | SearchResult[] | null> {
   const results = Array.isArray(data) ? data : [data];
+  const publicResults = results.map(({ ordering: _ordering, ...result }) => result);
+  const publicData = Array.isArray(data) ? publicResults : publicResults[0]!;
   const skipped = results.filter((entry) => entry.skipped === true);
   const failed = results.filter((entry) => Boolean(entry.error) && entry.skipped !== true);
   const succeeded = results.filter((entry) => !entry.error);
@@ -25,8 +27,14 @@ export function buildSearchEnvelope(
       (entry): entry is number =>
         typeof entry === "number" && Number.isFinite(entry),
     );
+  const ordering = Object.fromEntries(
+    results.flatMap((entry) => entry.ordering && entry.ordering.requested !== "relevance"
+      ? [[entry.platform, `${entry.ordering.requested}:${entry.ordering.mode === "post_page" ? "page-desc" : entry.ordering.mode}`]]
+      : []),
+  );
   const diagnostics: ResultDiagnostics = {
     sourceCounts,
+    ...(Object.keys(ordering).length > 0 ? { ordering } : {}),
     ...(failedSources.length > 0 ? { failedSources } : {}),
     ...(skippedSources.length > 0 ? { skippedSources } : {}),
     ...(elapsedValues.length > 0
@@ -54,11 +62,16 @@ export function buildSearchEnvelope(
   const warnings = [
     ...failed.map((entry) => `${entry.platform}: ${entry.error ?? "provider failed"}`),
     ...skipped.map((entry) => `${entry.platform}: skipped (${entry.error ?? "not runnable"})`),
+    ...results
+      .filter((entry) => entry.ordering?.mode === "unsupported")
+      .map((entry) =>
+        `${entry.platform}: ${entry.ordering!.requested} ordering could not be verified because returned items expose no usable ${entry.ordering!.requested === "citations" ? "citationCount" : "date"}; provider order was preserved`,
+      ),
   ];
   return okEnvelope({
     capability: "discover",
     tool,
-    data,
+    data: publicData,
     diagnostics,
     ...(warnings.length > 0 ? { warnings } : {}),
     provenance,

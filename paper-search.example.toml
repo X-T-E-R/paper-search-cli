@@ -1,5 +1,8 @@
 schemaVersion = 1
 
+# This is a user-wide config example, so the implicit context is global.
+# Run `paper-search context init <project>` to create a project-local context.
+
 [providers]
 installDir = "~/.paper-search/providers"
 autoUpdate = false
@@ -54,6 +57,10 @@ envVar = "PAPER_SEARCH_RUN_SMOKE"
 [search]
 defaultAcademicPresets = ["general"]
 defaultPatentPresets = ["patents"]
+# Per-provider defaultSort overrides these global fallbacks. Explicit CLI/tool
+# sortBy wins over both. date and citations mean descending order.
+defaultAcademicSort = "relevance"
+defaultPatentSort = "relevance"
 
 # User tags are additive local source sets. Built-in taxonomy is unchanged.
 [search.classifications.lab-preferred]

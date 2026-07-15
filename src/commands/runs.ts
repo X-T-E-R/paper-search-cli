@@ -11,6 +11,7 @@ import {
 } from "../runs/index.js";
 import {
   openRunStoreFromResolvedConfig,
+  readRunFromConfiguredOrLocatedStore,
   type ConfiguredRunStoreResolver,
 } from "../runs/config.js";
 
@@ -100,11 +101,13 @@ export function registerRunsCommand(
     .description("Show one validated durable run record.")
     .action(async (runId: string, _options: unknown, command: Command) => {
       try {
-        const store = await configuredStore(command);
+        const globalOptions = command.optsWithGlobals<{ config?: string }>();
+        const config = await loadConfig({ explicitConfigPath: globalOptions.config });
+        const located = await readRunFromConfiguredOrLocatedStore(config, runId, resolveStore);
         io.writeJson(okEnvelope({
           capability: "operate",
           tool: "run_show",
-          data: { run: await store.read(runId) },
+          data: { run: located.record },
         }));
       } catch (error) {
         io.writeJson(errorEnvelope("run_show", error));

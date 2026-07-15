@@ -44,19 +44,20 @@ names remain compatible.
 
 Paper Search owns discovery, identifier resolution, citation traversal,
 transparent assessment, normalized machine output, provider provenance, and
-private search history. It does not own a research project's directory layout or
-long-lived catalog. Paperflow owns project-root discovery, semantic path roles,
-and research-runtime invariants. A project-side bibliography/catalog adapter or
-skill owns selected literature and resolves its locations through those roles.
+search history. It does not own a research project's schema or long-lived
+catalog. Paperflow owns workspace creation, semantic path roles, and
+research-runtime invariants. A project-side bibliography/catalog workflow owns
+selected literature.
 
-Integration is adapter-based in both directions: an optional Paperflow-side
-adapter may invoke canonical Paper Search CLI/MCP JSON tools, then consume the returned
-`ResultEnvelope` and sends selected records to the appropriate bibliography or
-catalog skill after resolving Paperflow roles. Core never imports Paperflow
-modules, reads `paperflow.yaml`, or writes project paths. A run export is an audit
-transport rather than the long-term import schema. The existing Paper Search
-workspace, material, export, and Zotero surfaces remain compatibility surfaces
-for older or small headless workflows, not a parallel Paperflow project.
+Integration uses a shared run-directory contract. Paper Search selects the
+nearest ancestor `paper-search.toml` and writes one run to its configured
+`runs.root`; it never imports Paperflow modules or reads `paperflow.yaml`.
+Paperflow generates that TOML so the path matches its `search_runs` role, then
+reads the validated run files directly. Global state keeps only a run locator,
+not a duplicate payload. Mounted history is not automatic catalog/evidence
+promotion. The existing Paper Search workspace, material, export, and Zotero
+surfaces remain compatibility surfaces for older or small headless workflows,
+not a parallel Paperflow project.
 
 ## Conventional home and storage classes
 
@@ -73,7 +74,12 @@ The default path classes are distinct:
 - `storage/extractions/` owns Markdown, structured output, and assets;
 - `exports/` owns explicit managed portable exports written with
   `workspace-export --store`; and
-- `runs/` owns private local execution history and checkpoints.
+- `runs/` owns global execution history and checkpoints when no context exists.
+
+A standalone or Paperflow project context may choose another `runs.root`.
+Nearest-ancestor discovery affects the project configuration layer, while the
+conventional user home remains the authority for credentials, providers, state,
+and locators.
 
 `workspace.root`, `storage.artifactRoot`, `storage.extractionRoot`,
 `storage.exportRoot`, and `runs.root` can be configured independently. Changing
@@ -94,7 +100,9 @@ durable when run rather than planned.
 
 The common run store persists sanitized request, resolved selection,
 timestamps, diagnostics, provenance, failures, and terminal results or
-references. Citation runs also persist checkpoints. `runs.maxAgeDays = -1`
+references. A context run exists only in its selected root; the user-level state
+stores a bounded run-id locator so `run_show` can find it from another context.
+Citation runs also persist checkpoints. `runs.maxAgeDays = -1`
 means age alone never selects a run for pruning. Pruning is explicit and
 plan-first; active, interrupted-resumable, corrupt, and pinned records are not
 age-prune candidates.

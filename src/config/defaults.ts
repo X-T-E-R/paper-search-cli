@@ -7,6 +7,10 @@ export function createDefaultConfig(
 ): Omit<ResolvedConfig, "meta"> {
   const paths = resolvePaperSearchPaths(env);
   return {
+    context: {
+      id: "global",
+      kind: "global",
+    },
     providers: {
       registryUrl: "https://github.com/X-T-E-R/resource-search-providers",
       installDir: paths.providersRoot,
@@ -56,6 +60,8 @@ export function createDefaultConfig(
     search: {
       defaultAcademicPresets: ["general"],
       defaultPatentPresets: ["patents"],
+      defaultAcademicSort: "relevance",
+      defaultPatentSort: "relevance",
       classifications: {},
       presets: {},
       selection: {

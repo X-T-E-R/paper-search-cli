@@ -1,4 +1,4 @@
-import type { Command } from "commander";
+import { InvalidArgumentError, type Command } from "commander";
 import { loadConfig } from "../config/load.js";
 import type { Io } from "../runtime/io.js";
 import { okEnvelope } from "../surface/resultEnvelope.js";
@@ -14,6 +14,16 @@ function parseIntegerOption(value: string): number {
   }
   return parsed;
 }
+
+function parseChoice<T extends string>(value: string, allowed: readonly T[], label: string): T {
+  if (allowed.includes(value as T)) return value as T;
+  throw new InvalidArgumentError(`${label} must be one of: ${allowed.join(", ")}`);
+}
+
+const parseAcademicSort = (value: string) =>
+  parseChoice(value, ["relevance", "date", "citations"] as const, "academic sort");
+const parsePatentSort = (value: string) =>
+  parseChoice(value, ["relevance", "date"] as const, "patent sort");
 
 function splitCsv(value?: string): string[] {
   if (!value) return [];
@@ -75,12 +85,12 @@ export function registerSearchCommands(program: Command, io: Io): void {
     .alias("academic-search")
     .alias("academic_search")
     .description("Search installed academic providers through the local provider-compatible runtime."))
-    .option("--max-results <n>", "maximum results per provider", parseIntegerOption)
-    .option("--page <n>", "page number", parseIntegerOption)
+    .option("--max-results <n>", "results per provider; 0 uses config, -1 uses the provider limit", parseIntegerOption)
+    .option("--page <n>", "provider page number (default: 1)", parseIntegerOption)
     .option("--year <value>", "year or year range, e.g. 2020-2024")
     .option("--author <value>", "author filter")
-    .option("--sort-by <value>", "relevance, date, or citations")
-    .option("--extra <json>", "provider-specific extra JSON object")
+    .option("--sort-by <value>", "relevance, date, or citations (date/citations are descending)", parseAcademicSort)
+    .option("--extra <json>", "provider-specific extra JSON object; prefer one exact source")
     .option("--no-history", "run this search without writing a durable history record")
     .action(async (query: string, options: Record<string, unknown>, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
@@ -96,10 +106,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
         page: typeof options.page === "number" ? options.page : undefined,
         year: typeof options.year === "string" ? options.year : undefined,
         author: typeof options.author === "string" ? options.author : undefined,
-        sortBy:
-          options.sortBy === "relevance" || options.sortBy === "date" || options.sortBy === "citations"
-            ? options.sortBy
-            : undefined,
+        sortBy: typeof options.sortBy === "string" ? options.sortBy : undefined,
         extra,
       });
       io.writeJson(await runCanonicalTool(
@@ -115,9 +122,9 @@ export function registerSearchCommands(program: Command, io: Io): void {
     .alias("patent-search")
     .alias("patent_search")
     .description("Search installed patent providers through the local provider-compatible runtime."))
-    .option("--max-results <n>", "maximum results per provider", parseIntegerOption)
-    .option("--page <n>", "page number", parseIntegerOption)
-    .option("--sort-by <value>", "relevance or date")
+    .option("--max-results <n>", "results per provider; 0 uses config, -1 uses the provider limit", parseIntegerOption)
+    .option("--page <n>", "provider page number (default: 1)", parseIntegerOption)
+    .option("--sort-by <value>", "relevance or date (date is descending)", parsePatentSort)
     .option("--patent-type <value>", "all, invention, utility_model, or design")
     .option("--legal-status <value>", "all, valid, invalid, or pending")
     .option("--database <value>", "CN or WD")
@@ -139,7 +146,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
         ...selectionRequestFromOptions(options),
         maxResults: typeof options.maxResults === "number" ? options.maxResults : undefined,
         page: typeof options.page === "number" ? options.page : undefined,
-        sortBy: options.sortBy === "relevance" || options.sortBy === "date" ? options.sortBy : undefined,
+        sortBy: typeof options.sortBy === "string" ? options.sortBy : undefined,
         patentType: typeof options.patentType === "string" ? options.patentType : undefined,
         legalStatus: typeof options.legalStatus === "string" ? options.legalStatus : undefined,
         database: typeof options.database === "string" ? options.database : undefined,

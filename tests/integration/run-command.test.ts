@@ -144,7 +144,9 @@ describe("run command", () => {
       tool: "academic_search",
       diagnostics: {
         runId: expect.any(String),
-        runPath: expect.any(String),
+        context: { id: "global", kind: "global" },
+        savedTo: expect.any(String),
+        hint: "No local context; saved to global history.",
       },
     });
     const runId = String(envelope.diagnostics?.runId);

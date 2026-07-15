@@ -30,10 +30,10 @@ use. The `paper-search` shim is the equivalent human entrypoint.
 Use this skill when the request concerns Paper Search, its provider packages,
 search/run history, citation expansion, transparent assessment, compatibility
 workspace/material records, its explicit Zotero sink, its MCP server, or a
-canonical tool. Paperflow owns project directories, semantic path roles, and the
-research runtime. A project-side bibliography/catalog adapter owns selected
-records; exchange JSON envelopes/run ids through it instead of making Paper
-Search write Paperflow paths.
+canonical tool. Paper Search may write its own run record to a nearest-directory
+standalone or Paperflow context. Paperflow still owns project roles and the
+research runtime; selected bibliography/evidence records remain a separate
+project workflow.
 
 The optional `web_search` tool exists only when the user-owned
 `external-search.toml` grants External Search v1 process authority. Use normal
@@ -59,7 +59,9 @@ explicit `zotero sink` handoff.
 1. Probe `doctor --json`, `tools --json`, and installed search/material providers.
 2. Use `search-plan` before a broad multi-preset/source query. Repeated positive
    selectors form a union. Real friendly CLI, canonical/MCP, and batch discovery
-   is recorded by default.
+   is recorded by default. A plain search returns an envelope and writes one run
+   to the effective context. Without a local config this is the global run root;
+   inside a configured workspace it is that context's `runs.root`.
 3. Use CLI/batch `--no-history`, canonical/MCP `recordHistory: false`, or
    `runs.recordByDefault = false` only for an explicit opt-out. `run
    <canonical-tool>` and canonical/MCP `research_run` remain explicitly durable.
@@ -67,10 +69,10 @@ explicit `zotero sink` handoff.
    age-pruned automatically.
 4. Use `citation plan` before `citation run`; set explicit bounds, and use
    `citation resume <id>` after interruption.
-5. Send selected records explicitly to the chosen project bibliography/catalog
-   tool. In Paperflow workspaces, use an installed project-side adapter that resolves
-   Paperflow roles; keep local workspace commands as compatibility/headless
-   sinks. Do not auto-ingest all discovery or graph results.
+5. Use `context init .` once for a standalone project. Fresh Paperflow
+   workspaces already map Paper Search `runs.root` to `search_runs`, so direct
+   Paper Search calls from descendants are visible through Paperflow history.
+   Do not treat mounted search hits as accepted bibliography/evidence records.
 6. Discover material providers and run `--dry-run` before PDF acquisition,
    extraction, or ingest. Local-file ingest copies the source into managed
    artifact storage and therefore needs an extractor that advertises the
@@ -81,6 +83,16 @@ explicit `zotero sink` handoff.
    conflicts and the policy trace; do not treat assessment as a ranking oracle.
 8. If requested, use `zotero sink` plan, preview, and digest-acknowledged apply.
    Do not claim attachment import.
+
+For result ordering, use `sortBy` or friendly `--sort-by`. Academic values are
+`relevance`, `date`, and `citations`; patent values are `relevance` and `date`.
+Date and citations are descending within each provider group. When omitted,
+the provider-specific `platform.<id>.defaultSort` overrides the corresponding
+`search.defaultAcademicSort` or `search.defaultPatentSort`; built-in fallback is
+`relevance`. Do not present provider-group ordering as a cross-provider global
+ranking. Advanced sorts expose compact per-provider values such as
+`diagnostics.ordering.openalex = "citations:page-desc"` or
+`"citations:unsupported"`; default relevance omits this diagnostic.
 
 ## Reference rule
 

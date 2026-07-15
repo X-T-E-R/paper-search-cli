@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "@iarna/toml";
 import { isPlainConfigObject, setNestedValue } from "./env.js";
@@ -45,6 +45,8 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "smoke.envVar",
   "search.defaultAcademicPresets",
   "search.defaultPatentPresets",
+  "search.defaultAcademicSort",
+  "search.defaultPatentSort",
   "search.selection.mode",
   "search.selection.includeIds",
   "search.selection.excludeIds",
@@ -372,6 +374,31 @@ export async function atomicWriteConfigFile(
   } catch (error) {
     await rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
+  }
+}
+
+export async function atomicCreateConfigFile(
+  filePath: string,
+  content: string,
+  mode?: number,
+): Promise<void> {
+  const directory = path.dirname(filePath);
+  await mkdir(directory, { recursive: true });
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    const handle = await open(temporaryPath, "wx", mode);
+    try {
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
   }
 }
 

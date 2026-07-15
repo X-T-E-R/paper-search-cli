@@ -69,7 +69,10 @@ import {
   runDurableCanonicalTool,
   stripHistoryControl,
 } from "../runs/durable.js";
-import { openRunStoreFromResolvedConfig } from "../runs/config.js";
+import {
+  openRunStoreFromResolvedConfig,
+  readRunFromConfiguredOrLocatedStore,
+} from "../runs/config.js";
 import {
   generateResearchRunId,
   type ResearchRunKind,
@@ -403,6 +406,7 @@ export async function runCanonicalTool(
       historyOptOut: options.recordHistory === false || args.recordHistory === false
         ? "request"
         : "config",
+      context: config.context,
     },
   };
 }
@@ -1039,12 +1043,11 @@ async function handleRunShow(config: ResolvedConfig, args: ToolArguments): Promi
   const runId = asString(args.runId);
   if (!runId) return invalidArgs("operate", "run_show", "runId is required and must be a string");
   return captureFailure("operate", "run_show", async () => {
-    const store = await openRunStoreFromResolvedConfig(config);
+    const located = await readRunFromConfiguredOrLocatedStore(config, runId);
     return okEnvelope({
       capability: "operate",
       tool: "run_show",
-      data: { run: await store.read(runId) },
-      diagnostics: { runRoot: store.root, runId },
+      data: { run: located.record },
     });
   });
 }

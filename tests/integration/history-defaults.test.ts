@@ -7,6 +7,7 @@ import { loadConfig } from "../../src/config/load.js";
 import { handleMcpToolCall } from "../../src/mcp/toolHandlers.js";
 import { runCanonicalTool } from "../../src/surface/toolRunner.js";
 import type { ResultEnvelope } from "../../src/surface/resultEnvelope.js";
+import { readRunLocator } from "../../src/runs/locator.js";
 
 const tempDirs: string[] = [];
 
@@ -75,6 +76,29 @@ async function runFiles(runsRoot: string): Promise<string[]> {
 }
 
 describe("default-on discovery history", () => {
+  it("rejects an invalid friendly sort instead of silently using relevance", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-invalid-sort-"));
+    tempDirs.push(root);
+    const fixture = await createFixture(root);
+
+    const program = buildProgram().configureOutput({
+      writeOut() {},
+      writeErr() {},
+    }).exitOverride();
+    for (const command of program.commands) command.exitOverride();
+    await expect(program.parseAsync([
+      "node",
+      "paper-search",
+      "--config",
+      fixture.configPath,
+      "academic",
+      "invalid sort",
+      "--sort-by",
+      "nonsense",
+    ])).rejects.toThrow(/academic sort must be one of/u);
+    expect(await runFiles(fixture.runsRoot)).toHaveLength(0);
+  });
+
   it("records friendly CLI searches and honors --no-history", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-history-cli-"));
     tempDirs.push(root);
@@ -84,8 +108,15 @@ describe("default-on discovery history", () => {
     expect(recorded).toMatchObject({
       ok: true,
       tool: "academic_search",
-      diagnostics: { historyRecorded: true, runId: expect.any(String) },
+      diagnostics: {
+        historyRecorded: true,
+        runId: expect.any(String),
+        context: { id: "global", kind: "global" },
+        savedTo: expect.any(String),
+        hint: "No local context; saved to global history.",
+      },
     });
+    expect((recorded as ResultEnvelope).diagnostics).not.toHaveProperty("runPath");
     expect(await runFiles(fixture.runsRoot)).toHaveLength(1);
 
     const skipped = await runCli(fixture.configPath, [
@@ -99,6 +130,59 @@ describe("default-on discovery history", () => {
       diagnostics: { historyRecorded: false, historyOptOut: "request" },
     });
     expect(await runFiles(fixture.runsRoot)).toHaveLength(1);
+  });
+
+  it("stores a configured context run once and lets global runs show follow its locator", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-history-context-"));
+    tempDirs.push(root);
+    const home = path.join(root, "home");
+    await mkdir(home, { recursive: true });
+    const fixture = await createFixture(root);
+    await writeFile(fixture.configPath, [
+      await readFile(fixture.configPath, "utf8"),
+      "[context]",
+      'id = "paperflow-demo"',
+      'kind = "paperflow"',
+      "",
+    ].join("\n"), "utf8");
+
+    const originalHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = home;
+    try {
+      const recorded = await runCli(fixture.configPath, ["academic", "context history"]);
+      expect(recorded).toMatchObject({
+        ok: true,
+        diagnostics: {
+          historyRecorded: true,
+          runId: expect.any(String),
+          context: { id: "paperflow-demo", kind: "paperflow" },
+          savedTo: expect.stringContaining(fixture.runsRoot),
+        },
+      });
+      expect((recorded as ResultEnvelope).diagnostics).not.toHaveProperty("hint");
+      const runId = String((recorded as ResultEnvelope).diagnostics?.runId);
+      expect(await runFiles(fixture.runsRoot)).toEqual([`${runId}.json`]);
+      expect(await runFiles(path.join(home, "runs"))).toEqual([]);
+      await expect(readRunLocator(runId)).resolves.toMatchObject({
+        runId,
+        contextId: "paperflow-demo",
+        runRoot: fixture.runsRoot,
+      });
+
+      const globalConfig = path.join(home, "global.toml");
+      await writeFile(globalConfig, "schemaVersion = 1\n", "utf8");
+      await expect(runCli(globalConfig, ["runs", "show", runId])).resolves.toMatchObject({
+        ok: true,
+        tool: "run_show",
+        data: { run: { runId } },
+      });
+
+      await runCli(fixture.configPath, ["academic", "context opt out", "--no-history"]);
+      expect(await runFiles(fixture.runsRoot)).toEqual([`${runId}.json`]);
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = originalHome;
+    }
   });
 
   it("shares config and per-call policy across canonical and MCP calls without double records", async () => {

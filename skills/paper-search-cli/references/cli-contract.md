@@ -206,8 +206,9 @@ Use `--dry-run` when rows mix search, local writes, or material actions. With `-
 
 ## Workspace, outputs, and durable runs
 
-- Conventional defaults live below `~/.paper-search/` and do not change with the
-  current working directory. `PAPER_SEARCH_HOME` must be absolute when set.
+- Conventional defaults live below `~/.paper-search/`; `PAPER_SEARCH_HOME` must
+  be absolute when set. The invocation directory may select the nearest ancestor
+  `paper-search.toml` as a project configuration layer.
 - Workspace records, artifact bytes, extraction outputs, exports, and runs use
   independent resolved roots: `workspace.root`, `storage.artifactRoot`,
   `storage.extractionRoot`, `storage.exportRoot`, and `runs.root`.
@@ -232,10 +233,24 @@ Use `--dry-run` when rows mix search, local writes, or material actions. With `-
   `runs.maxAgeDays = -1` disables age-based eligibility until the user supplies a
   positive prune cutoff.
 
-Paper Search does not own a Paperflow project directory. A Paperflow-side
-adapter may invoke canonical tools and consume `ResultEnvelope`; a separate
-bibliography/catalog tool writes selected records after resolving Paperflow
-roles. Run export remains an audit transport, not the long-term import schema.
+A plain discovery command returns its envelope to stdout and writes one full run
+to the effective context. A standalone or Paperflow context writes only its
+configured `runs.root` plus a small global locator; without one, the global run
+root is used with a short fallback hint. `context init .` creates a standalone
+context, while fresh Paperflow workspaces generate their root config. Project
+promotion remains separate from mounted search history.
+
+Academic `sortBy` accepts `relevance`, `date`, and `citations`; patent `sortBy`
+accepts `relevance` and `date`. Date and citations are descending per provider.
+The host may stably reorder only the returned page when metadata is available.
+Advanced requests expose compact values such as
+`diagnostics.ordering.crossref = "citations:page-desc"` or
+`"citations:unsupported"`; do not infer a global ranking.
+
+Paper Search does not own the Paperflow schema. Paperflow generates a Paper
+Search config whose run root matches `search_runs`, then reads those validated
+runs directly. A separate bibliography/catalog workflow writes selected
+records; mounted history is not an import schema or an acceptance decision.
 
 The only host-application write is the CLI-only `zotero sink <itemId>` flow. A
 local plan makes no request, `--preview` performs remote dry-runs, and
@@ -251,7 +266,7 @@ The conventional `~/.paper-search/` bundle contains user non-secret `config.toml
 are not encrypted.
 
 Configuration layers resolve in this order: built-in defaults, user
-`config.toml`, project config, explicit `--config`, `credentials.toml` for
+`config.toml`, nearest ancestor project config, explicit `--config`, `credentials.toml` for
 credential keys, environment overrides, and command-specific flags where
 supported. Project and explicit config remain one-off runtime overrides; they
 are not promoted into trusted subscriptions.

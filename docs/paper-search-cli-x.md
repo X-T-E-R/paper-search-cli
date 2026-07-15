@@ -7,10 +7,11 @@ a display name, not a breaking rename of the `paper-search` command, package,
 configuration keys, canonical tools, or MCP identity.
 
 Paper Search remains a search engine rather than a research-project directory.
-Paperflow is the semantic-path and project-runtime layer; a project-side
-bibliography/catalog adapter owns selected records. The two systems exchange
-canonical JSON requests and `ResultEnvelope` responses. Paper Search does not
-read `paperflow.yaml` or write Paperflow path roles. See
+It can place durable runs in a nearest-directory standalone context. Fresh
+Paperflow workspaces provide the same Paper Search context with `runs.root`
+mapped to their `search_runs` role, while selected bibliography/evidence records
+remain Paperflow/project concerns. Paper Search does not read `paperflow.yaml`.
+See
 [Paperflow integration](./paperflow-integration.md).
 
 ## Use one conventional user home
@@ -41,8 +42,9 @@ below `~/.paper-search/`:
 ```
 
 Directories are created only when a command needs them. The CLI, installed
-Skill launcher, and MCP server resolve the same defaults regardless of the
-current working directory.
+Skill launcher, and MCP server resolve the same conventional user home. The
+invocation directory may select the nearest project `paper-search.toml`, which
+changes only the layered project settings such as the effective run context.
 
 The old `%APPDATA%/paper-search/`, `$XDG_CONFIG_HOME/paper-search/`, and
 `~/.config/paper-search/` roots are migration sources only. Use `paths`,
@@ -119,9 +121,22 @@ paper-search lookup 10.1145/3366423.3380130
 ```
 
 Each result reports `diagnostics.historyRecorded`; recorded calls also report a
-`runId`. Use `--no-history` for a one-off CLI opt-out, `recordHistory: false`
+`runId`, compact `context`, and `savedTo`. Only global fallback adds one `hint`.
+Use `--no-history` for a one-off CLI opt-out, `recordHistory: false`
 for a canonical/MCP opt-out, or `runs.recordByDefault = false` for an explicit
 configuration-wide opt-out. Batch has the same `--no-history` switch.
+
+The full run is written once. Without a local context it goes to the effective
+global run root and the envelope contains one short fallback hint. Under a standalone or
+Paperflow context it goes only to that context's `runs.root`; global state keeps
+a small run-id locator so `runs show` remains location-independent. No
+`--save`, `--paperflow`, or per-search import step is required.
+
+Create a standalone context once with `paper-search context init .`; inspect the
+effective choice with `paper-search context status`. Fresh Paperflow workspaces
+already contain the root config and can read the mounted history directly. A
+search run is not automatically an accepted bibliography/evidence record or a
+Zotero item.
 
 Use the `run` wrapper when the invocation should be explicitly and always
 durable regardless of the default configuration:
@@ -135,6 +150,38 @@ The corresponding canonical/MCP wrapper is `research_run`. Its allowlist is
 `academic_search`, `patent_search`, `resource_lookup`, `patent_detail`, and the
 optional `web_search`. Intrinsically durable workflows and destructive
 management operations are not accepted by this wrapper.
+
+## Choose result ordering explicitly or by configuration
+
+Use `--sort-by relevance|date|citations` for academic search and `--sort-by
+relevance|date` for patent search. Date and citation ordering is descending.
+Canonical and MCP callers use the same `sortBy` values.
+
+```bash
+paper-search academic "graph neural networks" --sort-by citations
+paper-search patent "solid-state battery" --sort-by date
+```
+
+The default is configurable without repeating a flag:
+
+```toml
+[search]
+defaultAcademicSort = "citations"
+defaultPatentSort = "relevance"
+
+[platform.crossref]
+defaultSort = "date"
+```
+
+An explicit request wins, followed by `platform.<id>.defaultSort`, the matching
+global search default, and finally built-in `relevance`. Resolution is per
+provider. Date and citation values are stably sorted within the returned
+provider page, missing values are placed last, and ties retain provider order.
+The CLI does not merge providers into a global ranking or claim ordering across
+unfetched pages. Advanced requests add one compact entry such as
+`diagnostics.ordering.crossref = "citations:page-desc"`; `:unsupported` means
+the returned records had no usable metadata. Default relevance ordering does
+not add this field, and internal proof metadata is not repeated in `data`.
 
 ## Union presets and sources
 

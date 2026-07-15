@@ -113,7 +113,8 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
         ...SEARCH_SELECTION_PROPERTIES,
         maxResults: {
           type: "number",
-          description: "Maximum results per provider. 0 uses the global default.",
+          description:
+            "Maximum results per provider. 0 uses provider/global config; -1 uses the provider-declared limit.",
         },
         page: { type: "number", description: "Page number (default: 1)" },
         year: {
@@ -124,7 +125,8 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
         sortBy: {
           type: "string",
           enum: ["relevance", "date", "citations"],
-          description: "Sort criteria (per-provider defaults apply when omitted)",
+          description:
+            "Per-provider result ordering. date and citations are descending; explicit input overrides platform.<id>.defaultSort and search.defaultAcademicSort.",
         },
         extra: {
           type: "object",
@@ -188,7 +190,8 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
         sortBy: {
           type: "string",
           enum: ["relevance", "date"],
-          description: "Patent search sort criteria",
+          description:
+            "Per-provider patent result ordering. date is descending; explicit input overrides platform.<id>.defaultSort and search.defaultPatentSort.",
         },
         patentType: {
           type: "string",

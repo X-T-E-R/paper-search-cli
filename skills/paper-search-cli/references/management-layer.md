@@ -46,9 +46,9 @@ node scripts/paper-search.mjs help
 ## Conventional home and run retention
 
 All conventional user config and data derive from `~/.paper-search/`, or from
-an absolute `PAPER_SEARCH_HOME` override. This default is independent of the
-current working directory. Project and explicit config files remain optional
-runtime layers, not alternate conventional homes.
+an absolute `PAPER_SEARCH_HOME` override. Project and explicit config files
+remain runtime layers, not alternate conventional homes. Paper Search walks
+upward from the invocation directory and chooses the nearest project config.
 
 Use these keys to separate future writes:
 
@@ -71,6 +71,17 @@ indefinitely.
 canonical/MCP, and batch entrypoints. CLI/batch `--no-history` and
 canonical/MCP `recordHistory: false` are per-call opt-outs. Plans and dry-runs
 write no history.
+
+Without a context, the full run is saved globally and the envelope emits one
+short hint. `context init .` creates a standalone context whose default run root
+is `.paper-search/runs`. Fresh Paperflow workspaces provide a `paperflow`
+context whose run root matches `search_runs`. Context runs are not duplicated
+globally; a private locator lets `runs show <id>` find them from elsewhere.
+
+```bash
+node scripts/paper-search.mjs context init . --id my-review
+node scripts/paper-search.mjs context status
+```
 
 `storage.exportRoot` is consumed only by the explicit managed export form,
 `workspace-export --store <safe-relative-key>`. Use `--dry-run` to inspect its
@@ -151,6 +162,8 @@ User tags and presets are normal non-secret config:
 [search]
 defaultAcademicPresets = ["my-general", "preprints"]
 defaultPatentPresets = ["patents"]
+defaultAcademicSort = "citations"
+defaultPatentSort = "relevance"
 
 [search.classifications.lab-preferred]
 sources = ["crossref", "openalex"]
@@ -160,6 +173,15 @@ extends = ["general"]
 include = ["tag:lab-preferred", "source:pubmed"]
 exclude = ["source:semantic"]
 ```
+
+Academic sort values are `relevance`, `date`, and `citations`; patent values are
+`relevance` and `date`. Date and citations are descending inside each provider
+group. Explicit `sortBy`/`--sort-by` wins, followed by
+`platform.<id>.defaultSort`, the matching global search default, and built-in
+`relevance`. Host fallback ordering is limited to the returned provider page;
+inspect a compact entry such as
+`diagnostics.ordering.crossref = "citations:page-desc"` rather than assuming a
+cross-provider or cross-page ranking. `:unsupported` preserves provider order.
 
 Built-in names are reserved. Named tag/preset definitions replace the whole
 lower-priority definition, and `extends` is the explicit composition mechanism.

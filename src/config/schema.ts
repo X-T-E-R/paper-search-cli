@@ -33,6 +33,25 @@ export const RunsConfigSchema = z.object({
   recordByDefault: z.boolean(),
 }).strict();
 
+const ContextConfigFieldsSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+  kind: z.enum(["global", "standalone", "paperflow"]),
+}).strict();
+
+export const ContextConfigSchema = ContextConfigFieldsSchema.superRefine((context, refinement) => {
+  if ((context.kind === "global") !== (context.id === "global")) {
+    refinement.addIssue({
+      code: "custom",
+      message: "the built-in global context must use id = global and project contexts must use another id",
+    });
+  }
+});
+
+export const ProjectContextConfigSchema = ContextConfigSchema.refine(
+  (context) => context.kind !== "global",
+  { message: "global is a built-in fallback context and cannot be declared in a config file" },
+);
+
 export const ZoteroConfigSchema = z.object({
   enabled: z.boolean(),
   endpoint: z.string().url(),
@@ -225,10 +244,15 @@ export const SearchSelectionConfigSchema = SearchSelectionFieldsSchema.superRefi
   }
 });
 
+export const AcademicSearchSortSchema = z.enum(["relevance", "date", "citations"]);
+export const PatentSearchSortSchema = z.enum(["relevance", "date"]);
+
 const SearchConfigFieldsSchema = z.object({
   selection: SearchSelectionConfigSchema,
   defaultAcademicPresets: z.array(SearchDefinitionNameSchema),
   defaultPatentPresets: z.array(SearchDefinitionNameSchema),
+  defaultAcademicSort: AcademicSearchSortSchema,
+  defaultPatentSort: PatentSearchSortSchema,
   classifications: z.record(SearchDefinitionNameSchema, SearchClassificationConfigSchema),
   presets: SearchPresetDefinitionsSchema,
 }).strict();
@@ -312,6 +336,8 @@ const UserSearchConfigSchema = z.object({
   selection: SearchSelectionFieldsSchema.partial().optional(),
   defaultAcademicPresets: z.array(SearchDefinitionNameSchema).optional(),
   defaultPatentPresets: z.array(SearchDefinitionNameSchema).optional(),
+  defaultAcademicSort: AcademicSearchSortSchema.optional(),
+  defaultPatentSort: PatentSearchSortSchema.optional(),
   classifications: z
     .record(SearchDefinitionNameSchema, SearchClassificationConfigSchema)
     .optional(),
@@ -335,6 +361,7 @@ export const ConfigMetaSchema = z.object({
 }).strict();
 
 export const ResolvedConfigSchema = z.object({
+  context: ContextConfigSchema,
   providers: ProvidersConfigSchema,
   workspace: WorkspaceConfigSchema,
   storage: StorageConfigSchema,
@@ -351,6 +378,7 @@ export const ResolvedConfigSchema = z.object({
 }).strict();
 
 export const UserConfigSchema = z.object({
+  context: ProjectContextConfigSchema.optional(),
   providers: ProvidersConfigSchema.partial().optional(),
   workspace: WorkspaceConfigSchema.partial().optional(),
   storage: StorageConfigSchema.partial().optional(),
@@ -392,5 +420,7 @@ export type UserConfig = z.infer<typeof UserConfigSchema>;
 export type SearchSelector = z.infer<typeof SearchSelectorSchema>;
 export type SearchClassificationConfig = z.infer<typeof SearchClassificationConfigSchema>;
 export type SearchPresetConfig = z.infer<typeof SearchPresetConfigSchema>;
+export type AcademicSearchSort = z.infer<typeof AcademicSearchSortSchema>;
+export type PatentSearchSort = z.infer<typeof PatentSearchSortSchema>;
 export type CredentialsConfigFile = z.infer<typeof CredentialsConfigFileSchema>;
 export type SubscriptionsConfigFile = z.infer<typeof SubscriptionsConfigFileSchema>;

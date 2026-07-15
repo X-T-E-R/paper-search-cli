@@ -177,6 +177,14 @@ export const CLI_ONLY_COMMANDS = [
     purpose: "Show a resolved non-secret or masked config value and its winning origin.",
   },
   {
+    command: "context status",
+    purpose: "Show the nearest effective context and durable-run destination.",
+  },
+  {
+    command: "context init",
+    purpose: "Create a non-overwriting standalone or Paperflow project context config.",
+  },
+  {
     command: "config credentials set|get|unset",
     purpose: "Manage credentials through non-positional secret input and masked output.",
   },

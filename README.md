@@ -7,12 +7,13 @@ the core keeps one stable CLI, canonical-tool, MCP, batch, and Skill contract.
 
 Use it to search literature and optional web sources, normalize known
 identifiers, retain auditable search runs, expand citation graphs, and inspect
-transparent assessment signals. Project directories and long-lived research
-records belong to project-side tools; Paperflow can resolve their directory
-roles without becoming the search engine. Existing local workspace, material,
-export, and Zotero commands remain explicit compatibility surfaces; they are not
-a Paperflow project catalog. The command, package, configuration keys, canonical
-tool names, and MCP identity remain
+transparent assessment signals. A nearest-directory context can keep those runs
+with a standalone project; fresh Paperflow workspaces provide the same context
+automatically. Paperflow can then read the mounted run history without becoming
+the search engine. Existing local workspace, material, export, and Zotero
+commands remain explicit compatibility surfaces; they are not a Paperflow
+project catalog. The command, package, configuration keys, canonical tool names,
+and MCP identity remain
 `paper-search`/`paper-search-cli` compatible.
 
 ## Recommended workflow
@@ -20,26 +21,31 @@ tool names, and MCP identity remain
 1. Run `paper-search doctor` and
    `paper-search providers list-installed --kind search` to inspect local
    readiness.
-2. Search one or more presets or sources. Repeated positive selectors form a
+2. For a standalone project, run `paper-search context init .` once. Fresh
+   Paperflow workspaces already contain a `paper-search.toml` whose `runs.root`
+   matches their `search_runs` role. Commands below either root discover the
+   nearest context automatically.
+3. Search one or more presets or sources. Repeated positive selectors form a
    union. Real `academic`, `patent`, `lookup`, optional `web`, canonical/MCP, and
    batch discovery calls are recorded by default. Use `--no-history`, canonical
    `recordHistory: false`, or `runs.recordByDefault = false` only when you
    explicitly do not want a local record. `paper-search run <canonical-tool>`
-   remains the explicit always-durable form.
-3. Plan citation expansion before starting it, keep traversal limits explicit,
+   remains the explicit always-durable form. A search writes one full run to the
+   effective `runs.root`; a non-global run gets only a small locator in global
+   state, not a duplicate payload.
+4. Plan citation expansion before starting it, keep traversal limits explicit,
    and resume an interrupted durable run by run id.
-4. Hand only selected results to a project-side bibliography/catalog adapter.
-   When a Paperflow-side adapter is installed, it resolves Paperflow path roles
-   while Paper Search supplies normalized envelopes and run ids. The local
-   workspace commands stay available for compatibility and small headless
-   workflows; search and citation results are never ingested automatically.
-5. Plan artifact acquisition or extraction, then run it through installed
+5. In Paperflow, inspect the same mounted runs with `paperflow search history`,
+   `paperflow search show`, or `paperflow search candidates`. Promotion into a
+   bibliography, evidence store, or Zotero remains a separate selected-record
+   action; ordinary search hits are not accepted automatically.
+6. Plan artifact acquisition or extraction, then run it through installed
    material providers. Core does not contain a source-specific PDF downloader
    or network extractor.
-6. If needed, export selected bibliographic data to Zotero with the CLI-only
+7. If needed, export selected bibliographic data to Zotero with the CLI-only
    plan, preview, and digest-acknowledged apply flow. Paper Search does not claim
    Zotero PDF or Markdown attachment import.
-7. Assess explicit, checksum-bound observation snapshots and inspect their
+8. Assess explicit, checksum-bound observation snapshots and inspect their
    provenance, conflicts, and policy trace. Paper Search does not choose which
    papers you should accept.
 
@@ -169,10 +175,10 @@ bundle. All conventional user state lives below `~/.paper-search/`; old
 
 Only `config.toml` is required. An example lives at
 [`paper-search.example.toml`](./paper-search.example.toml). Project settings are
-read from `paper-search.toml` and `.paper-search.toml` in the current directory;
-if both exist, they are merged in that order and the CLI reports a compatibility
-warning. `--config <path>` selects an additional explicit config file (or a
-directory containing `config.toml`).
+read from the nearest ancestor directory containing `paper-search.toml` or
+`.paper-search.toml`; if both exist there, they are merged in that order and the
+CLI reports a compatibility warning. `--config <path>` selects an additional
+explicit config file (or a directory containing `config.toml`).
 
 Default local records and outputs are separated by purpose:
 
@@ -200,6 +206,38 @@ canonical/MCP, and batch surfaces. A direct CLI command may use `--no-history`;
 canonical/MCP callers may send `recordHistory: false`. Planning and dry-run
 operations remain write-free.
 
+Plain discovery does not need a destination flag. Paper Search walks upward from
+the invocation directory and uses the nearest `paper-search.toml` or
+`.paper-search.toml`. If that file declares a standalone or Paperflow context,
+the full run is written only to its `runs.root`; otherwise it is written to the
+effective global run root (`~/.paper-search/runs` by default). Context runs
+receive a private global locator so
+`runs show <id>` still works outside the project. Paper Search never parses
+`paperflow.yaml` and never promotes search hits into a bibliography or evidence
+store.
+
+Initialize a standalone context once, then call Paper Search normally from any
+descendant directory:
+
+```bash
+paper-search context init . --id my-review
+paper-search context status
+paper-search academic "retrieval augmented generation"
+```
+
+`context` is project/explicit configuration only. The conventional user
+`config.toml` cannot declare one, and `global` is reserved for the built-in
+fallback.
+
+The default standalone run root is `.paper-search/runs`. A fresh Paperflow
+workspace supplies its own root config and maps `runs.root` to `search_runs`, so
+no per-search import or `--paperflow`/`--save` flag is needed. `--no-history`
+creates neither a run nor a locator.
+
+Recorded discovery adds only `historyRecorded`, `runId`, compact `context`, and
+`savedTo` to diagnostics. Global fallback adds one short `hint`; configured
+contexts omit it.
+
 `workspace-export --store <safe-relative-key>` is the managed export path: it
 writes atomically below `storage.exportRoot`, rejects an existing target, and
 supports `--dry-run`. The existing `--out <path>` remains an explicit
@@ -210,7 +248,7 @@ Effective values use this precedence, from lowest to highest:
 
 1. built-in defaults
 2. user `config.toml`
-3. project config
+3. nearest ancestor project config
 4. explicit `--config`
 5. user `credentials.toml` for credential keys
 6. `PAPER_SEARCH_*` environment variables
@@ -271,6 +309,51 @@ paper-search academic "foundation models" --preset general --exclude-source wos
 paper-search academic "formal verification" --platform all
 paper-search search-plan --type academic --preset general --category domain:computer-science
 ```
+
+### Search ordering and defaults
+
+Academic searches accept `--sort-by relevance|date|citations`; patent searches
+accept `--sort-by relevance|date`. `date` and `citations` always mean descending
+order. Sorting remains inside each provider result group because citation counts
+and pagination are not comparable across sources. For date or citation ordering,
+the host stably orders the returned provider page when usable metadata exists,
+puts missing values last, and reports a compact provider entry such as
+`diagnostics.ordering.crossref = "citations:page-desc"`. If no usable metadata
+exists, provider order is preserved and the entry ends in `:unsupported` with a
+warning. Internal ordering proof fields are not repeated in each result group.
+
+Set a user-wide preference in `config.toml` or a focused `config.d/*.toml` file:
+
+```toml
+[search]
+defaultAcademicSort = "citations"
+defaultPatentSort = "date"
+```
+
+The effective sort is chosen independently for every provider:
+
+1. explicit CLI or canonical `sortBy`
+2. `platform.<provider-id>.defaultSort`
+3. `search.defaultAcademicSort` or `search.defaultPatentSort`
+4. built-in `relevance`
+
+This lets a user prefer citation-descending results generally while keeping a
+source-specific exception. Invalid friendly CLI values fail immediately instead
+of silently falling back to relevance. Use `paper-search config explain
+search.defaultAcademicSort` to inspect the winning layered value.
+
+Other common search parameters keep deliberately narrow defaults:
+
+| Parameter | Behavior when omitted |
+| --- | --- |
+| `--max-results <n>` | `platform.<id>.maxResults`, then `defaults.maxResults` (10 by default), capped by the provider manifest. `0` selects configured defaults and `-1` requests the provider limit. |
+| `--page <n>` | Page 1 for every provider. |
+| `--year`, `--author` | No persistent implicit filter; supply them per academic query. |
+| `--extra <json>` | No value. This is provider-specific, so prefer it together with one exact `--source`. |
+
+Use `paper-search config set search.defaultAcademicSort citations` to persist a
+simple user-wide preference. Put larger preference sets in `config.d/` so the
+main `config.toml` stays readable.
 
 Legacy singular `--platform` and `--provider` inputs remain valid. Literal
 `--platform all` selects every installed, valid, configured, enabled, non-view
