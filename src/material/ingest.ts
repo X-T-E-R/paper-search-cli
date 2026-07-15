@@ -467,11 +467,14 @@ function localArtifactStorageKey(artifactId: string, filename: string): string {
 }
 
 async function plannedLocalArtifactFilePath(artifactRoot: string, localPath: string): Promise<string> {
-  return (await planLocalStorageWrite({
+  const filename = localArtifactFilename(localPath);
+  // Validate the eventual portable UUID-shaped key, not the display-only angle-bracket placeholder.
+  await planLocalStorageWrite({
     root: artifactRoot,
-    key: localArtifactStorageKey(PLANNED_ARTIFACT_ID, localArtifactFilename(localPath)),
+    key: localArtifactStorageKey(randomUUID(), filename),
     area: "artifact",
-  })).path;
+  });
+  return path.join(path.resolve(artifactRoot), PLANNED_ARTIFACT_ID, filename);
 }
 
 function providerPackagePath(
