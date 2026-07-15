@@ -60,10 +60,32 @@ export type DurableCanonicalExecutor = (
   args: Record<string, unknown>,
 ) => Promise<ResultEnvelope>;
 
+export function isDurableDiscoveryTool(tool: string): boolean {
+  return DURABLE_DISCOVERY_TOOLS.has(tool);
+}
+
+export function stripHistoryControl(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Object.prototype.hasOwnProperty.call(args, "recordHistory")) return args;
+  const { recordHistory: _recordHistory, ...toolArgs } = args;
+  return toolArgs;
+}
+
 export function durableToolRejection(
   tool: string,
   args: Record<string, unknown>,
 ): ResultEnvelope<null> | null {
+  if (args.recordHistory === false) {
+    return failEnvelope({
+      capability: "orchestrate",
+      tool,
+      errors: [
+        `${tool} was invoked through an explicitly durable wrapper; use the direct tool call to opt out of history`,
+      ],
+      diagnostics: { reason: "durable_history_opt_out_conflict" },
+    });
+  }
   if (INTRINSICALLY_DURABLE_TOOLS.has(tool)) {
     return failEnvelope({
       capability: "orchestrate",
@@ -170,7 +192,7 @@ function terminalStatus(envelope: ResultEnvelope): TerminalRunStatus {
     : "completed";
 }
 
-function persistenceFailureEnvelope(tool: string, runId: string | undefined, error: unknown) {
+export function persistenceFailureEnvelope(tool: string, runId: string | undefined, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return failEnvelope({
     capability: "orchestrate",
@@ -202,19 +224,20 @@ export async function runDurableCanonicalTool(
 ): Promise<ResultEnvelope> {
   const rejection = durableToolRejection(tool, args);
   if (rejection) return rejection;
+  const toolArgs = stripHistoryControl(args);
   try {
-    await assertDurableToolArguments(config, tool, args);
+    await assertDurableToolArguments(config, tool, toolArgs);
   } catch (error) {
     return invalidArgumentsEnvelope(tool, error);
   }
 
   const startedAt = new Date().toISOString();
-  const resolvedSelection = await resolvedSelectionIdentity(config, tool, args);
+  const resolvedSelection = await resolvedSelectionIdentity(config, tool, toolArgs);
   let created;
   try {
     created = await store.create({
       kind: "tool",
-      request: { tool, args },
+      request: { tool, args: toolArgs },
       resolvedSelection,
       build: { cliVersion: getSystemVersion() },
     });
@@ -224,7 +247,7 @@ export async function runDurableCanonicalTool(
 
   let envelope: ResultEnvelope;
   try {
-    envelope = await executeCanonicalTool(tool, args);
+    envelope = await executeCanonicalTool(tool, toolArgs);
   } catch (error) {
     envelope = failEnvelope({
       capability: "orchestrate",
@@ -238,6 +261,7 @@ export async function runDurableCanonicalTool(
     ...envelope,
     diagnostics: {
       ...(envelope.diagnostics ?? {}),
+      historyRecorded: true,
       runId: created.runId,
       runPath,
     },

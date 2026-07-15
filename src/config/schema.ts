@@ -30,6 +30,7 @@ export const StorageConfigSchema = z.object({
 export const RunsConfigSchema = z.object({
   root: z.string().min(1),
   maxAgeDays: z.union([z.literal(-1), z.number().int().min(1)]),
+  recordByDefault: z.boolean(),
 }).strict();
 
 export const ZoteroConfigSchema = z.object({

@@ -28,8 +28,12 @@ use. The `paper-search` shim is the equivalent human entrypoint.
 ## Activation boundary
 
 Use this skill when the request concerns Paper Search, its provider packages,
-local workspace or run history, citation expansion, transparent assessment,
-material records, its explicit Zotero sink, its MCP server, or a canonical tool.
+search/run history, citation expansion, transparent assessment, compatibility
+workspace/material records, its explicit Zotero sink, its MCP server, or a
+canonical tool. Paperflow owns project directories, semantic path roles, and the
+research runtime. A project-side bibliography/catalog adapter owns selected
+records; exchange JSON envelopes/run ids through it instead of making Paper
+Search write Paperflow paths.
 
 The optional `web_search` tool exists only when the user-owned
 `external-search.toml` grants External Search v1 process authority. Use normal
@@ -54,14 +58,19 @@ explicit `zotero sink` handoff.
 
 1. Probe `doctor --json`, `tools --json`, and installed search/material providers.
 2. Use `search-plan` before a broad multi-preset/source query. Repeated positive
-   selectors form a union; direct friendly search remains ephemeral.
-3. Use `run <canonical-tool>` or canonical/MCP `research_run` when discovery
-   must be retained. Default run retention is `maxAgeDays = -1`; local plaintext
-   history is not age-pruned automatically.
+   selectors form a union. Real friendly CLI, canonical/MCP, and batch discovery
+   is recorded by default.
+3. Use CLI/batch `--no-history`, canonical/MCP `recordHistory: false`, or
+   `runs.recordByDefault = false` only for an explicit opt-out. `run
+   <canonical-tool>` and canonical/MCP `research_run` remain explicitly durable.
+   Default retention is `maxAgeDays = -1`; local plaintext history is not
+   age-pruned automatically.
 4. Use `citation plan` before `citation run`; set explicit bounds, and use
    `citation resume <id>` after interruption.
-5. Add selected records explicitly. Do not auto-ingest all discovery or graph
-   results.
+5. Send selected records explicitly to the chosen project bibliography/catalog
+   tool. In Paperflow workspaces, use an installed project-side adapter that resolves
+   Paperflow roles; keep local workspace commands as compatibility/headless
+   sinks. Do not auto-ingest all discovery or graph results.
 6. Discover material providers and run `--dry-run` before PDF acquisition,
    extraction, or ingest. Local-file ingest copies the source into managed
    artifact storage and therefore needs an extractor that advertises the

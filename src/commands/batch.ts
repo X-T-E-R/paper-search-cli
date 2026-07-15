@@ -64,6 +64,7 @@ export function registerBatchCommands(program: Command, io: Io): void {
     .option("--fetch-pdf", "record PDF fetch requests for add operations")
     .option("--include-raw", "include raw tool results in output")
     .option("--dry-run", "only print planned task calls; do not execute local search/add/material logic")
+    .option("--no-history", "run discovery rows without writing durable history records")
     .option("--fail-fast", "stop scheduling new rows after the first error")
     .option("--resume-from <jsonl>", "skip row ids already completed in a prior JSONL result file")
     .action(async (file: string, options: Record<string, unknown>, command: Command) => {
@@ -129,7 +130,10 @@ export function registerBatchCommands(program: Command, io: Io): void {
       }
 
       const results = await runBatchTasks(
-        { config },
+        {
+          config,
+          ...(options.history === false ? { recordHistory: false } : {}),
+        },
         tasks,
         {
           concurrency: parseConcurrency(typeof options.concurrency === "number" ? options.concurrency : undefined),

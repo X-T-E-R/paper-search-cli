@@ -62,7 +62,13 @@ import type { PatentDetailResult } from "../providers/sdk/types.js";
 import type { PlatformStatusSnapshot } from "./status.js";
 import type { ResourceLookupResult } from "../lookup/resource.js";
 import { buildSearchEnvelope } from "./searchEnvelope.js";
-import { runDurableCanonicalTool } from "../runs/durable.js";
+import {
+  durableToolRejection,
+  isDurableDiscoveryTool,
+  persistenceFailureEnvelope,
+  runDurableCanonicalTool,
+  stripHistoryControl,
+} from "../runs/durable.js";
 import { openRunStoreFromResolvedConfig } from "../runs/config.js";
 import {
   generateResearchRunId,
@@ -335,9 +341,10 @@ async function captureFailure(
 }
 
 export interface RunCanonicalToolOptions {
-  /** MCP keeps its existing handler-level validation and aliases. */
-  validateArguments?: boolean;
+  /** MCP accepts the legacy name but executes the canonical academic schema. */
   allowLegacyAliases?: boolean;
+  /** Overrides runs.recordByDefault for one direct discovery invocation. */
+  recordHistory?: boolean;
 }
 
 export async function runCanonicalTool(
@@ -347,25 +354,67 @@ export async function runCanonicalTool(
   options: RunCanonicalToolOptions = {},
 ): Promise<ResultEnvelope> {
   const tools = await loadCanonicalToolSchemas(config);
-  const schema = tools.find((tool) => tool.name === name);
   const allowLegacyAlias = options.allowLegacyAliases === true && name === "resource_search";
-  if (!schema && !allowLegacyAlias) {
+  const canonicalName = allowLegacyAlias ? "academic_search" : name;
+  const schema = tools.find((tool) => tool.name === canonicalName);
+  if (!schema) {
     return unknownToolEnvelope(name, tools.map((tool) => tool.name));
   }
 
-  if (schema && options.validateArguments !== false) {
-    try {
-      assertToolArgumentsMatchSchema(schema, args);
-    } catch (error) {
-      return invalidArgs(toolCapability(name), name, errorMessage(error));
+  try {
+    assertToolArgumentsMatchSchema(schema, args);
+  } catch (error) {
+    return invalidArgs(toolCapability(canonicalName), canonicalName, errorMessage(error));
+  }
+
+  const toolArgs = isDurableDiscoveryTool(canonicalName) ? stripHistoryControl(args) : args;
+  if (isDurableDiscoveryTool(canonicalName)) {
+    const argumentOverride = typeof args.recordHistory === "boolean"
+      ? args.recordHistory
+      : undefined;
+    const recordHistory = options.recordHistory ?? argumentOverride ?? config.runs.recordByDefault;
+    if (recordHistory) {
+      const rejection = durableToolRejection(canonicalName, args);
+      if (rejection) return rejection;
+      let store;
+      try {
+        store = await openRunStoreFromResolvedConfig(config);
+      } catch (error) {
+        return persistenceFailureEnvelope(canonicalName, undefined, error);
+      }
+      return runDurableCanonicalTool(
+        config,
+        store,
+        canonicalName,
+        toolArgs,
+        (tool, input) => executeCanonicalToolWithinDurableRun(config, tool, input),
+      );
     }
   }
 
-  const result = await dispatchToolCall(config, name, args);
-  if (isResultEnvelope(result)) {
-    return result;
-  }
+  const result = await executeCanonicalToolWithinDurableRun(config, canonicalName, toolArgs);
+  if (!isDurableDiscoveryTool(canonicalName)) return result;
 
+  return {
+    ...result,
+    diagnostics: {
+      ...(result.diagnostics ?? {}),
+      historyRecorded: false,
+      historyOptOut: options.recordHistory === false || args.recordHistory === false
+        ? "request"
+        : "config",
+    },
+  };
+}
+
+/** Execute an already-validated canonical call owned by an outer durable run. */
+export async function executeCanonicalToolWithinDurableRun(
+  config: ResolvedConfig,
+  name: string,
+  args: ToolArguments,
+): Promise<ResultEnvelope> {
+  const result = await dispatchToolCall(config, name, args);
+  if (isResultEnvelope(result)) return result;
   return failEnvelope({
     capability: toolCapability(name),
     tool: name,
@@ -939,14 +988,26 @@ async function handleResearchRun(config: ResolvedConfig, args: ToolArguments): P
   if (!isRecord(args.arguments)) {
     return invalidArgs("orchestrate", "research_run", "arguments is required and must be an object");
   }
+  const toolArgs = args.arguments as Record<string, unknown>;
+  const rejection = durableToolRejection(tool, toolArgs);
+  if (rejection) {
+    return {
+      ...rejection,
+      tool: "research_run",
+      diagnostics: {
+        ...(rejection.diagnostics ?? {}),
+        wrappedTool: tool,
+      },
+    };
+  }
   return captureFailure("orchestrate", "research_run", async () => {
     const store = await openRunStoreFromResolvedConfig(config);
     const envelope = await runDurableCanonicalTool(
       config,
       store,
       tool,
-      args.arguments as Record<string, unknown>,
-      (name, input) => runCanonicalTool(config, name, input, { validateArguments: false }),
+      toolArgs,
+      (name, input) => executeCanonicalToolWithinDurableRun(config, name, input),
     );
     return {
       ...envelope,

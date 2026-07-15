@@ -64,6 +64,14 @@ const SEARCH_SELECTION_PROPERTIES: Record<string, unknown> = {
   },
 };
 
+const HISTORY_CONTROL_PROPERTIES: Record<string, unknown> = {
+  recordHistory: {
+    type: "boolean",
+    description:
+      "Persist this discovery invocation. Defaults to runs.recordByDefault; false is an explicit per-call opt-out.",
+  },
+};
+
 const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "mcp_help",
@@ -101,6 +109,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Search query string" },
+        ...HISTORY_CONTROL_PROPERTIES,
         ...SEARCH_SELECTION_PROPERTIES,
         maxResults: {
           type: "number",
@@ -132,6 +141,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
     inputSchema: {
       type: "object",
       properties: {
+        ...HISTORY_CONTROL_PROPERTIES,
         identifier: {
           type: "string",
           description: "Academic identifier (DOI, PMID, arXiv ID, ISBN)",
@@ -168,6 +178,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Patent search query string" },
+        ...HISTORY_CONTROL_PROPERTIES,
         ...SEARCH_SELECTION_PROPERTIES,
         maxResults: {
           type: "number",
@@ -228,6 +239,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
     inputSchema: {
       type: "object",
       properties: {
+        ...HISTORY_CONTROL_PROPERTIES,
         platform: {
           type: "string",
           description: "Patent provider id",
@@ -256,6 +268,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Search query string" },
+        ...HISTORY_CONTROL_PROPERTIES,
         mode: {
           type: "string",
           enum: ["auto", "fast", "deep", "answer"],

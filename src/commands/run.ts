@@ -10,7 +10,10 @@ import {
   mergeToolArguments,
   ToolArgumentValidationError,
 } from "../surface/toolArguments.js";
-import { runCanonicalTool, toolArgumentFailureEnvelope } from "../surface/toolRunner.js";
+import {
+  executeCanonicalToolWithinDurableRun,
+  toolArgumentFailureEnvelope,
+} from "../surface/toolRunner.js";
 import { failEnvelope } from "../surface/resultEnvelope.js";
 import {
   openRunStoreFromResolvedConfig,
@@ -89,7 +92,7 @@ export function registerRunCommand(
         store,
         tool,
         args,
-        (name, input) => runCanonicalTool(config, name, input, { validateArguments: false }),
+        (name, input) => executeCanonicalToolWithinDurableRun(config, name, input),
       ));
     });
 }

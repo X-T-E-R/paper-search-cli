@@ -60,13 +60,14 @@ compatibility alias. Artifact and extraction storage tests round-trip records
 with provenance, attempts, provider/backend ids, output paths, cache status, and
 optional workspace item links.
 
-Run-management tests must distinguish direct ephemeral discovery from
-`research_run`, prove that `maxAgeDays = -1` selects nothing for age pruning,
-and keep applied pruning, pin/unpin, export, and Zotero host writes at the
-CLI-only boundary. Citation tests cover provider union, bounds, cycles, partial
-failure, checkpoints, and resume. Assessment tests cover checksum mismatch,
-missing/conflicting observations, no-policy output, and deterministic policy
-traces without an implicit universal verdict.
+Run-management tests must prove default-on history for friendly CLI,
+canonical/MCP, and batch discovery; every explicit opt-out; and the absence of
+double records behind `research_run`. They must also prove that `maxAgeDays = -1`
+selects nothing for age pruning and keep applied pruning, pin/unpin, export, and
+Zotero host writes at the CLI-only boundary. Citation tests cover provider
+union, bounds, cycles, partial failure, checkpoints, and resume. Assessment tests
+cover checksum mismatch, missing/conflicting observations, no-policy output, and
+deterministic policy traces without an implicit universal verdict.
 
 ## Provider Fixture Coverage
 

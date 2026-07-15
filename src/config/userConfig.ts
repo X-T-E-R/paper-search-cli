@@ -27,6 +27,7 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "storage.exportRoot",
   "runs.root",
   "runs.maxAgeDays",
+  "runs.recordByDefault",
   "zotero.enabled",
   "zotero.endpoint",
   "zotero.timeoutMs",

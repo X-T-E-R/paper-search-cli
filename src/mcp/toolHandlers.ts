@@ -11,6 +11,5 @@ export async function handleMcpToolCall(
 ): Promise<unknown> {
   return runCanonicalTool(config, name, args, {
     allowLegacyAliases: true,
-    validateArguments: false,
   });
 }

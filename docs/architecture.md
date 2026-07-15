@@ -40,6 +40,24 @@ names remain compatible.
      Zotero bibliographic sink is the narrow exception accepted by
       [ADR-0004](./decisions/ADR-0004-cli-only-zotero-bibliographic-sink.md)
 
+## Product boundary
+
+Paper Search owns discovery, identifier resolution, citation traversal,
+transparent assessment, normalized machine output, provider provenance, and
+private search history. It does not own a research project's directory layout or
+long-lived catalog. Paperflow owns project-root discovery, semantic path roles,
+and research-runtime invariants. A project-side bibliography/catalog adapter or
+skill owns selected literature and resolves its locations through those roles.
+
+Integration is adapter-based in both directions: an optional Paperflow-side
+adapter may invoke canonical Paper Search CLI/MCP JSON tools, then consume the returned
+`ResultEnvelope` and sends selected records to the appropriate bibliography or
+catalog skill after resolving Paperflow roles. Core never imports Paperflow
+modules, reads `paperflow.yaml`, or writes project paths. A run export is an audit
+transport rather than the long-term import schema. The existing Paper Search
+workspace, material, export, and Zotero surfaces remain compatibility surfaces
+for older or small headless workflows, not a parallel Paperflow project.
+
 ## Conventional home and storage classes
 
 `PAPER_SEARCH_HOME` may select an explicit absolute home. Otherwise all
@@ -65,8 +83,11 @@ their existing meaning.
 
 ## Durable runs
 
-Friendly discovery commands are ephemeral. `run <tool>` and canonical/MCP
-`research_run` durably wrap the fixed non-destructive discovery allowlist:
+Real discovery through friendly CLI, canonical/MCP, and batch surfaces is
+durable by default. `runs.recordByDefault = false`, a direct CLI/batch
+`--no-history`, or canonical/MCP `recordHistory: false` is the explicit opt-out.
+`run <tool>` and canonical/MCP `research_run` remain the always-durable wrapper
+over the fixed non-destructive discovery allowlist:
 `academic_search`, `patent_search`, `resource_lookup`, `patent_detail`, and the
 optional `web_search`. Citation and assessment workflows are intrinsically
 durable when run rather than planned.
@@ -81,6 +102,8 @@ age-prune candidates.
 Canonical/MCP exposes `run_list`, `run_show`, and plan-only `run_prune_plan`.
 Run export, pin/unpin, and applied pruning remain CLI-only. Durable history is
 private local plaintext and may be retained indefinitely with the default.
+Plans and dry-runs do not create history. An already-durable wrapper invokes the
+canonical executor through an internal bypass so one search creates one record.
 
 ## Optional Zotero boundary
 
@@ -109,7 +132,7 @@ are projections of these eight groups:
 | `assess` | work | Evaluate checksum-bound observations, preserve conflicts/provenance, and optionally apply an explicit traceable user policy. |
 | `acquire` | work | Fetch or record artifacts with provenance and attempt history. |
 | `extract` | work | Turn artifacts, URLs, or files into Markdown, JSON, or assets. |
-| `organize` | work | Store, tag, collect, and export workspace records. |
+| `organize` | work | Compatibility storage/export surfaces; project records belong to external bibliography/catalog tools that may resolve Paperflow roles. |
 | `orchestrate` | work | Run durable discovery, citation expansion, and multi-step workflows over primitives. |
 | `operate` | management | Inspect readiness/config/runs, manage providers, and run server surfaces. |
 

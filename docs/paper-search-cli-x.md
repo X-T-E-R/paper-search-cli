@@ -6,6 +6,13 @@ bibliographic handoff. The X means extensibility and open possibilities; it is
 a display name, not a breaking rename of the `paper-search` command, package,
 configuration keys, canonical tools, or MCP identity.
 
+Paper Search remains a search engine rather than a research-project directory.
+Paperflow is the semantic-path and project-runtime layer; a project-side
+bibliography/catalog adapter owns selected records. The two systems exchange
+canonical JSON requests and `ResultEnvelope` responses. Paper Search does not
+read `paperflow.yaml` or write Paperflow path roles. See
+[Paperflow integration](./paperflow-integration.md).
+
 ## Use one conventional user home
 
 Unless you set an absolute `PAPER_SEARCH_HOME`, conventional user state lives
@@ -60,6 +67,7 @@ exportRoot = "~/.paper-search/exports"
 [runs]
 root = "~/.paper-search/runs"
 maxAgeDays = -1
+recordByDefault = true
 ```
 
 Changing one root affects future writes; it does not reinterpret existing
@@ -83,7 +91,8 @@ export remains on stdout.
 positive value supplies the cutoff used by an explicit prune plan. Paper Search
 does not delete history during unrelated commands.
 
-Durable runs are private local plaintext. Sanitized queries, identifiers,
+Durable runs are private local plaintext. Real discovery calls are recorded by
+default across friendly CLI, canonical/MCP, and batch surfaces. Sanitized queries, identifiers,
 results, assessment observations, and policy traces may remain indefinitely at
 the default setting. Review a prune plan before applying it:
 
@@ -99,9 +108,9 @@ paper-search runs prune --max-age-days 30 --apply
 canonical/MCP management tools are `run_list`, `run_show`, and the plan-only
 `run_prune_plan`.
 
-## Choose ephemeral or durable discovery
+## Keep discovery history unless you opt out
 
-Friendly discovery commands are quick and ephemeral:
+Friendly discovery commands record a durable run by default:
 
 ```bash
 paper-search academic "graph neural networks" --preset general
@@ -109,8 +118,13 @@ paper-search patent "solid-state battery" --preset patents
 paper-search lookup 10.1145/3366423.3380130
 ```
 
-Use the `run` wrapper when the request, resolved selection, diagnostics,
-provenance, failures, and terminal result must be retained:
+Each result reports `diagnostics.historyRecorded`; recorded calls also report a
+`runId`. Use `--no-history` for a one-off CLI opt-out, `recordHistory: false`
+for a canonical/MCP opt-out, or `runs.recordByDefault = false` for an explicit
+configuration-wide opt-out. Batch has the same `--no-history` switch.
+
+Use the `run` wrapper when the invocation should be explicitly and always
+durable regardless of the default configuration:
 
 ```bash
 paper-search run academic_search \

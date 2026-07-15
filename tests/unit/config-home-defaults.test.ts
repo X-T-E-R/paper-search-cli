@@ -10,6 +10,7 @@ const names = [
   "PAPER_SEARCH_HOME",
   "PAPER_SEARCH_STORAGE_ARTIFACT_ROOT",
   "PAPER_SEARCH_RUNS_MAX_AGE_DAYS",
+  "PAPER_SEARCH_RUNS_RECORD_BY_DEFAULT",
 ] as const;
 for (const name of names) saved[name] = process.env[name];
 
@@ -70,6 +71,7 @@ describe("unified-home config defaults", () => {
     process.env.PAPER_SEARCH_HOME = home;
     process.env.PAPER_SEARCH_STORAGE_ARTIFACT_ROOT = "./env-artifacts";
     process.env.PAPER_SEARCH_RUNS_MAX_AGE_DAYS = "7";
+    process.env.PAPER_SEARCH_RUNS_RECORD_BY_DEFAULT = "false";
 
     const config = await loadConfig({ cwd: project });
     expect(config.storage).toEqual({
@@ -77,16 +79,21 @@ describe("unified-home config defaults", () => {
       extractionRoot: path.join(project, "project-extractions"),
       exportRoot: path.join(project, "project-exports"),
     });
-    expect(config.runs).toEqual({ root: path.join(project, "project-runs"), maxAgeDays: 7 });
+    expect(config.runs).toEqual({
+      root: path.join(project, "project-runs"),
+      maxAgeDays: 7,
+      recordByDefault: false,
+    });
     expect(config.zotero).toMatchObject({ enabled: false, unavailable: "error" });
   });
 
   it("accepts -1 or positive integer retention and rejects zero, fractions, and lower negatives", () => {
-    expect(RunsConfigSchema.parse({ root: "/runs", maxAgeDays: -1 }).maxAgeDays).toBe(-1);
-    expect(RunsConfigSchema.parse({ root: "/runs", maxAgeDays: 1 }).maxAgeDays).toBe(1);
+    expect(RunsConfigSchema.parse({ root: "/runs", maxAgeDays: -1, recordByDefault: true }).maxAgeDays).toBe(-1);
+    expect(RunsConfigSchema.parse({ root: "/runs", maxAgeDays: 1, recordByDefault: false }).maxAgeDays).toBe(1);
     for (const maxAgeDays of [0, 1.5, -2]) {
-      expect(() => RunsConfigSchema.parse({ root: "/runs", maxAgeDays })).toThrow();
+      expect(() => RunsConfigSchema.parse({ root: "/runs", maxAgeDays, recordByDefault: true })).toThrow();
     }
+    expect(() => RunsConfigSchema.parse({ root: "/runs", maxAgeDays: -1 })).toThrow();
   });
 
   it("rejects project authority that attempts to configure Zotero host writes", async () => {

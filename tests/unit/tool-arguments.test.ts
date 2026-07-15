@@ -85,7 +85,12 @@ describe("tool argument parsing and validation", () => {
     expect(() => assertToolArgumentsMatchSchema(schema("academic_search"), {
       query: "RAG",
       extra: { provider: "fixture" },
+      recordHistory: false,
     })).not.toThrow();
+    expect(() => assertToolArgumentsMatchSchema(schema("academic_search"), {
+      query: "RAG",
+      recordHistory: "false",
+    })).toThrow(/recordHistory must be a boolean/u);
     expect(() => assertToolArgumentsMatchSchema(schema("academic_search"), {
       query: "RAG",
       presets: ["general", "biomedicine"],

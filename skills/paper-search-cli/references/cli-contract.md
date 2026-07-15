@@ -224,9 +224,18 @@ Use `--dry-run` when rows mix search, local writes, or material actions. With `-
   `artifact` input by artifact id. Direct `extract <path>` remains path-based.
 - `material_status` reports related artifact and extraction ids for a workspace item, artifact, or extraction.
 - `workspace_export` emits portable JSON, JSONL, CSV, or BibTeX files from local workspace records.
-- `research_run`, citation runs, and assessment runs write sanitized private
-  local plaintext history. The default `runs.maxAgeDays = -1` disables
-  age-based eligibility until the user supplies a positive prune cutoff.
+- Friendly CLI, canonical/MCP, and batch discovery write sanitized private local
+  plaintext history by default. Direct CLI/batch uses `--no-history` to opt out;
+  canonical/MCP uses `recordHistory: false`; `runs.recordByDefault = false` is
+  the configuration-wide opt-out. `research_run` remains explicitly durable.
+  Citation runs and assessment runs own their records. The default
+  `runs.maxAgeDays = -1` disables age-based eligibility until the user supplies a
+  positive prune cutoff.
+
+Paper Search does not own a Paperflow project directory. A Paperflow-side
+adapter may invoke canonical tools and consume `ResultEnvelope`; a separate
+bibliography/catalog tool writes selected records after resolving Paperflow
+roles. Run export remains an audit transport, not the long-term import schema.
 
 The only host-application write is the CLI-only `zotero sink <itemId>` flow. A
 local plan makes no request, `--preview` performs remote dry-runs, and

@@ -147,6 +147,7 @@ export function registerStatusCommand(program: Command, io: Io): void {
       io.writeLine(`export root: ${payload.storage.exportRoot}`);
       io.writeLine(`runs root: ${payload.runs.root}`);
       io.writeLine(`run retention max age days: ${payload.runs.maxAgeDays} (local plaintext; pruning is explicit)`);
+      io.writeLine(`search history by default: ${payload.runs.recordByDefault ? "enabled" : "disabled"}`);
       io.writeLine(`config location migration: ${payload.configLocationMigration.status}`);
       io.writeLine(`external search: ${payload.externalSearch.state}`);
       io.writeLine(`checkout: ${payload.installation.checkout}`);

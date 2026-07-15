@@ -1,13 +1,11 @@
 import type { Command } from "commander";
 import { loadConfig } from "../config/load.js";
-import { runAcademicSearch } from "../search/academic.js";
-import { runPatentDetail, runPatentSearch } from "../search/patent.js";
 import type { Io } from "../runtime/io.js";
-import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
-import type { PatentDetailResult } from "../providers/sdk/types.js";
-import { buildSearchEnvelope } from "../surface/searchEnvelope.js";
+import { okEnvelope } from "../surface/resultEnvelope.js";
+import { runCanonicalTool } from "../surface/toolRunner.js";
 import { createProviderSelectionPlan } from "../search/runtime.js";
 import type { ProviderSelectionRequest } from "../search/selection.js";
+import { cliHistoryOptions, compactCanonicalArguments } from "./history.js";
 
 function parseIntegerOption(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -71,17 +69,6 @@ function addSelectionOptions(command: Command): Command {
     );
 }
 
-function patentDetailEnvelope(data: PatentDetailResult): ResultEnvelope<PatentDetailResult> {
-  return okEnvelope({
-    capability: "identify",
-    tool: "patent_detail",
-    data,
-    provenance: {
-      providerIds: data.item.source ? [data.item.source] : undefined,
-    },
-  });
-}
-
 export function registerSearchCommands(program: Command, io: Io): void {
   addSelectionOptions(program
     .command("academic <query>")
@@ -94,6 +81,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
     .option("--author <value>", "author filter")
     .option("--sort-by <value>", "relevance, date, or citations")
     .option("--extra <json>", "provider-specific extra JSON object")
+    .option("--no-history", "run this search without writing a durable history record")
     .action(async (query: string, options: Record<string, unknown>, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
@@ -101,7 +89,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
         typeof options.extra === "string" && options.extra.trim()
           ? (JSON.parse(options.extra) as Record<string, unknown>)
           : undefined;
-      const result = await runAcademicSearch(config, {
+      const args = compactCanonicalArguments({
         query,
         ...selectionRequestFromOptions(options),
         maxResults: typeof options.maxResults === "number" ? options.maxResults : undefined,
@@ -114,7 +102,12 @@ export function registerSearchCommands(program: Command, io: Io): void {
             : undefined,
         extra,
       });
-      io.writeJson(buildSearchEnvelope("academic_search", result));
+      io.writeJson(await runCanonicalTool(
+        config,
+        "academic_search",
+        args,
+        cliHistoryOptions(options),
+      ));
     });
 
   addSelectionOptions(program
@@ -133,6 +126,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
     .option("--query-mode <value>", "simple or expert")
     .option("--raw-query <value>", "provider-native expert query")
     .option("--extra <json>", "provider-specific extra JSON object")
+    .option("--no-history", "run this search without writing a durable history record")
     .action(async (query: string, options: Record<string, unknown>, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
@@ -140,7 +134,7 @@ export function registerSearchCommands(program: Command, io: Io): void {
         typeof options.extra === "string" && options.extra.trim()
           ? (JSON.parse(options.extra) as Record<string, unknown>)
           : undefined;
-      const result = await runPatentSearch(config, {
+      const args = compactCanonicalArguments({
         query,
         ...selectionRequestFromOptions(options),
         maxResults: typeof options.maxResults === "number" ? options.maxResults : undefined,
@@ -155,7 +149,12 @@ export function registerSearchCommands(program: Command, io: Io): void {
         rawQuery: typeof options.rawQuery === "string" ? options.rawQuery : undefined,
         extra,
       });
-      io.writeJson(buildSearchEnvelope("patent_search", result));
+      io.writeJson(await runCanonicalTool(
+        config,
+        "patent_search",
+        args,
+        cliHistoryOptions(options),
+      ));
     });
 
   addSelectionOptions(program
@@ -195,14 +194,14 @@ export function registerSearchCommands(program: Command, io: Io): void {
       "--include <csv>",
       "detail sections to include: core, legalStatus, claims, description, pdf, images",
     )
+    .option("--no-history", "fetch details without writing a durable history record")
     .action(async (platform: string, sourceId: string, options: Record<string, unknown>, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
-      const result = await runPatentDetail(config, {
+      io.writeJson(await runCanonicalTool(config, "patent_detail", compactCanonicalArguments({
         platform,
         sourceId,
         include: splitCsv(typeof options.include === "string" ? options.include : undefined),
-      });
-      io.writeJson(patentDetailEnvelope(result));
+      }), cliHistoryOptions(options)));
     });
 }

@@ -5,11 +5,15 @@ stands for extensibility and open possibilities: installed providers can add
 source-specific search, citation-graph, artifact, and extraction behavior while
 the core keeps one stable CLI, canonical-tool, MCP, batch, and Skill contract.
 
-Use it to search literature and web sources, normalize known identifiers, store
-local workspace records, expand citation graphs, inspect transparent assessment
-signals, acquire and extract material through providers, and export portable
-records. The command, package, configuration keys, canonical tool names, and MCP
-identity remain `paper-search`/`paper-search-cli` compatible.
+Use it to search literature and optional web sources, normalize known
+identifiers, retain auditable search runs, expand citation graphs, and inspect
+transparent assessment signals. Project directories and long-lived research
+records belong to project-side tools; Paperflow can resolve their directory
+roles without becoming the search engine. Existing local workspace, material,
+export, and Zotero commands remain explicit compatibility surfaces; they are not
+a Paperflow project catalog. The command, package, configuration keys, canonical
+tool names, and MCP identity remain
+`paper-search`/`paper-search-cli` compatible.
 
 ## Recommended workflow
 
@@ -17,13 +21,18 @@ identity remain `paper-search`/`paper-search-cli` compatible.
    `paper-search providers list-installed --kind search` to inspect local
    readiness.
 2. Search one or more presets or sources. Repeated positive selectors form a
-   union. A direct `academic`, `patent`, `lookup`, or optional `web` command is
-   ephemeral; use `paper-search run <canonical-tool>` when you need a durable
-   discovery record.
+   union. Real `academic`, `patent`, `lookup`, optional `web`, canonical/MCP, and
+   batch discovery calls are recorded by default. Use `--no-history`, canonical
+   `recordHistory: false`, or `runs.recordByDefault = false` only when you
+   explicitly do not want a local record. `paper-search run <canonical-tool>`
+   remains the explicit always-durable form.
 3. Plan citation expansion before starting it, keep traversal limits explicit,
    and resume an interrupted durable run by run id.
-4. Add only the records you select to the local workspace. Search and citation
-   results are not ingested automatically.
+4. Hand only selected results to a project-side bibliography/catalog adapter.
+   When a Paperflow-side adapter is installed, it resolves Paperflow path roles
+   while Paper Search supplies normalized envelopes and run ids. The local
+   workspace commands stay available for compatibility and small headless
+   workflows; search and citation results are never ingested automatically.
 5. Plan artifact acquisition or extraction, then run it through installed
    material providers. Core does not contain a source-specific PDF downloader
    or network extractor.
@@ -36,7 +45,8 @@ identity remain `paper-search`/`paper-search-cli` compatible.
 
 See [Paper Search CLI X workflows and storage](./docs/paper-search-cli-x.md) for
 the durable-run, citation, assessment, storage, material-provider, and Zotero
-contracts.
+contracts. See [Paperflow integration](./docs/paperflow-integration.md) for the
+decoupled project-directory boundary.
 
 ## Install from a retained checkout
 
@@ -178,13 +188,17 @@ Default local records and outputs are separated by purpose:
   exports/
 ```
 
-Override future output locations with `workspace.root`,
+Override future compatibility/output locations with `workspace.root`,
 `storage.artifactRoot`, `storage.extractionRoot`, `storage.exportRoot`, and
 `runs.root`. Existing legacy `path` fields keep their original
 workspace-relative meaning. The default `runs.maxAgeDays = -1` disables
 age-based eligibility; Paper Search never prunes runs opportunistically during
 another command. Durable history is private local plaintext and may therefore
 be retained indefinitely until you explicitly run `runs prune --apply`.
+`runs.recordByDefault = true` records real discovery through friendly CLI,
+canonical/MCP, and batch surfaces. A direct CLI command may use `--no-history`;
+canonical/MCP callers may send `recordHistory: false`. Planning and dry-run
+operations remain write-free.
 
 `workspace-export --store <safe-relative-key>` is the managed export path: it
 writes atomically below `storage.exportRoot`, rejects an existing target, and
@@ -372,6 +386,7 @@ Common environment overrides use `PAPER_SEARCH_*` names:
 - `PAPER_SEARCH_STORAGE_EXPORT_ROOT`
 - `PAPER_SEARCH_RUNS_ROOT`
 - `PAPER_SEARCH_RUNS_MAX_AGE_DAYS`
+- `PAPER_SEARCH_RUNS_RECORD_BY_DEFAULT`
 - `PAPER_SEARCH_ZOTERO_ENABLED`
 - `PAPER_SEARCH_ZOTERO_ENDPOINT`
 - `PAPER_SEARCH_PLATFORM__PATENTSTAR__LOGIN_NAME`
@@ -641,6 +656,7 @@ exportRoot = "$tmp/exports"
 [runs]
 root = "$tmp/runs"
 maxAgeDays = -1
+recordByDefault = true
 
 [platform.fixture-artifact-downloader]
 mode = "docs"

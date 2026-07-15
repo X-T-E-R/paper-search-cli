@@ -28,6 +28,7 @@ function config(): ResolvedConfig {
     ...structuredClone(DEFAULT_CONFIG),
     providers: { ...structuredClone(DEFAULT_CONFIG.providers), installDir: "providers" },
     workspace: { ...structuredClone(DEFAULT_CONFIG.workspace), root: "workspace" },
+    runs: { ...structuredClone(DEFAULT_CONFIG.runs), recordByDefault: false },
     meta: {
       cwd: process.cwd(), userConfigPath: "config.toml", projectConfigPath: null,
       explicitConfigPath: null, loadedFiles: [], appliedEnvOverrides: [],
@@ -115,7 +116,6 @@ describe("external search runtime", () => {
         resolved,
         "web_search",
         { query: "canonical", provider: "tavily" },
-        { validateArguments: false },
       );
       expect(removed).toMatchObject({ ok: false, diagnostics: { reason: "invalid_arguments" } });
 

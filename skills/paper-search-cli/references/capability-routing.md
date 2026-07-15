@@ -39,12 +39,15 @@ node scripts/paper-search.mjs help
 
 Keep first passes small with `--max-results`. Use `platform-status --json` for static external-search readiness and `doctor --json` for its no-network probe.
 
-## Ephemeral search and durable research runs
+## Default history and explicit opt-out
 
-Direct `academic`, `patent`, `lookup`, and optional `web` calls are ephemeral.
-Use `run <canonical-tool>` or canonical/MCP `research_run` to retain a sanitized
-request, resolved source selection, diagnostics, provenance, failures, and
-terminal result. The durable allowlist is `academic_search`, `patent_search`,
+Direct `academic`, `patent`, `lookup`, optional `web`, canonical/MCP, and batch
+discovery calls retain a sanitized request, resolved source selection,
+diagnostics, provenance, failures, and terminal result by default. Use CLI/batch
+`--no-history`, canonical/MCP `recordHistory: false`, or
+`runs.recordByDefault = false` only for an explicit opt-out. `run
+<canonical-tool>` and canonical/MCP `research_run` remain the explicitly durable
+forms. The durable discovery set is `academic_search`, `patent_search`,
 `resource_lookup`, `patent_detail`, and optional `web_search`.
 
 Use `runs list` and `runs show` for inspection. `runs prune` is a no-write plan

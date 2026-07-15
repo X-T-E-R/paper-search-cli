@@ -26,6 +26,7 @@ export function createDefaultConfig(
     runs: {
       root: paths.runsRoot,
       maxAgeDays: -1,
+      recordByDefault: true,
     },
     zotero: {
       enabled: false,

@@ -8,8 +8,9 @@ import {
   type ExternalSearchIntent,
   type ExternalSearchMode,
 } from "../external-search/types.js";
-import { runExternalWebSearchEnvelope } from "../external-search/service.js";
 import type { Io } from "../runtime/io.js";
+import { runCanonicalTool } from "../surface/toolRunner.js";
+import { cliHistoryOptions, compactCanonicalArguments } from "./history.js";
 
 function parseIntegerOption(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -39,15 +40,16 @@ export function registerWebCommands(program: Command, io: Io): void {
     .option("--intent <intent>", "factual, status, comparison, tutorial, exploratory, news, or resource")
     .option("--freshness <freshness>", "pd, pw, pm, or py")
     .option("--max-results <n>", "maximum normalized results", parseIntegerOption)
+    .option("--no-history", "run this search without writing a durable history record")
     .action(async (query: string, options: Record<string, unknown>, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
-      io.writeJson(await runExternalWebSearchEnvelope(config, {
+      io.writeJson(await runCanonicalTool(config, "web_search", compactCanonicalArguments({
         query,
         mode: parseMode(options.mode),
         intent: parseIntent(options.intent),
         freshness: parseFreshness(options.freshness),
         maxResults: typeof options.maxResults === "number" ? options.maxResults : undefined,
-      }));
+      }), cliHistoryOptions(options)));
     });
 }

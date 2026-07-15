@@ -29,6 +29,7 @@ export const KNOWN_ENV_MAPPINGS: readonly EnvConfigMapping[] = [
   { env: "PAPER_SEARCH_STORAGE_EXPORT_ROOT", path: ["storage", "exportRoot"] },
   { env: "PAPER_SEARCH_RUNS_ROOT", path: ["runs", "root"] },
   { env: "PAPER_SEARCH_RUNS_MAX_AGE_DAYS", path: ["runs", "maxAgeDays"] },
+  { env: "PAPER_SEARCH_RUNS_RECORD_BY_DEFAULT", path: ["runs", "recordByDefault"] },
   { env: "PAPER_SEARCH_ZOTERO_ENABLED", path: ["zotero", "enabled"] },
   { env: "PAPER_SEARCH_ZOTERO_ENDPOINT", path: ["zotero", "endpoint"] },
   { env: "PAPER_SEARCH_ZOTERO_TIMEOUT_MS", path: ["zotero", "timeoutMs"] },

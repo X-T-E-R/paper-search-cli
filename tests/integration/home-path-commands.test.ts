@@ -58,7 +58,7 @@ describe("unified-home diagnostic commands", () => {
     expect(status.data).toMatchObject({
       configLocationMigration: { status: "pending" },
       storage: { artifactRoot: path.join(home, "storage", "artifacts") },
-      runs: { root: path.join(home, "runs"), maxAgeDays: -1 },
+      runs: { root: path.join(home, "runs"), maxAgeDays: -1, recordByDefault: true },
     });
     expect(status.warnings).toEqual(expect.arrayContaining([expect.stringContaining("migration is pending")]));
 

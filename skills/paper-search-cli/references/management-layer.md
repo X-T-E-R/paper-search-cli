@@ -59,12 +59,18 @@ storage.extractionRoot
 storage.exportRoot
 runs.root
 runs.maxAgeDays
+runs.recordByDefault
 ```
 
 `runs.maxAgeDays = -1` means no run is age-eligible. A positive value becomes
 the default cutoff for the explicit prune plan; it does not schedule deletion.
 Durable history is sanitized private local plaintext and may be retained
 indefinitely.
+
+`runs.recordByDefault = true` records real discovery from friendly CLI,
+canonical/MCP, and batch entrypoints. CLI/batch `--no-history` and
+canonical/MCP `recordHistory: false` are per-call opt-outs. Plans and dry-runs
+write no history.
 
 `storage.exportRoot` is consumed only by the explicit managed export form,
 `workspace-export --store <safe-relative-key>`. Use `--dry-run` to inspect its
