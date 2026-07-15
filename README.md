@@ -9,10 +9,11 @@ Use it to search literature and optional web sources, normalize known
 identifiers, retain auditable search runs, expand citation graphs, and inspect
 transparent assessment signals. A nearest-directory context can keep those runs
 with a standalone project; fresh Paperflow workspaces provide the same context
-automatically. Paperflow can then read the mounted run history without becoming
-the search engine. Existing local workspace, material, export, and Zotero
-commands remain explicit compatibility surfaces; they are not a Paperflow
-project catalog. The command, package, configuration keys, canonical tool names,
+automatically. Paperflow can then read mounted history while its generated
+Paper Search config routes selected records, downloads, extractions, exports,
+and integration receipts into the project. Paperflow remains the directory and
+research-workflow layer, not the search engine. The command, package,
+configuration keys, canonical tool names,
 and MCP identity remain
 `paper-search`/`paper-search-cli` compatible.
 
@@ -37,14 +38,16 @@ and MCP identity remain
    and resume an interrupted durable run by run id.
 5. In Paperflow, inspect the same mounted runs with `paperflow search history`,
    `paperflow search show`, or `paperflow search candidates`. Promotion into a
-   bibliography, evidence store, or Zotero remains a separate selected-record
-   action; ordinary search hits are not accepted automatically.
+   bibliography, evidence store, or Zotero remains a selected-record action;
+   ordinary search hits are not accepted automatically.
 6. Plan artifact acquisition or extraction, then run it through installed
    material providers. Core does not contain a source-specific PDF downloader
    or network extractor.
-7. If needed, export selected bibliographic data to Zotero with the CLI-only
-   plan, preview, and digest-acknowledged apply flow. Paper Search does not claim
-   Zotero PDF or Markdown attachment import.
+7. A successful download is selected by default. Set
+   `material.downloadDisposition = "materialized"` to retain the older
+   standalone-artifact behavior. Zotero remains optional: configure a global
+   selected-item policy or a workspace binding to project metadata and local
+   files through Zotero MCP Neo without changing the authoritative local copy.
 8. Assess explicit, checksum-bound observation snapshots and inspect their
    provenance, conflicts, and policy trace. Paper Search does not choose which
    papers you should accept.
@@ -237,6 +240,12 @@ creates neither a run nor a locator.
 Recorded discovery adds only `historyRecorded`, `runId`, compact `context`, and
 `savedTo` to diagnostics. Global fallback adds one short `hint`; configured
 contexts omit it.
+
+Downloads use `material.downloadDisposition = "selected"` by default. After
+bytes are committed, Paper Search creates or reuses a workspace item by DOI,
+source id, or URL and attaches the artifact to it. Set the value to
+`"materialized"` when downloads should remain standalone until an explicit
+`resource-add`/attachment step. Extraction alone does not imply selection.
 
 `workspace-export --store <safe-relative-key>` is the managed export path: it
 writes atomically below `storage.exportRoot`, rejects an existing target, and
@@ -656,6 +665,12 @@ workflows should prefer artifact and extraction records.
 Material workflows store auditable metadata records under the configured
 workspace root. Artifact bytes and extracted outputs use the independently
 configured `storage.artifactRoot` and `storage.extractionRoot`.
+
+With the default selected disposition, a successful `artifact download` or
+`material ingest` also creates or reuses the selected workspace item. Failed
+downloads do not select anything. `--no-download` records only the requested
+artifact, and `material.downloadDisposition = "materialized"` disables the
+implicit selection while preserving the downloaded file and artifact record.
 
 An artifact record describes a fetched, requested, resolved, or user-supplied
 file/URL snapshot. It includes:

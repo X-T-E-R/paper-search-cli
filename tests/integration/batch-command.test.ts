@@ -128,6 +128,10 @@ describe("batch command", () => {
         `root = \"${workspaceRoot.replace(/\\/g, "\\\\")}\"`,
         'defaultCollection = "Inbox"',
         "",
+        "[zoteroBinding]",
+        'mode = "bound"',
+        'collectionKeys = ["BATCH1"]',
+        "",
       ].join("\n"),
       "utf8",
     );
@@ -205,12 +209,14 @@ describe("batch command", () => {
       tool: "academic_search",
       addMode: "first",
       resultCount: 2,
+      add: { zoteroSync: "pending" },
     });
     expect(byId.get("A2")).toMatchObject({
       id: "A2",
       status: "ok",
       tool: "resource_add",
       addMode: "direct",
+      add: { zoteroSync: "pending" },
     });
 
     const itemFiles = await readdir(path.join(workspaceRoot, "items"));

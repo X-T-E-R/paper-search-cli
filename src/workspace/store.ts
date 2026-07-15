@@ -104,6 +104,24 @@ export interface WorkspaceExportResult {
   content: string;
 }
 
+export interface WorkspaceSelectionResult {
+  record: WorkspaceItemRecord;
+  collection: WorkspaceCollectionRecord;
+  created: boolean;
+}
+
+export interface WorkspaceAddOptions {
+  item?: ResourceItem;
+  detail?: WorkspaceDetailPayload;
+  url?: string;
+  title?: string;
+  collectionKey?: string;
+  collectionPath?: string;
+  tags?: string[];
+  fetchPdf?: boolean;
+  defaultCollectionPath: string;
+}
+
 const MANIFEST_FILE = "manifest.json";
 const COLLECTIONS_FILE = "collections.json";
 const ITEMS_DIR = "items";
@@ -374,6 +392,40 @@ function dedupeTags(tags: string[]): string[] {
   return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
 }
 
+function normalizeDoiIdentity(value: string | undefined): string | null {
+  const normalized = value
+    ?.trim()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//iu, "")
+    .replace(/^doi:\s*/iu, "")
+    .toLowerCase();
+  return normalized || null;
+}
+
+function normalizeUrlIdentity(value: string | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return value.trim();
+    parsed.hash = "";
+    if (parsed.pathname.length > 1) parsed.pathname = parsed.pathname.replace(/\/+$/u, "");
+    return parsed.toString();
+  } catch {
+    return value.trim();
+  }
+}
+
+function sameResourceIdentity(existing: WorkspaceItemRecord, candidate: ResourceItem, url?: string): boolean {
+  const candidateDoi = normalizeDoiIdentity(candidate.DOI);
+  if (candidateDoi) return normalizeDoiIdentity(existing.item.DOI) === candidateDoi;
+
+  const candidateSourceId = candidate.sourceId?.trim();
+  if (candidateSourceId) return existing.item.sourceId?.trim() === candidateSourceId;
+
+  const candidateUrl = normalizeUrlIdentity(candidate.url ?? url);
+  return candidateUrl !== null &&
+    normalizeUrlIdentity(existing.item.url ?? existing.url) === candidateUrl;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -483,57 +535,84 @@ function pdfSuccessResult(options: {
   };
 }
 
+async function addResourceToWorkspaceUnlocked(
+  root: string,
+  options: WorkspaceAddOptions,
+  item: ResourceItem,
+): Promise<{ record: WorkspaceItemRecord; collection: WorkspaceCollectionRecord }> {
+  const collectionResult = options.collectionKey
+    ? await resolveCollectionByKey(root, options.collectionKey)
+    : await ensureCollectionPath(root, options.collectionPath || options.defaultCollectionPath);
+
+  const record: WorkspaceItemRecord = {
+    id: randomUUID(),
+    item,
+    url: options.url,
+    detail: options.detail,
+    tags: dedupeTags(options.tags ?? []),
+    fetchPdfRequested: Boolean(options.fetchPdf),
+    createdAt: new Date().toISOString(),
+    collectionKey: collectionResult.collection.key,
+    collectionPath: collectionResult.collection.path,
+  };
+
+  await writeFile(
+    path.join(root, ITEMS_DIR, `${record.id}.json`),
+    JSON.stringify(record, null, 2),
+    "utf8",
+  );
+
+  const updatedCollections = collectionResult.all.map((entry) =>
+    entry.key === collectionResult.collection.key
+      ? { ...entry, itemIds: [...entry.itemIds, record.id] }
+      : entry,
+  );
+  await saveCollectionsFile(root, { collections: updatedCollections });
+  const updatedCollection = updatedCollections.find((entry) => entry.key === record.collectionKey)!;
+  return { record, collection: updatedCollection };
+}
+
+function resourceFromAddOptions(options: WorkspaceAddOptions): ResourceItem {
+  const item = options.item ?? (options.url ? buildFallbackItem(options.url, options.title) : undefined);
+  if (!item) throw new Error("Provide item metadata or a URL");
+  return item;
+}
+
 export async function addResourceToWorkspace(
   root: string,
-  options: {
-    item?: ResourceItem;
-    detail?: WorkspaceDetailPayload;
-    url?: string;
-    title?: string;
-    collectionKey?: string;
-    collectionPath?: string;
-    tags?: string[];
-    fetchPdf?: boolean;
-    defaultCollectionPath: string;
-  },
+  options: WorkspaceAddOptions,
 ): Promise<{ record: WorkspaceItemRecord; collection: WorkspaceCollectionRecord }> {
   return withWorkspaceMutation(root, async () => {
     await ensureWorkspace(root);
-    const item = options.item ?? (options.url ? buildFallbackItem(options.url, options.title) : undefined);
-    if (!item) {
-      throw new Error("Provide item metadata or a URL");
+    return addResourceToWorkspaceUnlocked(root, options, resourceFromAddOptions(options));
+  });
+}
+
+/**
+ * Select a downloaded resource without creating duplicate workspace items for
+ * the same DOI, source id, or URL. Explicit `resource add` remains additive.
+ */
+export async function ensureResourceSelectedInWorkspace(
+  root: string,
+  options: WorkspaceAddOptions,
+): Promise<WorkspaceSelectionResult> {
+  return withWorkspaceMutation(root, async () => {
+    await ensureWorkspace(root);
+    const item = resourceFromAddOptions(options);
+    const existing = (await loadAllWorkspaceItems(root)).find((record) =>
+      sameResourceIdentity(record, item, options.url),
+    );
+    if (existing) {
+      const collections = await loadCollectionsFile(root);
+      const collection = collections.collections.find((entry) => entry.key === existing.collectionKey);
+      if (!collection) {
+        throw new Error(`Workspace item ${existing.id} references unknown collection ${existing.collectionKey}`);
+      }
+      return { record: existing, collection, created: false };
     }
 
-    const collectionResult = options.collectionKey
-      ? await resolveCollectionByKey(root, options.collectionKey)
-      : await ensureCollectionPath(root, options.collectionPath || options.defaultCollectionPath);
-
-    const record: WorkspaceItemRecord = {
-      id: randomUUID(),
-      item,
-      url: options.url,
-      detail: options.detail,
-      tags: dedupeTags(options.tags ?? []),
-      fetchPdfRequested: Boolean(options.fetchPdf),
-      createdAt: new Date().toISOString(),
-      collectionKey: collectionResult.collection.key,
-      collectionPath: collectionResult.collection.path,
-    };
-
-    await writeFile(
-      path.join(root, ITEMS_DIR, `${record.id}.json`),
-      JSON.stringify(record, null, 2),
-      "utf8",
-    );
-
-    const updatedCollections = collectionResult.all.map((entry) =>
-      entry.key === collectionResult.collection.key
-        ? { ...entry, itemIds: [...entry.itemIds, record.id] }
-        : entry,
-    );
-    await saveCollectionsFile(root, { collections: updatedCollections });
-    const updatedCollection = updatedCollections.find((entry) => entry.key === record.collectionKey)!;
-    return { record, collection: updatedCollection };
+    const created = await addResourceToWorkspaceUnlocked(root, options, item);
+    return { ...created, created: true };
   });
 }
 

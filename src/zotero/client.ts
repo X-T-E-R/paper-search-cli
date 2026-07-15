@@ -11,7 +11,7 @@ export class ZoteroUnavailableError extends Error {
 }
 
 export class ZoteroRemoteError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly payload?: unknown) {
     super(message);
     this.name = "ZoteroRemoteError";
   }
@@ -42,7 +42,10 @@ function unwrapToolPayload(value: unknown): unknown {
     throw new ZoteroRemoteError("Zotero MCP tool content was not valid JSON");
   }
   if (isObject(payload) && payload.ok === false) {
-    throw new ZoteroRemoteError(String(payload.error ?? payload.message ?? payload.code ?? "Zotero tool rejected the request"));
+    throw new ZoteroRemoteError(
+      String(payload.error ?? payload.message ?? payload.code ?? "Zotero tool rejected the request"),
+      payload,
+    );
   }
   return payload;
 }

@@ -8,13 +8,13 @@ import {
   writeLocalStorageBytes,
 } from "../storage/local.js";
 import {
-  addResourceToWorkspace,
   exportWorkspaceItems,
   listWorkspaceCollections,
   type WorkspaceExportFormat,
   type WorkspaceDetailPayload,
   type WorkspaceCollectionNode,
 } from "../workspace/store.js";
+import { selectResourceIntoWorkspace } from "../workspace/selection.js";
 import type { Io } from "../runtime/io.js";
 import { isResultEnvelope, okEnvelope, type ResultDiagnostics, type ResultEnvelope } from "../surface/resultEnvelope.js";
 
@@ -217,7 +217,7 @@ export function registerWorkspaceCommands(program: Command, io: Io): void {
         detailJson: typeof options.detailJson === "string" ? options.detailJson : undefined,
         detailFile: typeof options.detailFile === "string" ? options.detailFile : undefined,
       });
-      const result = await addResourceToWorkspace(config.workspace.root, {
+      const selected = await selectResourceIntoWorkspace(config, {
         item,
         detail,
         url: typeof options.url === "string" ? options.url : undefined,
@@ -230,10 +230,16 @@ export function registerWorkspaceCommands(program: Command, io: Io): void {
         fetchPdf: options.fetchPdf === true,
         defaultCollectionPath: config.workspace.defaultCollection,
       });
+      const result = selected.workspace;
       const envelope = workspaceEnvelope(
         "resource_add",
         result,
-        { workspaceRoot: config.workspace.root },
+        {
+          workspaceRoot: config.workspace.root,
+          ...(selected.zoteroSync.status !== "not_requested"
+            ? { zoteroSync: selected.zoteroSync.status }
+            : {}),
+        },
       );
       if (options.json) {
         io.writeJson(envelope);

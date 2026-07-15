@@ -24,6 +24,7 @@ export const KNOWN_ENV_MAPPINGS: readonly EnvConfigMapping[] = [
   { env: "PAPER_SEARCH_WORKSPACE_ROOT", path: ["workspace", "root"] },
   { env: "PAPER_SEARCH_WORKSPACE_DEFAULT_SINK", path: ["workspace", "defaultSink"] },
   { env: "PAPER_SEARCH_WORKSPACE_DEFAULT_COLLECTION", path: ["workspace", "defaultCollection"] },
+  { env: "PAPER_SEARCH_MATERIAL_DOWNLOAD_DISPOSITION", path: ["material", "downloadDisposition"] },
   { env: "PAPER_SEARCH_STORAGE_ARTIFACT_ROOT", path: ["storage", "artifactRoot"] },
   { env: "PAPER_SEARCH_STORAGE_EXTRACTION_ROOT", path: ["storage", "extractionRoot"] },
   { env: "PAPER_SEARCH_STORAGE_EXPORT_ROOT", path: ["storage", "exportRoot"] },

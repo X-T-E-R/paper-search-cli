@@ -1,5 +1,8 @@
 # ADR-0004: Permit a CLI-only Zotero Bibliographic Sink
 
+Status: superseded by ADR-0005 for selected-item automation and attachments;
+retained as the history of the original explicit sink boundary.
+
 - Status: accepted
 - Date: 2026-07-15
 

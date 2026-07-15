@@ -27,6 +27,9 @@ export function createDefaultConfig(
       extractionRoot: paths.extractionRoot,
       exportRoot: paths.exportRoot,
     },
+    material: {
+      downloadDisposition: "selected",
+    },
     runs: {
       root: paths.runsRoot,
       maxAgeDays: -1,
@@ -37,6 +40,13 @@ export function createDefaultConfig(
       endpoint: "http://127.0.0.1:23120/mcp",
       timeoutMs: 15_000,
       unavailable: "error",
+      syncOnSelected: false,
+      collectionKeys: [],
+      attachmentMode: "none",
+      markdownMode: "note",
+    },
+    zoteroBinding: {
+      mode: "inherit",
     },
     server: {
       enabled: false,

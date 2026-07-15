@@ -20,6 +20,7 @@ import {
 import {
   planMaterialExtractionForInputKind,
   runMaterialExtraction,
+  type MaterialExtractionOrphanOutcome,
 } from "./extract.js";
 import {
   createPlanEnvelope,
@@ -28,10 +29,14 @@ import {
   type PlannedProviderSelection,
 } from "../surface/plan.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
-import type { WorkspaceItemRecord } from "../workspace/store.js";
+import {
+  ensureResourceSelectedInWorkspace,
+  type WorkspaceItemRecord,
+} from "../workspace/store.js";
 import type { ArtifactKind, ArtifactRecord, ExtractionRecord, ExtractionSource } from "./records.js";
 import type { MaterialInputKind } from "./types.js";
 import { tryParseDoiIdentifier } from "./resolverResult.js";
+import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
 
 export interface MaterialIngestPlanOptions {
   config: ResolvedConfig;
@@ -161,7 +166,7 @@ export interface MaterialIngestExecutionData extends Omit<PlannedOperationData, 
 /** Managed bytes were committed, but their durable artifact record was not. */
 export interface MaterialIngestOrphanOutcome {
   outcome: "orphaned";
-  commitStage: "metadata";
+  commitStage: "selection" | "metadata";
   artifactId: string;
   artifactPath: string;
   storage: LocalStorageRefV1;
@@ -174,6 +179,8 @@ export interface MaterialIngestOrphanOutcome {
 export type MaterialIngestResultEnvelope = ResultEnvelope<MaterialIngestExecutionData> & {
   /** Present only when managed local bytes committed but record metadata did not. */
   orphan?: MaterialIngestOrphanOutcome;
+  /** Present when extraction committed outputs but its record could not be committed. */
+  extractionOrphan?: MaterialExtractionOrphanOutcome;
 };
 
 interface ResolvedMaterialIngestInput {
@@ -606,6 +613,7 @@ function localArtifactSteps(options: {
   resource: MaterialIngestResourcePlan;
   recordTargetPath: string;
   fileTargetPath: string;
+  selectionTargetPaths: string[];
   policy: string;
 }): PlannedOperationStep[] {
   return [
@@ -625,6 +633,16 @@ function localArtifactSteps(options: {
       providerId: LOCAL_ARTIFACT_PROVIDER.id,
       policy: options.policy,
     },
+    ...(options.selectionTargetPaths.length > 0
+      ? [{
+          id: "artifact.select-local-resource",
+          action: "record" as const,
+          description: "Create or reuse the selected workspace item for the copied local resource.",
+          targetPaths: options.selectionTargetPaths,
+          providerId: LOCAL_ARTIFACT_PROVIDER.id,
+          policy: options.policy,
+        }]
+      : []),
     {
       id: "artifact.record-local-artifact",
       action: "record",
@@ -791,8 +809,7 @@ function contentTypeFromLocalPath(filePath: string): string | undefined {
 }
 
 async function createLocalArtifactRecord(options: {
-  workspaceRoot: string;
-  artifactRoot: string;
+  config: ResolvedConfig;
   localPath: string;
   attachTo: string | null;
   policy: string;
@@ -806,18 +823,33 @@ async function createLocalArtifactRecord(options: {
   const filename = localArtifactFilename(options.localPath);
   const contentType = contentTypeFromLocalPath(options.localPath);
   const stored = await writeLocalStorageBytes({
-    root: options.artifactRoot,
+    root: options.config.storage.artifactRoot,
     key: localArtifactStorageKey(artifactId, filename),
     area: "artifact",
     bytes: await readFile(options.localPath),
   });
   let record: ArtifactRecord;
+  let commitStage: MaterialIngestOrphanOutcome["commitStage"] = "selection";
   try {
-    record = await createArtifactRecord(options.workspaceRoot, {
+    let effectiveAttachTo = options.attachTo;
+    if (!effectiveAttachTo && options.config.material.downloadDisposition === "selected") {
+      const selected = await ensureResourceSelectedInWorkspace(options.config.workspace.root, {
+        item: {
+          itemType: "document",
+          title: path.basename(options.localPath, path.extname(options.localPath)),
+          sourceId: `local:${path.resolve(options.localPath)}`,
+          source: "material-ingest-local",
+        },
+        defaultCollectionPath: options.config.workspace.defaultCollection,
+      });
+      effectiveAttachTo = selected.record.id;
+    }
+    commitStage = "metadata";
+    record = await createArtifactRecord(options.config.workspace.root, {
       id: artifactId,
       kind: inferLocalArtifactKind(options.localPath),
       status: "recorded",
-      ...(options.attachTo ? { itemId: options.attachTo } : {}),
+      ...(effectiveAttachTo ? { itemId: effectiveAttachTo } : {}),
       filename,
       ...(contentType ? { contentType } : {}),
       storage: stored.ref,
@@ -843,13 +875,13 @@ async function createLocalArtifactRecord(options: {
   } catch (error) {
     throw new LocalArtifactMetadataCommitError({
       outcome: "orphaned",
-      commitStage: "metadata",
+      commitStage,
       artifactId,
       artifactPath: stored.path,
       storage: stored.ref,
       sha256: stored.ref.sha256!,
       sizeBytes: stored.ref.sizeBytes!,
-      metadataPath: artifactRecordFilePath(options.workspaceRoot, artifactId),
+      metadataPath: artifactRecordFilePath(options.config.workspace.root, artifactId),
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -932,6 +964,64 @@ function outputPathsFromExecution(options: {
     markdownPath: options.extraction.markdownPath,
     jsonPath: options.extraction.jsonPath,
     ...(options.artifact.fileTargetPath ? { artifactFilePath: options.artifact.fileTargetPath } : {}),
+  };
+}
+
+async function extractionFailureAfterArtifact(options: {
+  config: ResolvedConfig;
+  plan: MaterialIngestPlanData;
+  artifact: MaterialIngestArtifactExecution;
+  effectiveAttachTo: string | null | undefined;
+  extractionInputKind: MaterialInputKind;
+  started: number;
+  error: string;
+  extractionOrphan?: MaterialExtractionOrphanOutcome;
+  warnings?: string[];
+}): Promise<MaterialIngestResultEnvelope> {
+  const zoteroSync = options.effectiveAttachTo
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: options.effectiveAttachTo,
+      })
+    : { status: "not_requested" as const };
+  const recoveryCommand = options.extractionOrphan
+    ? undefined
+    : [
+        "paper-search extract",
+        options.artifact.artifactId,
+        "--provider",
+        options.plan.extraction.provider.id,
+        ...(options.effectiveAttachTo ? ["--attach-to", options.effectiveAttachTo] : []),
+        "--json",
+      ].join(" ");
+
+  return {
+    ok: false,
+    capability: "orchestrate",
+    tool: "material_ingest",
+    data: null,
+    ...(options.extractionOrphan ? { extractionOrphan: options.extractionOrphan } : {}),
+    diagnostics: {
+      elapsedMs: Date.now() - options.started,
+      inputKind: options.plan.resource.kind,
+      extractionInputKind: options.extractionInputKind,
+      workspaceRoot: options.config.workspace.root,
+      attachTo: options.effectiveAttachTo ?? null,
+      partial: true,
+      commitStage: "extraction",
+      artifactId: options.artifact.artifactId,
+      artifactRecordPath: options.artifact.recordTargetPath,
+      ...(options.artifact.fileTargetPath ? { artifactPath: options.artifact.fileTargetPath } : {}),
+      ...(recoveryCommand ? { recoveryCommand } : {}),
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
+    },
+    ...(options.warnings?.length ? { warnings: options.warnings } : {}),
+    errors: [`Extraction failed after artifact ${options.artifact.artifactId} was committed: ${options.error}`],
+    provenance: {
+      configPaths: options.config.meta.loadedFiles,
+      providerIds: providerIds(options.plan.providers.selected),
+      policy: options.plan.policy.name,
+    },
   };
 }
 
@@ -1020,6 +1110,14 @@ export async function planMaterialIngest(
   const localArtifactFilePath = resolved.resource.kind === "path" && resolved.resource.path
     ? await plannedLocalArtifactFilePath(options.config.storage.artifactRoot, resolved.resource.path)
     : undefined;
+  const localSelectionTargetPaths = resolved.resource.kind === "path" &&
+    !attachTo &&
+    options.config.material.downloadDisposition === "selected"
+    ? [
+        path.join(options.config.workspace.root, WORKSPACE_ITEMS_DIR),
+        path.join(options.config.workspace.root, "collections.json"),
+      ]
+    : [];
 
   const artifactEnvelope = resolved.artifactInput
     ? await planArtifactDownload({
@@ -1091,13 +1189,14 @@ export async function planMaterialIngest(
   };
 
   const artifactIntendedSteps = artifactData
-    ? replaceStepTargetPaths(prefixSteps("artifact", artifactData.intendedSteps), {
+      ? replaceStepTargetPaths(prefixSteps("artifact", artifactData.intendedSteps), {
         "artifact.record-artifact": [artifactRecordPath],
       })
     : localArtifactSteps({
         resource: resolved.resource,
         recordTargetPath: artifactRecordPath,
         fileTargetPath: localArtifactFilePath!,
+        selectionTargetPaths: localSelectionTargetPaths,
         policy,
       });
   const extractionIntendedSteps = replaceStepTargetPaths(
@@ -1123,6 +1222,7 @@ export async function planMaterialIngest(
       ...resolved.resource.targetPaths,
       ...(artifactData?.targetPaths.filter((targetPath) => targetPath !== artifactRecordsDir) ?? []),
       ...(localArtifactFilePath ? [localArtifactFilePath] : []),
+      ...localSelectionTargetPaths,
       ...extractionEnvelope.data.targetPaths.filter((targetPath) => targetPath !== extractionRecordsDir),
       artifactRecordPath,
       extractionRecordPath,
@@ -1196,6 +1296,7 @@ export async function runMaterialIngest(
       providerId: options.artifactProviderId,
       policy,
       download: true,
+      deferZoteroSync: true,
     });
     if (!artifactEnvelope.data) {
       fail("Artifact download did not return execution data");
@@ -1212,8 +1313,7 @@ export async function runMaterialIngest(
     let stored: Awaited<ReturnType<typeof createLocalArtifactRecord>>;
     try {
       stored = await createLocalArtifactRecord({
-        workspaceRoot,
-        artifactRoot: options.config.storage.artifactRoot,
+        config: options.config,
         localPath,
         attachTo,
         policy,
@@ -1234,9 +1334,13 @@ export async function runMaterialIngest(
           attachTo,
           partial: true,
           orphanedBytes: true,
-          commitStage: "metadata",
+          commitStage: error.orphan.commitStage,
         },
-        errors: [`Local artifact metadata commit failed after bytes were committed: ${error.orphan.error}`],
+        errors: [
+          error.orphan.commitStage === "selection"
+            ? `Workspace selection failed after local artifact bytes were committed: ${error.orphan.error}`
+            : `Local artifact metadata commit failed after bytes were committed: ${error.orphan.error}`,
+        ],
         provenance: {
           configPaths: options.config.meta.loadedFiles,
           providerIds: [LOCAL_ARTIFACT_PROVIDER.id],
@@ -1254,15 +1358,39 @@ export async function runMaterialIngest(
     extractionInputKind = "artifact";
   }
 
-  const extractionEnvelope = await runMaterialExtraction({
-    config: options.config,
-    input: extractionInput,
-    attachTo: attachTo ?? undefined,
-    providerId: options.extractProviderId,
-    policy,
-  });
+  const effectiveAttachTo = artifact.record.itemId ?? attachTo;
+  let extractionEnvelope: Awaited<ReturnType<typeof runMaterialExtraction>>;
+  try {
+    extractionEnvelope = await runMaterialExtraction({
+      config: options.config,
+      input: extractionInput,
+      attachTo: effectiveAttachTo ?? undefined,
+      providerId: options.extractProviderId,
+      policy,
+    });
+  } catch (error) {
+    return extractionFailureAfterArtifact({
+      config: options.config,
+      plan,
+      artifact,
+      effectiveAttachTo,
+      extractionInputKind,
+      started,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   if (!extractionEnvelope.data) {
-    fail("Material extraction did not return execution data");
+    return extractionFailureAfterArtifact({
+      config: options.config,
+      plan,
+      artifact,
+      effectiveAttachTo,
+      extractionInputKind,
+      started,
+      error: extractionEnvelope.errors?.join("; ") ?? "Material extraction did not return execution data",
+      extractionOrphan: extractionEnvelope.orphan,
+      warnings: extractionEnvelope.warnings,
+    });
   }
   const extraction = buildExtractionExecution({
     data: extractionEnvelope.data,
@@ -1288,6 +1416,13 @@ export async function runMaterialIngest(
     outputs,
     executedSteps,
   });
+  const zoteroSync = effectiveAttachTo
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: effectiveAttachTo,
+        extractionId: extraction.extractionId,
+      })
+    : { status: "not_requested" as const };
 
   return okEnvelope({
     capability: "orchestrate",
@@ -1300,7 +1435,7 @@ export async function runMaterialIngest(
       resource: plan.resource,
       artifact,
       extraction,
-      policy: plan.policy,
+      policy: { ...plan.policy, attachTo: effectiveAttachTo },
       providers,
       outputs,
     },
@@ -1309,13 +1444,14 @@ export async function runMaterialIngest(
       inputKind: plan.resource.kind,
       extractionInputKind,
       workspaceRoot,
-      attachTo,
+      attachTo: effectiveAttachTo,
       artifactId: artifact.artifactId,
       extractionId: extraction.extractionId,
       sourceCounts: {
         artifacts: 1,
         extractions: 1,
       },
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
     },
     provenance: {
       configPaths: options.config.meta.loadedFiles,

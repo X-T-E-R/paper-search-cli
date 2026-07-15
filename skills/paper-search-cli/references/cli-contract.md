@@ -215,7 +215,10 @@ Use `--dry-run` when rows mix search, local writes, or material actions. With `-
 - `workspace-export --store <safe-relative-key>` writes a collision-safe,
   versioned export below `storage.exportRoot`; add `--dry-run` for a no-write
   plan. `--out` remains caller-relative, and no file option means stdout.
-- `resource_add` writes normalized resource items to the local workspace sink.
+- `resource_add`, including an explicit batch add row or `addMode = first`,
+  writes normalized selected items to the local workspace sink. When a durable
+  Zotero policy is active, the returned add result also reports its projection
+  status; this is not a batch-exposed direct Zotero command.
 - `resource_pdf` treats `itemKey` as the workspace item id and uses the same
   provider-mediated artifact path as `artifact_download`.
 - `artifact_download` creates artifact records with source, attempts, policy, provider provenance, local/remote references, and optional workspace item links. DOI-resolved acquisitions also record `provenance.resolverProviderId`, `provenance.resolverSource`, the originating identifier in `resolvedFrom`, and per-candidate resolver attempts.
@@ -252,10 +255,17 @@ Search config whose run root matches `search_runs`, then reads those validated
 runs directly. A separate bibliography/catalog workflow writes selected
 records; mounted history is not an import schema or an acceptance decision.
 
-The only host-application write is the CLI-only `zotero sink <itemId>` flow. A
-local plan makes no request, `--preview` performs remote dry-runs, and
-`--apply --ack <previewDigest>` performs bounded writes. Do not claim PDF,
-Markdown, JSON, or asset attachment import.
+Zotero MCP Neo is the optional host-application write boundary. User config
+owns the endpoint/global defaults; project `zoteroBinding` may inherit, disable,
+or bind selected items to multiple existing collections. Search hits never
+trigger it. `resource-add` and successful downloads may project when durably
+configured, with pending/partial receipts preserving local success. The
+  explicit `zotero sink <itemId>` flow remains plan-first: `--preview` performs
+  remote dry-runs and `--apply --ack <previewDigest>` performs bounded writes.
+  For a newly created parent, the preview digest binds the attachment action and
+  local path/mode template; apply resolves the new parent key and repeats the
+  attachment dry-run before that attachment write. Mapped items can link or
+  import durable artifact/Markdown files.
 
 ## Secret and Config Boundary
 

@@ -122,17 +122,24 @@ No networked material resolver, downloader, or extractor is built into the core 
 - `resource-add` stores selected metadata in the local workspace sink.
 - `resource-pdf` is a compatibility projection over the installed
   material-provider artifact path; it does not restore direct core fetching.
-- `artifact download` creates artifact records with provenance and attempt history.
+- `artifact download` creates artifact records with provenance and attempt
+  history. After bytes commit it selects by default; configure
+  `material.downloadDisposition = "materialized"` to keep it standalone.
 - `extract` creates extraction records with output paths and cache status.
+- If `material ingest` reports `partial: true` at `commitStage: "extraction"`,
+  keep the committed artifact and run its returned `recoveryCommand`; do not
+  repeat acquisition.
 - `material status` reads workspace item, artifact, or extraction status and reports related artifact/extraction ids.
 - `workspace-export` writes portable local exports as JSON, JSONL, CSV, or BibTeX.
 
-The optional `zotero sink <itemId>` command is the only host-application write
-boundary. It is CLI-only and plan-first: use `--preview`, then
-`--apply --ack <previewDigest>`. It may create a bibliographic item, one note,
-and membership in an existing collection. It does not import PDF, Markdown,
-JSON, or asset attachments. All other workspace and material operations stay
-local unless an installed provider performs its declared network action.
+Zotero MCP Neo is an optional selected-item projection. A user-global policy or
+project `zoteroBinding` may enable it for `resource-add` and successful selected
+downloads; unavailable hosts leave a pending receipt without failing local
+work. The explicit `zotero sink <itemId>` command remains plan-first: use
+`--preview`, then `--apply --ack <previewDigest>`. It supports mapped items,
+multiple existing collections, notes, and link/import attachments. Search hits
+alone never become Zotero items. Other workspace/material operations stay local
+unless an installed provider performs its declared network action.
 
 ## Operate Separately From Research Work
 

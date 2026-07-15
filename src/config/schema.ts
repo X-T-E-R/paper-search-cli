@@ -27,6 +27,14 @@ export const StorageConfigSchema = z.object({
   exportRoot: z.string().min(1),
 }).strict();
 
+export const MaterialConfigSchema = z.object({
+  /**
+   * `selected` creates or reuses a workspace item after bytes are committed.
+   * `materialized` keeps the artifact standalone until an explicit selection.
+   */
+  downloadDisposition: z.enum(["selected", "materialized"]),
+}).strict();
+
 export const RunsConfigSchema = z.object({
   root: z.string().min(1),
   maxAgeDays: z.union([z.literal(-1), z.number().int().min(1)]),
@@ -57,6 +65,18 @@ export const ZoteroConfigSchema = z.object({
   endpoint: z.string().url(),
   timeoutMs: z.number().int().min(100).max(300_000),
   unavailable: z.enum(["error", "warn"]),
+  syncOnSelected: z.boolean(),
+  collectionKeys: z.array(z.string().regex(/^[A-Za-z0-9]+$/u)),
+  attachmentMode: z.enum(["none", "link", "import"]),
+  markdownMode: z.enum(["none", "note", "link", "import"]),
+}).strict();
+
+export const ZoteroBindingConfigSchema = z.object({
+  /** Inherit global selection-sync defaults, disable them, or bind this workspace explicitly. */
+  mode: z.enum(["inherit", "off", "bound"]),
+  collectionKeys: z.array(z.string().regex(/^[A-Za-z0-9]+$/u)).optional(),
+  attachmentMode: z.enum(["none", "link", "import"]).optional(),
+  markdownMode: z.enum(["none", "note", "link", "import"]).optional(),
 }).strict();
 
 export const ServerConfigSchema = z.object({
@@ -365,8 +385,10 @@ export const ResolvedConfigSchema = z.object({
   providers: ProvidersConfigSchema,
   workspace: WorkspaceConfigSchema,
   storage: StorageConfigSchema,
+  material: MaterialConfigSchema,
   runs: RunsConfigSchema,
   zotero: ZoteroConfigSchema,
+  zoteroBinding: ZoteroBindingConfigSchema,
   server: ServerConfigSchema,
   defaults: DefaultsConfigSchema,
   output: OutputConfigSchema,
@@ -382,8 +404,10 @@ export const UserConfigSchema = z.object({
   providers: ProvidersConfigSchema.partial().optional(),
   workspace: WorkspaceConfigSchema.partial().optional(),
   storage: StorageConfigSchema.partial().optional(),
+  material: MaterialConfigSchema.partial().optional(),
   runs: RunsConfigSchema.partial().optional(),
   zotero: ZoteroConfigSchema.partial().optional(),
+  zoteroBinding: ZoteroBindingConfigSchema.partial().optional(),
   server: ServerConfigSchema.partial().optional(),
   defaults: DefaultsConfigSchema.partial().optional(),
   output: OutputConfigSchema.partial().optional(),

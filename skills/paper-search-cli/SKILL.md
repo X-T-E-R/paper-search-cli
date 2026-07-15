@@ -1,6 +1,6 @@
 ---
 name: paper-search-cli
-description: Use Paper Search CLI X for academic/patent discovery, optional External Search v1 web_search, multi-preset/source union, identifier lookup, durable research_run history, citation_expand plan/run/resume, checksum-bound transparent assessment, provider-mediated artifact/PDF acquisition and extraction, local workspace/export, CLI-only Zotero bibliographic handoff, provider/registry/config/migration/status management, and MCP serving. Trigger for paper-search-cli, paper-search, academic_search, patent_search, resource_lookup, research_run, runs, citation_expand, assessment_run, artifact_download, resource_pdf, extract, material_ingest, zotero sink, search-plan, registries, providers, doctor, or mcp serve. Do not use for ordinary web browsing unless the user explicitly requests Paper Search or its optional external-search surface.
+description: Use Paper Search CLI X for academic/patent discovery, optional External Search v1 web_search, multi-preset/source union, identifier lookup, durable research_run history, citation_expand plan/run/resume, checksum-bound transparent assessment, provider-mediated artifact/PDF acquisition and extraction, selected workspace/export flows, optional Zotero MCP Neo projection, provider/registry/config/migration/status management, and MCP serving. Trigger for paper-search-cli, paper-search, academic_search, patent_search, resource_lookup, research_run, runs, citation_expand, assessment_run, artifact_download, resource_pdf, extract, material_ingest, zotero sink, search-plan, registries, providers, doctor, or mcp serve. Do not use for ordinary web browsing unless the user explicitly requests Paper Search or its optional external-search surface.
 ---
 
 # Paper Search CLI X
@@ -28,8 +28,8 @@ use. The `paper-search` shim is the equivalent human entrypoint.
 ## Activation boundary
 
 Use this skill when the request concerns Paper Search, its provider packages,
-search/run history, citation expansion, transparent assessment, compatibility
-workspace/material records, its explicit Zotero sink, its MCP server, or a
+search/run history, citation expansion, transparent assessment,
+workspace/material records, its configured or explicit Zotero projection, its MCP server, or a
 canonical tool. Paper Search may write its own run record to a nearest-directory
 standalone or Paperflow context. Paperflow still owns project roles and the
 research runtime; selected bibliography/evidence records remain a separate
@@ -38,8 +38,8 @@ project workflow.
 The optional `web_search` tool exists only when the user-owned
 `external-search.toml` grants External Search v1 process authority. Use normal
 search/browser routing for general web work. Use a dedicated Zotero skill for
-general Zotero library operations; use this skill only for Paper Search's
-explicit `zotero sink` handoff.
+general Zotero library operations; use this skill for Paper Search's mapped
+selected-item projection and explicit `zotero sink` handoff.
 
 ## Eight capability groups
 
@@ -50,7 +50,7 @@ explicit `zotero sink` handoff.
 | `assess` | Checksum-bound observation snapshots, conflicts, provenance, and optional explicit policy traces. |
 | `acquire` | Provider-mediated artifact acquisition or recording, including `resource_pdf` compatibility. |
 | `extract` | Markdown, structured output, and assets through material extractor providers. |
-| `organize` | Local workspace add/list/export and the explicit CLI-only Zotero bibliographic handoff. |
+| `organize` | Local selected workspace add/list/export and Zotero projection. |
 | `orchestrate` | Durable discovery, citation expansion, batch rows, material ingest, and material status. |
 | `operate` | Paths, status, run inspection/pruning plans, config, provider management, help/tools, and MCP serving. |
 
@@ -78,11 +78,16 @@ explicit `zotero sink` handoff.
    artifact storage and therefore needs an extractor that advertises the
    `artifact` input kind. Direct
    path extraction does not create that copy. Core has no source-specific
-   network fallback.
+   network fallback. Successful downloads select by default; use
+   `material.downloadDisposition = "materialized"` only when the file should
+   remain standalone.
 7. Use `assess plan` or `assess run` only with an exact snapshot checksum. Read
    conflicts and the policy trace; do not treat assessment as a ranking oracle.
-8. If requested, use `zotero sink` plan, preview, and digest-acknowledged apply.
-   Do not claim attachment import.
+8. Treat Zotero as an optional projection, never the authoritative workspace.
+   A global or workspace policy may sync selected items automatically; search
+   hits alone never trigger it. Use `zotero sink` plan, preview, and
+   digest-acknowledged apply for explicit control. Zotero MCP Neo supports
+   mapped items, multiple existing collections, and link/import attachments.
 
 For result ordering, use `sortBy` or friendly `--sort-by`. Academic values are
 `relevance`, `date`, and `citations`; patent values are `relevance` and `date`.

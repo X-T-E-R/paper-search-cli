@@ -25,9 +25,14 @@ import type { ArtifactAttempt, ArtifactKind, ArtifactRecord } from "./records.js
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
 import { resolveMaterialProviderCacheRoot } from "./cache.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
-import type { WorkspaceItemRecord } from "../workspace/store.js";
+import {
+  ensureResourceSelectedInWorkspace,
+  type WorkspaceItemRecord,
+} from "../workspace/store.js";
+import type { ResourceItem } from "../providers/sdk/types.js";
 import { writeLocalStorageBytes } from "../storage/local.js";
 import type { LocalStorageRefV1 } from "../storage/types.js";
+import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
 
 export interface ArtifactDownloadOptions {
   config: ResolvedConfig;
@@ -38,6 +43,8 @@ export interface ArtifactDownloadOptions {
   policy?: string;
   download?: boolean;
   filename?: string;
+  /** Material ingest defers selection projection until extraction is complete. */
+  deferZoteroSync?: boolean;
 }
 
 export interface ArtifactDownloadProviderSummary {
@@ -67,7 +74,7 @@ export interface ArtifactDownloadData {
 /** Bytes were committed, but their durable artifact record was not. */
 export interface ArtifactDownloadOrphanOutcome {
   outcome: "orphaned";
-  commitStage: "metadata";
+  commitStage: "selection" | "metadata";
   artifactId: string;
   artifactPath: string;
   storage: LocalStorageRefV1;
@@ -88,6 +95,69 @@ interface ResolvedArtifactDownloadInput {
   identifier?: MaterialIdentifierInput;
   resolverRequired: boolean;
   attachedItemId?: string;
+}
+
+function selectedItemTitle(input: ResolvedArtifactDownloadInput, filename: string): string {
+  if (input.identifier?.scheme === "doi") return input.identifier.value;
+  const candidate = input.sourceUrl ?? input.summary.url;
+  if (candidate) {
+    try {
+      const basename = decodeURIComponent(path.posix.basename(new URL(candidate).pathname));
+      const withoutExtension = basename.replace(/\.[A-Za-z0-9]{1,8}$/u, "").trim();
+      if (withoutExtension) return withoutExtension;
+    } catch {
+      // The input was already validated; fall through to the provider filename.
+    }
+  }
+  return filename.replace(/\.[A-Za-z0-9]{1,8}$/u, "").trim() || filename;
+}
+
+function selectedItemForDownload(
+  input: ResolvedArtifactDownloadInput,
+  filename: string,
+  sourceUrl: string,
+): ResourceItem {
+  if (input.identifier?.scheme === "doi") {
+    return {
+      itemType: "journalArticle",
+      title: selectedItemTitle(input, filename),
+      DOI: input.identifier.value,
+      url: `https://doi.org/${input.identifier.value}`,
+      source: "artifact-download",
+    };
+  }
+  return {
+    itemType: "document",
+    title: selectedItemTitle(input, filename),
+    url: sourceUrl,
+    source: "artifact-download",
+  };
+}
+
+async function attachDefaultSelection(options: {
+  config: ResolvedConfig;
+  input: ResolvedArtifactDownloadInput;
+  filename: string;
+  sourceUrl: string;
+}): Promise<ResolvedArtifactDownloadInput> {
+  if (
+    options.input.attachedItemId ||
+    options.config.material.downloadDisposition === "materialized"
+  ) {
+    return options.input;
+  }
+  const selected = await ensureResourceSelectedInWorkspace(options.config.workspace.root, {
+    item: selectedItemForDownload(options.input, options.filename, options.sourceUrl),
+    defaultCollectionPath: options.config.workspace.defaultCollection,
+  });
+  return {
+    ...options.input,
+    attachedItemId: selected.record.id,
+    summary: {
+      ...options.input.summary,
+      attachedItemId: selected.record.id,
+    },
+  };
 }
 
 interface ProviderDownloadResult {
@@ -715,6 +785,13 @@ export async function planArtifactDownload(
   const provider = providerSummary(providerPackage);
   const plannedFileDir = path.join(options.config.storage.artifactRoot, "<new-artifact-id>");
   const recordDir = path.join(options.config.workspace.root, ARTIFACT_RECORDS_DIR);
+  const selectionTargets = [
+    path.join(options.config.workspace.root, WORKSPACE_ITEMS_DIR),
+    path.join(options.config.workspace.root, "collections.json"),
+  ];
+  const selectsDownloadedResource = download &&
+    !resolvedInput.attachedItemId &&
+    options.config.material.downloadDisposition === "selected";
   const resolverSteps = resolverPlan
     ? [
         {
@@ -775,6 +852,16 @@ export async function planArtifactDownload(
               providerId: provider.id,
               policy,
             },
+            ...(selectsDownloadedResource
+              ? [{
+                  id: "select-downloaded-resource",
+                  action: "record" as const,
+                  description: "Create or reuse the selected workspace item for the downloaded resource.",
+                  targetPaths: selectionTargets,
+                  providerId: provider.id,
+                  policy,
+                }]
+              : []),
           ]
         : []),
       {
@@ -793,6 +880,7 @@ export async function planArtifactDownload(
           ...(resolverPlan ? [resolverPlan.packagePath] : []),
           provider.packagePath,
           plannedFileDir,
+          ...(selectsDownloadedResource ? selectionTargets : []),
           recordDir,
         ]
       : [...(resolverPlan ? [resolverPlan.packagePath] : []), provider.packagePath, recordDir],
@@ -802,6 +890,7 @@ export async function planArtifactDownload(
       workspaceRoot: options.config.workspace.root,
       attachTo: resolvedInput.attachedItemId ?? null,
       download,
+      downloadDisposition: options.config.material.downloadDisposition,
       ...(resolverPlan ? { resolverProviderId: resolverPlan.id } : {}),
     },
     provenance: {
@@ -818,7 +907,7 @@ export async function runArtifactDownload(
   const attachTo = normalizeAttachTo(options.attachTo);
   const policy = normalizePolicy(options.policy);
   const download = options.download !== false;
-  const resolvedInput = await resolveDownloadInput(options.config, options.input, attachTo);
+  let resolvedInput = await resolveDownloadInput(options.config, options.input, attachTo);
   const providerPackage = await selectDownloaderProvider({
     installDir: options.config.providers.installDir,
     providerId: options.providerId,
@@ -904,7 +993,15 @@ export async function runArtifactDownload(
     });
     artifactPath = stored.path;
     const normalizedProviderResult = { ...funnelResult.providerResult, filename };
+    let commitStage: ArtifactDownloadOrphanOutcome["commitStage"] = "selection";
     try {
+      resolvedInput = await attachDefaultSelection({
+        config: options.config,
+        input: resolvedInput,
+        filename,
+        sourceUrl: funnelResult.sourceUrl,
+      });
+      commitStage = "metadata";
       record = await createArtifactRecord(
         options.config.workspace.root,
         artifactRecordInput({
@@ -927,7 +1024,7 @@ export async function runArtifactDownload(
       const metadataError = formatError(error);
       const orphan: ArtifactDownloadOrphanOutcome = {
         outcome: "orphaned",
-        commitStage: "metadata",
+        commitStage,
         artifactId,
         artifactPath: stored.path,
         storage: stored.ref,
@@ -951,7 +1048,11 @@ export async function runArtifactDownload(
           partial: true,
           orphanedBytes: true,
         },
-        errors: [`Artifact metadata commit failed after bytes were committed: ${metadataError}`],
+        errors: [
+          commitStage === "selection"
+            ? `Workspace selection failed after artifact bytes were committed: ${metadataError}`
+            : `Artifact metadata commit failed after bytes were committed: ${metadataError}`,
+        ],
         provenance: {
           providerIds: [
             ...(funnelResult.resolver?.id ? [funnelResult.resolver.id] : []),
@@ -968,6 +1069,9 @@ export async function runArtifactDownload(
     ...(record.provenance.resolverProviderId ? [record.provenance.resolverProviderId] : []),
     provider.id,
   ];
+  const zoteroSync = download && record.itemId && !options.deferZoteroSync
+    ? await syncSelectedItemToZotero({ config: options.config, itemId: record.itemId })
+    : { status: "not_requested" as const };
 
   return okEnvelope({
     capability: "acquire",
@@ -985,6 +1089,8 @@ export async function runArtifactDownload(
       workspaceRoot: options.config.workspace.root,
       attachTo: resolvedInput.attachedItemId ?? null,
       download,
+      downloadDisposition: options.config.material.downloadDisposition,
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
       ...(record.provenance.resolverProviderId
         ? { resolverProviderId: record.provenance.resolverProviderId }
         : {}),

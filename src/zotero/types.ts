@@ -7,8 +7,30 @@ export interface ZoteroResolvedSettings {
   unavailable: ZoteroUnavailablePolicy;
 }
 export interface ZoteroWriteAction {
-  action: "create_item" | "create_note";
+  action:
+    | "create_item"
+    | "update_item"
+    | "create_note"
+    | "update_note"
+    | "add_to_collection"
+    | "attach_file";
   params: Record<string, unknown>;
+  sourceRef?: string;
+}
+
+export interface ZoteroItemMapping {
+  schemaVersion: 1;
+  itemId: string;
+  zoteroItemKey: string;
+  noteKeys: Record<string, string>;
+  attachments: Record<string, {
+    zoteroAttachmentKey: string;
+    mode: "link" | "import";
+    filePath: string;
+    /** False means Zotero returned the created key but post-write verification failed. */
+    verified?: boolean;
+  }>;
+  updatedAt: string;
 }
 
 export interface ZoteroSinkPlan {
@@ -17,6 +39,8 @@ export interface ZoteroSinkPlan {
   itemId: string;
   extractionId?: string;
   collectionKey?: string;
+  collectionKeys: string[];
+  existingZoteroItemKey?: string;
   actions: ZoteroWriteAction[];
   omissions: string[];
   planDigest: string;
@@ -28,6 +52,7 @@ export interface ZoteroSinkPreview {
   previewDigest: string;
   status: unknown;
   collectionProbe?: unknown;
+  collectionProbes?: Record<string, unknown>;
   actionPreviews: unknown[];
 }
 
@@ -35,15 +60,20 @@ export interface ZoteroSinkReceipt {
   schemaVersion: 1;
   receiptId: string;
   createdAt: string;
-  status: "complete" | "partial";
+  status: "complete" | "partial" | "pending";
   planDigest: string;
   previewDigest: string;
   itemId: string;
   extractionId?: string;
   collectionKey?: string;
-  zoteroItemKey: string;
+  collectionKeys?: string[];
+  zoteroItemKey?: string;
   zoteroNoteKey?: string;
+  zoteroAttachmentKeys?: string[];
   completedPhases: string[];
   failedPhase?: string;
+  pendingReason?: string;
   verification?: unknown;
+  /** Present only when remote writes succeeded but the canonical mapping could not be persisted. */
+  mappingRecovery?: ZoteroItemMapping;
 }

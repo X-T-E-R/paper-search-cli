@@ -52,11 +52,11 @@ import {
 import { runExternalWebSearchEnvelope } from "../external-search/service.js";
 import type { ExternalWebSearchRequest } from "../external-search/types.js";
 import {
-  addResourceToWorkspace,
   exportWorkspaceItems,
   listWorkspaceCollections,
   type WorkspaceDetailPayload,
 } from "../workspace/store.js";
+import { selectResourceIntoWorkspace } from "../workspace/selection.js";
 import type { ResourceItem } from "../providers/sdk/types.js";
 import type { PatentDetailResult } from "../providers/sdk/types.js";
 import type { PlatformStatusSnapshot } from "./status.js";
@@ -767,10 +767,8 @@ async function handleResourceAdd(config: ResolvedConfig, args: ToolArguments): P
   if (!item && !url) {
     return invalidArgs("organize", "resource_add", "Either item or url must be provided");
   }
-  return captureFailure("organize", "resource_add", async () =>
-    workspaceEnvelope(
-      "resource_add",
-      await addResourceToWorkspace(config.workspace.root, {
+  return captureFailure("organize", "resource_add", async () => {
+    const selected = await selectResourceIntoWorkspace(config, {
         item,
         detail: isRecord(args.detail) ? args.detail as WorkspaceDetailPayload : undefined,
         url,
@@ -779,9 +777,18 @@ async function handleResourceAdd(config: ResolvedConfig, args: ToolArguments): P
         tags: asStringArray(args.tags),
         fetchPdf: asBoolean(args.fetchPDF) ?? asBoolean(args.fetchPdf) ?? asBoolean(args.fetch_pdf),
         defaultCollectionPath: config.workspace.defaultCollection,
-      }),
-      { workspaceRoot: config.workspace.root },
-    ));
+      });
+    return workspaceEnvelope(
+      "resource_add",
+      selected.workspace,
+      {
+        workspaceRoot: config.workspace.root,
+        ...(selected.zoteroSync.status !== "not_requested"
+          ? { zoteroSync: selected.zoteroSync.status }
+          : {}),
+      },
+    );
+  });
 }
 
 async function handleCollectionList(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {

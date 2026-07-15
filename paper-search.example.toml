@@ -21,6 +21,11 @@ artifactRoot = "~/.paper-search/storage/artifacts"
 extractionRoot = "~/.paper-search/storage/extractions"
 exportRoot = "~/.paper-search/exports"
 
+[material]
+# A successful download creates or reuses a selected workspace item. Use
+# "materialized" to keep downloaded artifacts standalone instead.
+downloadDisposition = "selected"
+
 [runs]
 root = "~/.paper-search/runs"
 # -1 means that age alone never makes a run eligible for explicit pruning.
@@ -28,12 +33,16 @@ maxAgeDays = -1
 # Real discovery/search calls are recorded unless a config or invocation opts out.
 recordByDefault = true
 
-# Optional CLI-only bibliographic sink. It does not import attachments.
+# Optional Zotero MCP Neo connection plus user-wide selection defaults.
 [zotero]
 enabled = false
 endpoint = "http://127.0.0.1:23120/mcp"
 timeoutMs = 15000
 unavailable = "error"
+syncOnSelected = false
+collectionKeys = []
+attachmentMode = "none" # none | link | import
+markdownMode = "note"   # none | note | link | import
 
 [server]
 enabled = false

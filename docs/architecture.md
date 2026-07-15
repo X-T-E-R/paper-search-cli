@@ -36,9 +36,9 @@ names remain compatible.
      durable-run roots
    - provider-mediated artifact acquisition for `resource-pdf` compatibility
    - portable workspace export sink for JSON, JSONL, CSV, and BibTeX
-   - no general host-application bridge or profile writer; the explicit CLI-only
-     Zotero bibliographic sink is the narrow exception accepted by
-      [ADR-0004](./decisions/ADR-0004-cli-only-zotero-bibliographic-sink.md)
+   - no general host-application bridge or profile writer; the bounded Zotero
+     MCP Neo selected-item projection is the exception defined by
+     [ADR-0005](./decisions/ADR-0005-selected-resource-zotero-projection.md)
 
 ## Product boundary
 
@@ -49,15 +49,14 @@ catalog. Paperflow owns workspace creation, semantic path roles, and
 research-runtime invariants. A project-side bibliography/catalog workflow owns
 selected literature.
 
-Integration uses a shared run-directory contract. Paper Search selects the
+Integration uses a generated config and shared path-role contract. Paper Search selects the
 nearest ancestor `paper-search.toml` and writes one run to its configured
 `runs.root`; it never imports Paperflow modules or reads `paperflow.yaml`.
-Paperflow generates that TOML so the path matches its `search_runs` role, then
-reads the validated run files directly. Global state keeps only a run locator,
-not a duplicate payload. Mounted history is not automatic catalog/evidence
-promotion. The existing Paper Search workspace, material, export, and Zotero
-surfaces remain compatibility surfaces for older or small headless workflows,
-not a parallel Paperflow project.
+Paperflow generates that TOML so run, selected-workspace, artifact, extraction,
+and export roots match its roles, then reads the validated run files directly.
+Global state keeps only a run locator, not a duplicate payload. Mounted history
+is not automatic catalog/evidence promotion. A successful download selects by
+default, while Paperflow evidence verification remains a later state.
 
 ## Conventional home and storage classes
 
@@ -76,7 +75,7 @@ The default path classes are distinct:
   `workspace-export --store`; and
 - `runs/` owns global execution history and checkpoints when no context exists.
 
-A standalone or Paperflow project context may choose another `runs.root`.
+A standalone or Paperflow project context may choose all five roots.
 Nearest-ancestor discovery affects the project configuration layer, while the
 conventional user home remains the authority for credentials, providers, state,
 and locators.
@@ -116,17 +115,19 @@ canonical executor through an internal bypass so one search creates one record.
 ## Optional Zotero boundary
 
 Paper Search local workspace and material records remain authoritative. The
-CLI-only Zotero sink can project a bibliographic item, render one selected
-extraction as a note, and target one explicit existing collection through a
-user-authorized Zotero MCP Neo endpoint. It uses local plan, remote dry-run
-preview, digest-acknowledged apply, returned-key verification, and a local
-receipt. It is not a canonical tool, MCP operation, batch row, default workspace
-sink, or material-ingest side effect.
+Zotero projection separates user-owned connection settings from project binding
+policy. A project may inherit global selected-item defaults, disable projection,
+or bind to multiple exact existing collections. Search hits do not write to
+Zotero. Explicit workspace selection and successful downloads may project when
+durably configured; host failure leaves a pending receipt without reversing the
+local operation.
 
-The adapter does not create collections or import attachments. Local PDF,
-Markdown, JSON, and asset files stay local and are reported as omitted. Partial
-remote completion returns the created key and is not automatically retried or
-rolled back.
+The adapter creates or updates a mapped bibliographic item, can render one
+selected extraction as a note, and may link/import durable artifact or Markdown
+files through Zotero MCP Neo. It never creates collections. The explicit
+`zotero sink` plan/preview/digest-acknowledged apply flow remains available.
+Mappings and complete/partial/pending receipts live under the Paper Search
+workspace root. Partial remote completion is not automatically rolled back.
 
 ## Capability Contract
 

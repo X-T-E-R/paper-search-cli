@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -202,8 +202,6 @@ describe("material ingest execution command", () => {
       "material",
       "ingest",
       "https://example.test/files/article.pdf",
-      "--attach-to",
-      "item-123",
       "--policy",
       "workspace-safe",
       "--dry-run",
@@ -213,8 +211,6 @@ describe("material ingest execution command", () => {
       "material",
       "ingest",
       "https://example.test/files/article.pdf",
-      "--attach-to",
-      "item-123",
       "--policy",
       "workspace-safe",
       "--json",
@@ -229,7 +225,7 @@ describe("material ingest execution command", () => {
       input: "https://example.test/files/article.pdf",
       url: "https://example.test/files/article.pdf",
     });
-    expect(data.policy).toEqual({ name: "workspace-safe", attachTo: "item-123" });
+    expect(data.policy).toEqual({ name: "workspace-safe", attachTo: data.artifact.record.itemId });
     expect(data.artifact).toMatchObject({
       mode: "download",
       artifactId: expect.any(String),
@@ -239,7 +235,7 @@ describe("material ingest execution command", () => {
       },
       record: {
         status: "downloaded",
-        itemId: "item-123",
+        itemId: expect.any(String),
         storage: {
           schemaVersion: 1,
           sink: "local",
@@ -261,7 +257,7 @@ describe("material ingest execution command", () => {
         artifactId: data.artifact.artifactId,
       },
       record: {
-        itemId: "item-123",
+        itemId: data.artifact.record.itemId,
         source: {
           kind: "artifact",
           artifactId: data.artifact.artifactId,
@@ -289,6 +285,7 @@ describe("material ingest execution command", () => {
       "artifact.load-downloader",
       "artifact.run-downloader",
       "artifact.write-artifact",
+      "artifact.select-downloaded-resource",
       "artifact.record-artifact",
       "extraction.load-extractor",
       "extraction.run-extractor",
@@ -356,8 +353,6 @@ describe("material ingest execution command", () => {
       "material",
       "ingest",
       inputPath,
-      "--attach-to",
-      "item-123",
       "--policy",
       "local-safe",
       "--json",
@@ -379,7 +374,7 @@ describe("material ingest execution command", () => {
       },
       record: {
         status: "recorded",
-        itemId: "item-123",
+        itemId: expect.any(String),
         filename: "paper.txt",
         contentType: "text/plain",
         sizeBytes: sourceBytes.byteLength,
@@ -409,7 +404,7 @@ describe("material ingest execution command", () => {
         artifactId: data.artifact.artifactId,
       },
       record: {
-        itemId: "item-123",
+        itemId: data.artifact.record.itemId,
         source: {
           kind: "artifact",
           artifactId: data.artifact.artifactId,
@@ -466,6 +461,69 @@ describe("material ingest execution command", () => {
     });
   });
 
+  it("returns a compact recovery command when extraction fails after the selected artifact is committed", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-extraction-failure-");
+    await appendFile(
+      path.join(root, "paper-search.toml"),
+      ['[zoteroBinding]', 'mode = "bound"', 'collectionKeys = ["RECOVERY1"]', ""].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(root, "providers", "fixture-markdown-extractor", "provider.js"),
+      [
+        "var __material_provider_exports = {",
+        "  createProvider() {",
+        "    return { async extract() { throw new Error(\"fixture extraction unavailable\"); } };",
+        "  }",
+        "};",
+        "globalThis.__material_provider_exports = __material_provider_exports;",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const inputDir = path.join(root, "inputs");
+    const inputPath = path.join(inputDir, "paper.pdf");
+    await mkdir(inputDir, { recursive: true });
+    await writeFile(inputPath, "%PDF-fixture\n", "utf8");
+
+    const result = await runMaterialCommand(root, ["material", "ingest", inputPath, "--json"]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "orchestrate",
+      tool: "material_ingest",
+      data: null,
+      diagnostics: {
+        workspaceRoot,
+        partial: true,
+        commitStage: "extraction",
+        artifactId: expect.any(String),
+        artifactPath: expect.any(String),
+        artifactRecordPath: expect.any(String),
+        attachTo: expect.any(String),
+        recoveryCommand: expect.stringMatching(
+          /^paper-search extract [A-Za-z0-9._-]+ --provider fixture-markdown-extractor --attach-to [A-Za-z0-9._-]+ --json$/u,
+        ),
+        zoteroSync: "pending",
+      },
+      errors: [expect.stringContaining("fixture extraction unavailable")],
+    });
+    const diagnostics = result.envelope.diagnostics!;
+    const artifactId = String(diagnostics.artifactId);
+    const itemId = String(diagnostics.attachTo);
+    await expect(readArtifactRecord(workspaceRoot, artifactId)).resolves.toMatchObject({
+      id: artifactId,
+      itemId,
+      status: "recorded",
+    });
+    await expect(readFile(String(diagnostics.artifactPath), "utf8")).resolves.toBe("%PDF-fixture\n");
+    await expect(readFile(path.join(workspaceRoot, "items", `${itemId}.json`), "utf8"))
+      .resolves.toContain(itemId);
+    await expect(readdir(path.join(workspaceRoot, "zotero", "receipts"))).resolves.toHaveLength(1);
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("fails before metadata or extraction writes when configured artifact storage is not a directory", async () => {
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-path-collision-");
     const inputDir = path.join(root, "inputs");
@@ -495,7 +553,7 @@ describe("material ingest execution command", () => {
     await expect(readFile(path.join(root, "artifact-storage"), "utf8")).resolves.toBe("not a directory\n");
   });
 
-  it("returns a typed orphan without deleting managed bytes when local artifact metadata commit fails", async () => {
+  it("returns a typed orphan without deleting managed bytes when default selection cannot be committed", async () => {
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-path-orphan-");
     const inputDir = path.join(root, "inputs");
     const inputPath = path.join(inputDir, "paper.txt");
@@ -525,14 +583,14 @@ describe("material ingest execution command", () => {
         workspaceRoot,
         partial: true,
         orphanedBytes: true,
-        commitStage: "metadata",
+        commitStage: "selection",
       },
       provenance: {
         providerIds: ["builtin-local-artifact"],
       },
       orphan: {
         outcome: "orphaned",
-        commitStage: "metadata",
+        commitStage: "selection",
         artifactId: expect.any(String),
         artifactPath: expect.any(String),
         storage: {

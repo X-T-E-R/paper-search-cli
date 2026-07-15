@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import { buildProgram } from "../../src/program.js";
 import { readArtifactRecord } from "../../src/material/artifactStore.js";
 import type { ArtifactDownloadData } from "../../src/material/artifactDownload.js";
 import { isResultEnvelope, type ResultEnvelope } from "../../src/surface/resultEnvelope.js";
-import { addResourceToWorkspace } from "../../src/workspace/store.js";
+import { addResourceToWorkspace, readWorkspaceItemRecord } from "../../src/workspace/store.js";
 
 const tempDirs: string[] = [];
 const downloaderFixturesRoot = path.resolve("tests", "fixtures", "material-downloaders");
@@ -99,6 +99,82 @@ function expectDownloadData(envelope: ResultEnvelope): ArtifactDownloadData {
 }
 
 describe("artifact download command", () => {
+  it("selects a successful standalone download by default and reuses its identity", async () => {
+    const { root, workspaceRoot } = await createWorkspace("paper-search-artifact-select-");
+
+    const first = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      "https://example.test/files/selected-paper.pdf",
+      "--json",
+    ]);
+    const firstData = expectDownloadData(first.envelope);
+    expect(firstData.record.itemId).toEqual(expect.any(String));
+    expect(firstData.input.attachedItemId).toBe(firstData.record.itemId);
+    await expect(readWorkspaceItemRecord(workspaceRoot, firstData.record.itemId!)).resolves.toMatchObject({
+      id: firstData.record.itemId,
+      item: {
+        itemType: "document",
+        title: "selected-paper",
+        url: "https://example.test/files/selected-paper.pdf",
+        source: "artifact-download",
+      },
+      collectionPath: "Inbox",
+    });
+
+    const second = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      "https://example.test/files/selected-paper.pdf",
+      "--json",
+    ]);
+    const secondData = expectDownloadData(second.envelope);
+    expect(secondData.record.itemId).toBe(firstData.record.itemId);
+  });
+
+  it("keeps downloads standalone when material.downloadDisposition is materialized", async () => {
+    const { root, workspaceRoot } = await createWorkspace("paper-search-artifact-materialized-");
+    await appendFile(
+      path.join(root, "paper-search.toml"),
+      '[material]\ndownloadDisposition = "materialized"\n',
+      "utf8",
+    );
+
+    const result = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      "https://example.test/files/materialized-paper.pdf",
+      "--json",
+    ]);
+    const data = expectDownloadData(result.envelope);
+    expect(data.record.itemId).toBeUndefined();
+    expect(data.input.attachedItemId).toBeUndefined();
+    await expect(stat(path.join(workspaceRoot, "items"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps a bound Zotero projection pending without failing the local download", async () => {
+    const { root, workspaceRoot } = await createWorkspace("paper-search-artifact-zotero-pending-");
+    await appendFile(
+      path.join(root, "paper-search.toml"),
+      '[zoteroBinding]\nmode = "bound"\ncollectionKeys = ["PROJECT1"]\n',
+      "utf8",
+    );
+
+    const result = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      "https://example.test/files/pending-zotero.pdf",
+      "--json",
+    ]);
+    const data = expectDownloadData(result.envelope);
+    expect(data.record.itemId).toEqual(expect.any(String));
+    expect(result.envelope.diagnostics).toMatchObject({ zoteroSync: "pending" });
+    const receipts = await readdir(path.join(workspaceRoot, "zotero", "receipts"));
+    expect(receipts).toHaveLength(1);
+    await expect(readFile(path.join(workspaceRoot, "zotero", "receipts", receipts[0]!), "utf8"))
+      .resolves.toContain('"pendingReason": "zotero_not_configured"');
+  });
+
   it("downloads a URL through the fixture material downloader and creates an artifact record", async () => {
     const { root, workspaceRoot } = await createWorkspace("paper-search-artifact-download-");
     const fetchMock = vi.fn(async () => {

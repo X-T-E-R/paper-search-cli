@@ -110,4 +110,29 @@ describe("unified-home config defaults", () => {
     );
     await expect(loadConfig({ cwd: project })).rejects.toThrow(/forbidden_config_authority.*Zotero/u);
   });
+
+  it("allows project Zotero binding policy without granting endpoint authority", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-zotero-binding-"));
+    const project = path.join(root, "project");
+    await mkdir(project);
+    await writeFile(
+      path.join(project, "paper-search.toml"),
+      [
+        "schemaVersion = 1",
+        "[zoteroBinding]",
+        'mode = "bound"',
+        'collectionKeys = ["PROJECT1", "SHARED2"]',
+        'attachmentMode = "link"',
+        "",
+      ].join("\n"),
+    );
+    process.env.PAPER_SEARCH_HOME = path.join(root, "authority");
+    const config = await loadConfig({ cwd: project });
+    expect(config.zotero.enabled).toBe(false);
+    expect(config.zoteroBinding).toEqual({
+      mode: "bound",
+      collectionKeys: ["PROJECT1", "SHARED2"],
+      attachmentMode: "link",
+    });
+  });
 });

@@ -11,15 +11,24 @@ import {
   previewZoteroSink,
 } from "../zotero/sink.js";
 import type { ZoteroResolvedSettings } from "../zotero/types.js";
+import { resolveZoteroSelectionBinding } from "../zotero/binding.js";
+import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
 
 interface ZoteroSinkCommandOptions {
   extraction?: string;
-  collectionKey?: string;
+  collectionKey?: string[];
+  zoteroItemKey?: string;
+  attachmentMode?: "none" | "link" | "import";
+  markdownMode?: "none" | "note" | "link" | "import";
   endpoint?: string;
   timeoutMs?: string;
   preview?: boolean;
   apply?: boolean;
   ack?: string;
+}
+
+function appendOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 function settingsFromCommand(config: ResolvedConfig, options: ZoteroSinkCommandOptions): ZoteroResolvedSettings {
@@ -47,13 +56,72 @@ function settingsFromCommand(config: ResolvedConfig, options: ZoteroSinkCommandO
 export function registerZoteroCommands(program: Command, io: Io): void {
   const zotero = program
     .command("zotero")
-    .description("Plan and explicitly export local bibliographic records through Zotero MCP Neo.");
+    .description("Inspect, sync, or explicitly project selected records through Zotero MCP Neo.");
+
+  zotero
+    .command("status")
+    .description("Show the compact effective Zotero connection and selection policy.")
+    .action(async (_options: unknown, command: Command) => {
+      try {
+        const globalOptions = command.optsWithGlobals<{ config?: string }>();
+        const config = await loadConfig({ explicitConfigPath: globalOptions.config });
+        const binding = resolveZoteroSelectionBinding(config);
+        io.writeJson(okEnvelope({
+          capability: "organize",
+          tool: "zotero_status",
+          data: {
+            connectionConfigured: config.zotero.enabled,
+            selectionSyncRequested: binding.requested,
+            origin: binding.origin,
+            collectionKeys: binding.collectionKeys,
+            attachmentMode: binding.attachmentMode,
+            markdownMode: binding.markdownMode,
+          },
+        }));
+      } catch (error) {
+        io.writeJson(failEnvelope({
+          capability: "organize",
+          tool: "zotero_status",
+          errors: [error instanceof Error ? error.message : String(error)],
+        }));
+      }
+    });
+
+  zotero
+    .command("sync <itemId>")
+    .description("Retry the durably configured selected-item projection.")
+    .option("--extraction <id>", "include one selected extraction")
+    .action(async (itemId: string, options: { extraction?: string }, command: Command) => {
+      try {
+        const globalOptions = command.optsWithGlobals<{ config?: string }>();
+        const config = await loadConfig({ explicitConfigPath: globalOptions.config });
+        const result = await syncSelectedItemToZotero({
+          config,
+          itemId,
+          extractionId: options.extraction,
+        });
+        io.writeJson(okEnvelope({
+          capability: "organize",
+          tool: "zotero_sync",
+          data: result,
+        }));
+      } catch (error) {
+        io.writeJson(failEnvelope({
+          capability: "organize",
+          tool: "zotero_sync",
+          errors: [error instanceof Error ? error.message : String(error)],
+        }));
+      }
+    });
 
   zotero
     .command("sink <itemId>")
     .description("Plan by default; use --preview before a digest-acknowledged --apply.")
     .option("--extraction <id>", "render one local extraction as a Zotero child note")
-    .option("--collection-key <key>", "existing Zotero collection key; collections are never created")
+    .option("--collection-key <key>", "existing Zotero collection key; repeat for multiple collections", appendOption, [])
+    .option("--zotero-item-key <key>", "bind the local item to an existing Zotero item on first sync")
+    .option("--attachment-mode <mode>", "local artifact handling: none, link, or import")
+    .option("--markdown-mode <mode>", "extraction handling: none, note, link, or import")
     .option("--endpoint <url>", "explicit per-invocation Zotero MCP endpoint and write authority")
     .option("--timeout-ms <ms>", "endpoint timeout override")
     .option("--preview", "probe readiness and issue exact remote dry-run calls without writes")
@@ -62,13 +130,23 @@ export function registerZoteroCommands(program: Command, io: Io): void {
     .action(async (itemId: string, options: ZoteroSinkCommandOptions, command: Command) => {
       try {
         if (options.apply && options.preview) throw new Error("Choose either --preview or --apply");
+        if (options.attachmentMode && !["none", "link", "import"].includes(options.attachmentMode)) {
+          throw new Error("--attachment-mode must be none, link, or import");
+        }
+        if (options.markdownMode && !["none", "note", "link", "import"].includes(options.markdownMode)) {
+          throw new Error("--markdown-mode must be none, note, link, or import");
+        }
         const globalOptions = command.optsWithGlobals<{ config?: string }>();
         const config = await loadConfig({ explicitConfigPath: globalOptions.config });
+        const binding = resolveZoteroSelectionBinding(config);
         const plan = await planZoteroSink({
           workspaceRoot: config.workspace.root,
           itemId,
           extractionId: options.extraction,
-          collectionKey: options.collectionKey,
+          collectionKeys: options.collectionKey?.length ? options.collectionKey : binding.collectionKeys,
+          existingZoteroItemKey: options.zoteroItemKey,
+          attachmentMode: options.attachmentMode ?? binding.attachmentMode,
+          markdownMode: options.markdownMode ?? binding.markdownMode,
         });
         if (!options.preview && !options.apply) {
           io.writeJson(okEnvelope({

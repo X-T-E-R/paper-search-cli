@@ -69,8 +69,10 @@ export function registerStatusCommand(program: Command, io: Io): void {
         providers: { ...config.providers, registryUrl: registrySource },
         workspace: config.workspace,
         storage: config.storage,
+        material: config.material,
         runs: config.runs,
         zotero: config.zotero,
+        zoteroBinding: config.zoteroBinding,
         configLocationMigration,
         server: {
           ...config.server,
@@ -145,6 +147,7 @@ export function registerStatusCommand(program: Command, io: Io): void {
       io.writeLine(`artifact storage root: ${payload.storage.artifactRoot}`);
       io.writeLine(`extraction storage root: ${payload.storage.extractionRoot}`);
       io.writeLine(`export root: ${payload.storage.exportRoot}`);
+      io.writeLine(`download disposition: ${payload.material.downloadDisposition}`);
       io.writeLine(`runs root: ${payload.runs.root}`);
       io.writeLine(`run retention max age days: ${payload.runs.maxAgeDays} (local plaintext; pruning is explicit)`);
       io.writeLine(`search history by default: ${payload.runs.recordByDefault ? "enabled" : "disabled"}`);
@@ -160,6 +163,7 @@ export function registerStatusCommand(program: Command, io: Io): void {
         );
       }
       io.writeLine(`default sink: ${payload.workspace.defaultSink}`);
+      io.writeLine(`Zotero workspace binding: ${payload.zoteroBinding.mode}`);
       io.writeLine(`server endpoint: ${payload.server.endpoint}`);
       io.writeLine(
         `smoke enabled now: ${payload.smoke.enabled ? "yes" : "no"} (env: ${payload.smoke.envVar})`,

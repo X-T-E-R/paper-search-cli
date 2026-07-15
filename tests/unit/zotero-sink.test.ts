@@ -1,12 +1,22 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExtractionRecord } from "../../src/material/extractionStore.js";
+import { createArtifactRecord } from "../../src/material/artifactStore.js";
 import { addResourceToWorkspace } from "../../src/workspace/store.js";
-import { createZoteroHttpClient, ZoteroUnavailableError, type ZoteroToolClient } from "../../src/zotero/client.js";
+import {
+  createZoteroHttpClient,
+  ZoteroRemoteError,
+  ZoteroUnavailableError,
+  type ZoteroToolClient,
+} from "../../src/zotero/client.js";
 import { applyZoteroSink, planZoteroSink, previewZoteroSink } from "../../src/zotero/sink.js";
 import type { ZoteroResolvedSettings } from "../../src/zotero/types.js";
+import { readZoteroItemMapping, writeZoteroItemMapping } from "../../src/zotero/mapping.js";
+import { syncSelectedItemToZotero } from "../../src/zotero/autoSync.js";
+import { DEFAULT_CONFIG } from "../../src/config/defaults.js";
+import type { ResolvedConfig } from "../../src/config/schema.js";
 
 const roots: string[] = [];
 const settings: ZoteroResolvedSettings = {
@@ -62,6 +72,28 @@ describe("Zotero sink safety boundary", () => {
     });
     await expect(client.callTool("zotero_status", {})).rejects.toBeInstanceOf(ZoteroUnavailableError);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves structured partial-write evidence returned by Zotero MCP", async () => {
+    const payload = {
+      ok: false,
+      code: "NOT_AVAILABLE",
+      error: "attachment verification failed",
+      partial: { attachmentKey: "ATTACHPARTIAL" },
+    };
+    const client = createZoteroHttpClient({
+      endpoint: settings.endpoint,
+      timeoutMs: settings.timeoutMs,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: "fixture",
+        result: { content: [{ type: "text", text: JSON.stringify(payload) }] },
+      }), { status: 200, headers: { "content-type": "application/json" } })),
+    });
+
+    const error = await client.callTool("zotero_write", {}).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ZoteroRemoteError);
+    expect((error as ZoteroRemoteError).payload).toEqual(payload);
   });
 
   it("builds a local-only lossy plan with escaped note content and attachment omissions", async () => {
@@ -250,5 +282,331 @@ describe("Zotero sink safety boundary", () => {
       zoteroNoteKey: "NOTEKEY2",
       completedPhases: ["create_item", "create_note", "verify"],
     });
+  });
+
+  it("attaches a local artifact after item creation and reuses the durable mapping", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paper-search-zotero-attachment-"));
+    roots.push(workspaceRoot);
+    const added = await addResourceToWorkspace(workspaceRoot, {
+      item: { itemType: "journalArticle", title: "Attachment plan" },
+      defaultCollectionPath: "Inbox",
+    });
+    const files = path.join(workspaceRoot, "files");
+    await mkdir(files, { recursive: true });
+    await writeFile(path.join(files, "paper.pdf"), "pdf bytes", "utf8");
+    const artifact = await createArtifactRecord(workspaceRoot, {
+      kind: "pdf",
+      status: "downloaded",
+      itemId: added.record.id,
+      filename: "paper.pdf",
+      contentType: "application/pdf",
+      path: "files/paper.pdf",
+      provenance: { origin: "download", providerId: "fixture" },
+      attempts: [{ tier: "fixture", ok: true, at: new Date().toISOString() }],
+    });
+    const plan = await planZoteroSink({
+      workspaceRoot,
+      itemId: added.record.id,
+      collectionKeys: ["COLLECTION1", "SHARED2"],
+      attachmentMode: "link",
+      markdownMode: "none",
+    });
+    expect(plan.actions).toEqual([
+      expect.objectContaining({ action: "create_item" }),
+      expect.objectContaining({
+        action: "attach_file",
+        sourceRef: `artifact:${artifact.id}`,
+        params: expect.objectContaining({
+          itemKey: "$createdItemKey",
+          filePath: path.join(files, "paper.pdf"),
+          mode: "link",
+        }),
+      }),
+    ]);
+
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const client: ZoteroToolClient = {
+      async callTool(name, args) {
+        calls.push([name, args]);
+        if (name === "zotero_write" && args.dryRun === false) {
+          return args.action === "create_item"
+            ? { key: "ITEMATTACH1" }
+            : { itemKey: "ITEMATTACH1", attachmentKey: "ATTACH1", verified: true };
+        }
+        if (name === "zotero_read") return { key: "ITEMATTACH1" };
+        if (name === "zotero_list" && args.limit === 100) return { items: [{ key: "ITEMATTACH1" }] };
+        return { ok: true };
+      },
+    };
+    const preview = await previewZoteroSink({ plan, settings, client });
+    expect(calls.filter(([name, args]) =>
+      name === "zotero_write" && args.action === "attach_file" && args.dryRun === true,
+    )).toHaveLength(0);
+    const applied = await applyZoteroSink({
+      plan,
+      settings,
+      acknowledgedPreviewDigest: preview.previewDigest,
+      client,
+    });
+    expect(applied.receipt).toMatchObject({
+      status: "complete",
+      zoteroItemKey: "ITEMATTACH1",
+      zoteroAttachmentKeys: ["ATTACH1"],
+      collectionKeys: ["COLLECTION1", "SHARED2"],
+    });
+    expect(calls).toContainEqual([
+      "zotero_write",
+      expect.objectContaining({
+        action: "attach_file",
+        dryRun: true,
+        params: expect.objectContaining({ itemKey: "ITEMATTACH1" }),
+      }),
+    ]);
+    await expect(readZoteroItemMapping(workspaceRoot, added.record.id)).resolves.toMatchObject({
+      zoteroItemKey: "ITEMATTACH1",
+      attachments: {
+        [`artifact:${artifact.id}`]: {
+          zoteroAttachmentKey: "ATTACH1",
+          mode: "link",
+          verified: true,
+        },
+      },
+    });
+
+    const repeat = await planZoteroSink({
+      workspaceRoot,
+      itemId: added.record.id,
+      collectionKeys: ["COLLECTION1", "SHARED2"],
+      attachmentMode: "link",
+      markdownMode: "none",
+    });
+    expect(repeat.existingZoteroItemKey).toBe("ITEMATTACH1");
+    expect(repeat.actions.map((action) => action.action)).toEqual([
+      "update_item",
+      "add_to_collection",
+      "add_to_collection",
+    ]);
+  });
+
+  it("records an unverified attachment key and prevents duplicate retry after post-write failure", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paper-search-zotero-attachment-partial-"));
+    roots.push(workspaceRoot);
+    const added = await addResourceToWorkspace(workspaceRoot, {
+      item: { itemType: "journalArticle", title: "Partial attachment" },
+      defaultCollectionPath: "Inbox",
+    });
+    const files = path.join(workspaceRoot, "files");
+    await mkdir(files, { recursive: true });
+    await writeFile(path.join(files, "paper.pdf"), "pdf bytes", "utf8");
+    const artifact = await createArtifactRecord(workspaceRoot, {
+      kind: "pdf",
+      status: "downloaded",
+      itemId: added.record.id,
+      filename: "paper.pdf",
+      contentType: "application/pdf",
+      path: "files/paper.pdf",
+      provenance: { origin: "download", providerId: "fixture" },
+      attempts: [{ tier: "fixture", ok: true, at: new Date().toISOString() }],
+    });
+    const plan = await planZoteroSink({
+      workspaceRoot,
+      itemId: added.record.id,
+      attachmentMode: "link",
+      markdownMode: "none",
+    });
+    const client: ZoteroToolClient = {
+      async callTool(name, args) {
+        if (name === "zotero_write" && args.dryRun === false) {
+          if (args.action === "create_item") return { itemKey: "ITEMPARTIAL" };
+          throw new ZoteroRemoteError("attachment verification failed", {
+            ok: false,
+            partial: { attachmentKey: "ATTACHPARTIAL" },
+          });
+        }
+        return { ok: true };
+      },
+    };
+    const preview = await previewZoteroSink({ plan, settings, client });
+    const applied = await applyZoteroSink({
+      plan,
+      settings,
+      acknowledgedPreviewDigest: preview.previewDigest,
+      client,
+    });
+
+    expect(applied.receipt).toMatchObject({
+      status: "partial",
+      zoteroItemKey: "ITEMPARTIAL",
+      zoteroAttachmentKeys: ["ATTACHPARTIAL"],
+      completedPhases: ["create_item", "attach_file_write"],
+      failedPhase: "attach_file_verification",
+    });
+    await expect(readZoteroItemMapping(workspaceRoot, added.record.id)).resolves.toMatchObject({
+      attachments: {
+        [`artifact:${artifact.id}`]: {
+          zoteroAttachmentKey: "ATTACHPARTIAL",
+          mode: "link",
+          verified: false,
+        },
+      },
+    });
+    const repeat = await planZoteroSink({
+      workspaceRoot,
+      itemId: added.record.id,
+      attachmentMode: "link",
+      markdownMode: "none",
+    });
+    expect(repeat.actions.map((action) => action.action)).toEqual([
+      "update_item",
+      "attach_file",
+    ]);
+    expect(repeat.actions[1]?.params).toMatchObject({
+      existingAttachmentKey: "ATTACHPARTIAL",
+      mode: "link",
+    });
+
+    const retryClient: ZoteroToolClient = {
+      async callTool(name, args) {
+        if (name === "zotero_write" && args.dryRun === false) {
+          if (args.action === "update_item") return { itemKey: "ITEMPARTIAL" };
+          if (args.action === "attach_file") {
+            expect(args.params).toMatchObject({ existingAttachmentKey: "ATTACHPARTIAL" });
+            return { attachmentKey: "ATTACHPARTIAL", verified: true, reverified: true };
+          }
+        }
+        if (name === "zotero_read") return { ok: true, key: "ITEMPARTIAL" };
+        return { ok: true };
+      },
+    };
+    const retryPreview = await previewZoteroSink({ plan: repeat, settings, client: retryClient });
+    const retried = await applyZoteroSink({
+      plan: repeat,
+      settings,
+      acknowledgedPreviewDigest: retryPreview.previewDigest,
+      client: retryClient,
+    });
+    expect(retried.receipt).toMatchObject({
+      status: "complete",
+      zoteroItemKey: "ITEMPARTIAL",
+      zoteroAttachmentKeys: ["ATTACHPARTIAL"],
+    });
+    await expect(readZoteroItemMapping(workspaceRoot, added.record.id)).resolves.toMatchObject({
+      attachments: {
+        [`artifact:${artifact.id}`]: {
+          zoteroAttachmentKey: "ATTACHPARTIAL",
+          verified: true,
+        },
+      },
+    });
+  });
+
+  it("recovers a remote item from a mapping-failure receipt before planning another create", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paper-search-zotero-recovery-"));
+    roots.push(workspaceRoot);
+    const added = await addResourceToWorkspace(workspaceRoot, {
+      item: { itemType: "journalArticle", title: "Recovered remote item" },
+      defaultCollectionPath: "Inbox",
+    });
+    const receiptsRoot = path.join(workspaceRoot, "zotero", "receipts");
+    await mkdir(receiptsRoot, { recursive: true });
+    await writeFile(path.join(receiptsRoot, "mapping-failure.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      receiptId: "mapping-failure",
+      createdAt: new Date().toISOString(),
+      status: "partial",
+      itemId: added.record.id,
+      zoteroItemKey: "RECOVERED1",
+      failedPhase: "mapping",
+      mappingRecovery: {
+        schemaVersion: 1,
+        itemId: added.record.id,
+        zoteroItemKey: "RECOVERED1",
+        noteKeys: {},
+        attachments: {},
+        updatedAt: new Date().toISOString(),
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const plan = await planZoteroSink({
+      workspaceRoot,
+      itemId: added.record.id,
+      markdownMode: "none",
+    });
+    expect(plan.existingZoteroItemKey).toBe("RECOVERED1");
+    expect(plan.actions.map((action) => action.action)).toEqual(["update_item"]);
+
+    const client: ZoteroToolClient = {
+      async callTool(name, args) {
+        if (name === "zotero_write" && args.dryRun === false) {
+          return { itemKey: "RECOVERED1" };
+        }
+        if (name === "zotero_read") return { ok: true, key: "RECOVERED1" };
+        return { ok: true };
+      },
+    };
+    const preview = await previewZoteroSink({ plan, settings, client });
+    const applied = await applyZoteroSink({
+      plan,
+      settings,
+      acknowledgedPreviewDigest: preview.previewDigest,
+      client,
+    });
+    expect(applied.receipt.status).toBe("complete");
+    await expect(readZoteroItemMapping(workspaceRoot, added.record.id)).resolves.toMatchObject({
+      zoteroItemKey: "RECOVERED1",
+    });
+  });
+
+  it("rejects a stale create plan before any remote call when a mapping appeared concurrently", async () => {
+    const { workspaceRoot, plan } = await fixturePlan();
+    const previewClient: ZoteroToolClient = { callTool: async () => ({ ok: true }) };
+    const preview = await previewZoteroSink({ plan, settings, client: previewClient });
+    await writeZoteroItemMapping(workspaceRoot, {
+      schemaVersion: 1,
+      itemId: plan.itemId,
+      zoteroItemKey: "CONCURRENT1",
+      noteKeys: {},
+      attachments: {},
+      updatedAt: new Date().toISOString(),
+    });
+    const callTool = vi.fn(async () => ({ ok: true }));
+
+    await expect(applyZoteroSink({
+      plan,
+      settings,
+      acknowledgedPreviewDigest: preview.previewDigest,
+      client: { callTool },
+    })).rejects.toThrow("Stale Zotero create plan");
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it("records a pending receipt for a bound workspace without a configured Zotero host", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paper-search-zotero-pending-"));
+    roots.push(workspaceRoot);
+    const added = await addResourceToWorkspace(workspaceRoot, {
+      item: { itemType: "journalArticle", title: "Pending projection" },
+      defaultCollectionPath: "Inbox",
+    });
+    const config = {
+      ...DEFAULT_CONFIG,
+      workspace: { ...DEFAULT_CONFIG.workspace, root: workspaceRoot },
+      zoteroBinding: { mode: "bound" as const, collectionKeys: ["COLLECTION1"] },
+      meta: null as never,
+    } satisfies ResolvedConfig;
+    await expect(syncSelectedItemToZotero({
+      config,
+      itemId: added.record.id,
+    })).resolves.toEqual({ status: "pending", reason: "zotero_not_configured" });
+    const receipts = await readdir(path.join(workspaceRoot, "zotero", "receipts"));
+    expect(receipts).toHaveLength(1);
+    await expect(readFile(path.join(workspaceRoot, "zotero", "receipts", receipts[0]!), "utf8"))
+      .resolves.toContain('"status": "pending"');
+
+    const offConfig = { ...config, zoteroBinding: { mode: "off" as const } };
+    await expect(syncSelectedItemToZotero({
+      config: offConfig,
+      itemId: added.record.id,
+    })).resolves.toEqual({ status: "not_requested" });
+    await expect(readdir(path.join(workspaceRoot, "zotero", "receipts"))).resolves.toHaveLength(1);
   });
 });

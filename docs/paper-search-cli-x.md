@@ -66,6 +66,9 @@ artifactRoot = "~/.paper-search/storage/artifacts"
 extractionRoot = "~/.paper-search/storage/extractions"
 exportRoot = "~/.paper-search/exports"
 
+[material]
+downloadDisposition = "selected" # selected | materialized
+
 [runs]
 root = "~/.paper-search/runs"
 maxAgeDays = -1
@@ -75,6 +78,11 @@ recordByDefault = true
 Changing one root affects future writes; it does not reinterpret existing
 workspace-relative `path` fields. New material outputs retain a versioned local
 storage reference with the captured root and a contained relative key.
+
+`selected` is the default download disposition. Paper Search selects only after
+artifact bytes are committed, reusing an existing workspace item with the same
+DOI, source id, or URL. `materialized` keeps the artifact standalone. Direct
+extraction does not select a resource.
 
 Use the managed export path when an export should live below the configured
 export root:
@@ -298,17 +306,48 @@ source into `storage.artifactRoot`, records its storage reference and digest,
 then passes the managed artifact to an extractor that advertises `artifact`
 input support. The caller's source file is not changed. In contrast, direct
 `extract <local-file>` reads the supplied path without adding a managed
-artifact copy.
+artifact copy. If extraction fails after the artifact commit, the failed
+envelope returns the existing artifact id/path and one `paper-search extract
+<artifact-id> ...` recovery command; do not ingest or download the file again.
 
 Paper Search reports technical provider prerequisites and provenance. It does
 not decide licensing, entitlement, legality, or jurisdiction for the user.
 
-## Export bibliographic data to Zotero explicitly
+## Project selected resources to Zotero optionally
 
 Zotero is optional. Paper Search remains usable without it, and local workspace
-records and material files remain authoritative. The Zotero sink is a CLI-only
-host write; it is not a canonical tool, MCP operation, batch row, workspace
-default, or automatic search/material side effect.
+records and material files remain authoritative. The conventional user config
+owns the Zotero MCP Neo endpoint and global defaults:
+
+```toml
+[zotero]
+enabled = true
+endpoint = "http://127.0.0.1:23120/mcp"
+timeoutMs = 15000
+unavailable = "warn"
+syncOnSelected = true
+collectionKeys = ["PERSONAL"]
+attachmentMode = "link" # none | link | import
+markdownMode = "note"   # none | note | link | import
+```
+
+A project config may inherit, disable, or replace that selected-item policy:
+
+```toml
+[zoteroBinding]
+mode = "bound" # inherit | off | bound
+collectionKeys = ["PROJECT", "SHARED"]
+attachmentMode = "import"
+markdownMode = "note"
+```
+
+`bound` makes the workspace collection list exact; it does not change the
+item's scientific category. `off` suppresses automatic projection only for that
+workspace. `inherit` follows the global `syncOnSelected` policy. Search hits do
+not trigger Zotero; explicit `resource-add` (including an explicit batch add)
+and successful selected downloads do. If Zotero is unavailable or not
+configured, the local operation succeeds and a pending receipt is retained
+below `workspace.root/zotero/receipts/`.
 
 ```bash
 # Local plan: no remote request and no write
@@ -319,18 +358,29 @@ paper-search zotero sink <item-id> --preview
 
 # Apply only with the exact preview digest
 paper-search zotero sink <item-id> --apply --ack <preview-digest>
+
+# Bind an existing item, use two existing collections, and link local files
+paper-search zotero sink <item-id> --zotero-item-key ABCD1234 \
+  --collection-key PROJECT --collection-key SHARED \
+  --attachment-mode link --markdown-mode note
 ```
 
-The sink may create one bibliographic item, render one selected local extraction
-as a child note, and add the item to one existing collection. It does not create
-collections or import PDF, Markdown, JSON, or asset attachments. Unsupported
-metadata and local files are reported as omissions. If the endpoint is
-unavailable, the configured `zotero.unavailable = "error" | "warn"` policy
-applies and the result states that no Zotero write occurred.
+The sink creates or updates one mapped bibliographic item, supports multiple
+existing collections, and can render Markdown as a note or link/import durable
+PDF/Markdown files through Zotero MCP Neo. It never creates collections. A
+durable local mapping prevents the same Paper Search item or attachment from
+being recreated on the next sync. Unsupported metadata and files without a
+durable path remain local and are reported as omissions. The explicit
+plan/preview/apply flow remains available even when automatic selected-item sync
+is disabled. When a new item must be created before its attachment can be
+previewed, the digest binds the attachment template; apply resolves the new item
+key and runs the attachment dry-run immediately before its write.
 
 Multi-step Zotero writes are not atomic. Partial completion reports the created
-item key and failed phase; Paper Search does not automatically retry or roll it
-back.
+item/attachment key and failed phase; Paper Search does not roll it back. A
+later sync uses the durable mapping and receipts to resume without discarding
+the authoritative workspace copy. A returned attachment key is retained even
+when Zotero's post-write verification fails, preventing a blind duplicate retry.
 
 ## Canonical tools and surface boundaries
 

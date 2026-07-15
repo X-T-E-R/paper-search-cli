@@ -8,9 +8,9 @@ import { planMaterialIngest, runMaterialIngest } from "../material/ingest.js";
 import { planResourcePdfCompatibility, runResourcePdfCompatibility } from "../material/resourcePdf.js";
 import type { PatentDetailResult, ResourceItem } from "../providers/sdk/types.js";
 import {
-  addResourceToWorkspace,
   type WorkspaceDetailPayload,
 } from "../workspace/store.js";
+import { selectResourceIntoWorkspace } from "../workspace/selection.js";
 import { failEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import { runCanonicalTool } from "../surface/toolRunner.js";
 
@@ -649,7 +649,7 @@ async function executeDirectAdd(
   const tags = Array.isArray(args.tags)
     ? args.tags.map((tag) => String(tag))
     : parseTags(typeof args.tags === "string" ? args.tags : undefined);
-  return addResourceToWorkspace(config.workspace.root, {
+  const selected = await selectResourceIntoWorkspace(config, {
     item: isRecord(args.item) ? (args.item as unknown as ResourceItem) : undefined,
     detail: isRecord(args.detail) ? (args.detail as WorkspaceDetailPayload) : undefined,
     url: typeof args.url === "string" ? args.url : undefined,
@@ -659,6 +659,10 @@ async function executeDirectAdd(
     tags,
     fetchPdf: args.fetchPDF === true || args.fetchPdf === true,
     defaultCollectionPath: config.workspace.defaultCollection,
+  });
+  return cleanObject({
+    ...selected.workspace,
+    zoteroSync: selected.zoteroSync.status === "not_requested" ? undefined : selected.zoteroSync.status,
   });
 }
 
