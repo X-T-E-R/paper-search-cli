@@ -20,6 +20,23 @@ function assertInside(root: string, candidate: string, label: string): void {
   fail(`${label} escapes local storage root`);
 }
 
+function isMissingPath(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+const WINDOWS_RESERVED_SEGMENT_RE = /^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$/iu;
+
+function isPortableLocalStorageSegment(segment: string): boolean {
+  return (
+    segment !== "" &&
+    segment !== "." &&
+    segment !== ".." &&
+    !/[<>:"|?*\x00-\x1F\x7F]/u.test(segment) &&
+    !/[ .]$/u.test(segment) &&
+    !WINDOWS_RESERVED_SEGMENT_RE.test(segment)
+  );
+}
+
 export function normalizeLocalStorageKey(value: string): string {
   if (typeof value !== "string" || value.length === 0 || value.includes("\0")) {
     fail("Local storage key must be a non-empty portable relative path");
@@ -28,7 +45,7 @@ export function normalizeLocalStorageKey(value: string): string {
   if (
     portable.startsWith("/") ||
     /^[A-Za-z]:/u.test(portable) ||
-    portable.split("/").some((segment) => !segment || segment === "." || segment === "..")
+    portable.split("/").some((segment) => !isPortableLocalStorageSegment(segment))
   ) {
     fail(`Unsafe local storage key: ${value}`);
   }
@@ -70,10 +87,90 @@ export function parseLocalStorageRef(value: unknown, label = "storage"): LocalSt
   };
 }
 
-async function ensureSafeTarget(root: string, key: string): Promise<{ root: string; target: string }> {
+async function inspectExistingLocalStorageTarget(
+  root: string,
+  key: string,
+  options: { rejectExistingTarget: boolean },
+): Promise<{ root: string; target: string }> {
   const normalizedRoot = path.resolve(root);
-  const target = path.resolve(normalizedRoot, ...normalizeLocalStorageKey(key).split("/"));
+  const normalizedKey = normalizeLocalStorageKey(key);
+  const target = path.resolve(normalizedRoot, ...normalizedKey.split("/"));
   assertInside(normalizedRoot, target, "Local storage target");
+
+  let rootStat;
+  try {
+    rootStat = await lstat(normalizedRoot);
+  } catch (error) {
+    if (isMissingPath(error)) return { root: normalizedRoot, target };
+    throw error;
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    fail("Local storage root must be a real directory");
+  }
+
+  const rootReal = await realpath(normalizedRoot);
+  const relativeParent = path.relative(normalizedRoot, path.dirname(target));
+  let current = normalizedRoot;
+  for (const segment of relativeParent ? relativeParent.split(path.sep) : []) {
+    current = path.join(current, segment);
+    let currentStat;
+    try {
+      currentStat = await lstat(current);
+    } catch (error) {
+      if (isMissingPath(error)) return { root: normalizedRoot, target };
+      throw error;
+    }
+    if (currentStat.isSymbolicLink() || !currentStat.isDirectory()) {
+      fail(`Local storage parent must be a real directory: ${segment}`);
+    }
+    assertInside(rootReal, await realpath(current), "Local storage target parent");
+  }
+
+  let targetStat;
+  try {
+    targetStat = await lstat(target);
+  } catch (error) {
+    if (isMissingPath(error)) return { root: normalizedRoot, target };
+    throw error;
+  }
+  if (targetStat.isSymbolicLink()) {
+    fail(`Local storage target must not be a symlink: ${normalizedKey}`);
+  }
+  assertInside(rootReal, await realpath(target), "Local storage target");
+  if (options.rejectExistingTarget) {
+    fail(`Local storage target already exists: ${normalizedKey}`);
+  }
+  return { root: normalizedRoot, target };
+}
+
+/** Validate and resolve a future local-storage write without creating directories or files. */
+export async function planLocalStorageWrite(options: {
+  root: string;
+  key: string;
+  area: LocalStorageArea;
+}): Promise<{ ref: LocalStorageRefV1; path: string }> {
+  const key = normalizeLocalStorageKey(options.key);
+  const inspected = await inspectExistingLocalStorageTarget(options.root, key, {
+    rejectExistingTarget: true,
+  });
+  return {
+    path: inspected.target,
+    ref: {
+      schemaVersion: 1,
+      sink: "local",
+      area: options.area,
+      root: inspected.root,
+      key,
+    },
+  };
+}
+
+async function ensureSafeTarget(root: string, key: string): Promise<{ root: string; target: string }> {
+  const inspected = await inspectExistingLocalStorageTarget(root, key, {
+    rejectExistingTarget: true,
+  });
+  const normalizedRoot = inspected.root;
+  const target = inspected.target;
   await mkdir(normalizedRoot, { recursive: true });
   const rootStat = await lstat(normalizedRoot);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) fail("Local storage root must be a real directory");
@@ -106,21 +203,10 @@ async function ensureSafeTarget(root: string, key: string): Promise<{ root: stri
 
 export async function resolveLocalStorageRef(ref: LocalStorageRefV1): Promise<string> {
   const parsed = parseLocalStorageRef(ref);
-  const root = path.resolve(parsed.root);
-  const target = path.resolve(root, ...parsed.key.split("/"));
-  assertInside(root, target, "Local storage reference");
-  try {
-    const [rootReal, parentReal] = await Promise.all([realpath(root), realpath(path.dirname(target))]);
-    assertInside(rootReal, parentReal, "Local storage reference parent");
-    const targetStat = await lstat(target);
-    if (targetStat.isSymbolicLink()) fail(`Local storage reference target must not be a symlink: ${parsed.key}`);
-    const targetReal = await realpath(target);
-    assertInside(rootReal, targetReal, "Local storage reference");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return target;
-    throw error;
-  }
-  return target;
+  const inspected = await inspectExistingLocalStorageTarget(parsed.root, parsed.key, {
+    rejectExistingTarget: false,
+  });
+  return inspected.target;
 }
 
 /** Resolve an unchanged legacy workspace-relative path without treating it as a storage ref. */

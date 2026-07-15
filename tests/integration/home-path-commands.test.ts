@@ -47,6 +47,7 @@ describe("unified-home diagnostic commands", () => {
       configRoot: home,
       dataRoot: home,
       managedBinRoot: path.join(home, "bin"),
+      registries: path.join(home, "cache", "registries"),
       workspace: path.join(home, "workspace"),
       runs: path.join(home, "runs"),
       configLocationMigration: { status: "pending", selectedSource: legacy },

@@ -390,7 +390,7 @@ function inferArtifactKind(contentType: string | undefined, filename: string | u
   return "bytes";
 }
 
-function sanitizeFilename(value: string | undefined): string {
+export function sanitizeArtifactFilename(value: string | undefined): string {
   const cleaned = (value ?? "")
     .replace(/[<>:"/\\|?*\x00-\x1F]/gu, "_")
     .replace(/\s+/gu, " ")
@@ -447,7 +447,7 @@ function parseProviderDownloadResult(value: unknown, sourceUrl: string): Provide
   const remoteUrl = optionalString(value.remoteUrl, "remoteUrl") ?? sourceUrl;
   if (!isHttpUrl(remoteUrl)) fail("download().remoteUrl must be an http(s) URL when provided");
   const contentType = optionalString(value.contentType, "contentType");
-  const filename = sanitizeFilename(optionalString(value.filename, "filename") ?? filenameFromUrl(remoteUrl));
+  const filename = sanitizeArtifactFilename(optionalString(value.filename, "filename") ?? filenameFromUrl(remoteUrl));
   const kind = artifactKindFromValue(value.kind, inferArtifactKind(contentType, filename));
   const status = optionalNumber(value.status, "status");
   const message = optionalString(value.message, "message");
@@ -540,7 +540,7 @@ function artifactRecordInput(options: {
     options.sourceUrl ?? options.resolvedInput.sourceUrl ?? options.resolvedInput.identifier?.value;
   const filename = downloaded
     ? options.providerResult!.filename
-    : sanitizeFilename(
+    : sanitizeArtifactFilename(
         filenameFromUrl(effectiveSourceUrl ?? "") ?? options.resolvedInput.identifier?.value ?? "artifact.bin",
       );
   const kind = downloaded
@@ -892,7 +892,7 @@ export async function runArtifactDownload(
       provider,
       downloadMethod,
     });
-    let filename = sanitizeFilename(options.filename ?? funnelResult.providerResult.filename);
+    let filename = sanitizeArtifactFilename(options.filename ?? funnelResult.providerResult.filename);
     if (options.filename && funnelResult.providerResult.kind === "pdf" && !/\.pdf$/iu.test(filename)) {
       filename = `${filename}.pdf`;
     }

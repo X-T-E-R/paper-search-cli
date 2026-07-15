@@ -21,8 +21,9 @@ below `~/.paper-search/`:
   adapters/
   bin/
   providers/
-  registries/
   cache/
+    registries/
+    archives/
   state/
   runs/
   workspace/
@@ -64,6 +65,19 @@ maxAgeDays = -1
 Changing one root affects future writes; it does not reinterpret existing
 workspace-relative `path` fields. New material outputs retain a versioned local
 storage reference with the captured root and a contained relative key.
+
+Use the managed export path when an export should live below the configured
+export root:
+
+```bash
+paper-search workspace-export --store reports/library.jsonl --dry-run --json
+paper-search workspace-export --store reports/library.jsonl --json
+```
+
+`--store` accepts a safe relative key, never overwrites an existing target, and
+writes through the same versioned local-storage contract as material outputs.
+`--out` remains an explicit caller-relative path; with neither option the
+export remains on stdout.
 
 `maxAgeDays = -1` means age alone never makes a run eligible for pruning. A
 positive value supplies the cutoff used by an explicit prune plan. Paper Search
@@ -217,6 +231,13 @@ and Markdown, structured output, or assets are produced through an extractor
 provider. The compatibility commands `resource-pdf`, `resource_pdf`, and `pdf`
 use the same provider-mediated artifact path; they do not restore a core HTTP
 download fallback.
+
+`material ingest <local-file>` is the durable local-file path: it copies the
+source into `storage.artifactRoot`, records its storage reference and digest,
+then passes the managed artifact to an extractor that advertises `artifact`
+input support. The caller's source file is not changed. In contrast, direct
+`extract <local-file>` reads the supplied path without adding a managed
+artifact copy.
 
 Paper Search reports technical provider prerequisites and provenance. It does
 not decide licensing, entitlement, legality, or jurisdiction for the user.

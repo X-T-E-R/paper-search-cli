@@ -53,7 +53,8 @@ The default path classes are distinct:
 - `workspace/` owns local bibliographic and material metadata records;
 - `storage/artifacts/` owns acquired bytes such as PDFs;
 - `storage/extractions/` owns Markdown, structured output, and assets;
-- `exports/` owns implicit portable export targets where supported; and
+- `exports/` owns explicit managed portable exports written with
+  `workspace-export --store`; and
 - `runs/` owns private local execution history and checkpoints.
 
 `workspace.root`, `storage.artifactRoot`, `storage.extractionRoot`,
@@ -361,6 +362,11 @@ Artifact records live under the workspace root at
 root, contained key, and digest/size when available. Legacy record paths retain
 their original workspace-relative meaning.
 
+When `material ingest` receives a local file, it preserves the caller's file,
+copies the bytes into the configured artifact root, commits the versioned
+storage reference, and then addresses the managed artifact by id for extraction.
+Direct `extract <path>` remains path-based and does not create an artifact.
+
 ### Extraction Records
 
 An `ExtractionRecord` represents derived output from an artifact, local file, or
@@ -400,7 +406,11 @@ meaning.
 - `resource-pdf` acquires or records a PDF for an existing workspace item id
   through the installed material-provider path and remains available as `pdf`.
 - `collection-list` reads the local collection tree from `collections.json`.
-- `workspace-export` writes portable JSON, JSONL, CSV, or BibTeX.
+- `workspace-export` writes portable JSON, JSONL, CSV, or BibTeX. With no file
+  option it writes to stdout; `--out` keeps its explicit caller-relative
+  semantics; `--store <safe-relative-key>` writes atomically below
+  `storage.exportRoot`, and `--store ... --dry-run` validates and reports the
+  target without writing.
 - Workspace mutations are serialized per root so concurrent batch adds do not
   corrupt collection state.
 - `collections.json` is read fail-closed: malformed data or read errors are
@@ -415,7 +425,8 @@ meaning.
 - `artifact list` and `artifact show` inspect artifact records.
 - `extract <artifactId|path|url>` produces extraction records and output files.
 - `material ingest <path|url|itemKey|doi>` plans or runs acquisition plus
-  extraction.
+  extraction. A local path is copied into managed artifact storage before the
+  extractor receives it as an artifact.
 - `material status <itemKey|artifactId|extractionId>` reports related artifacts
   and extracted outputs.
 - `batch` can run `artifact_download`, `extract`, and `material_ingest` rows and

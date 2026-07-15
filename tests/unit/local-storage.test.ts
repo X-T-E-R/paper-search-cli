@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   normalizeLocalStorageKey,
+  planLocalStorageWrite,
   resolveLocalStorageRef,
   writeLocalStorageBytes,
 } from "../../src/storage/local.js";
@@ -44,11 +45,24 @@ describe("versioned local storage references", () => {
     await expect(resolveLocalStorageRef(stored.ref)).resolves.toBe(stored.path);
   });
 
-  it("rejects absolute, traversal, and duplicate target keys", async () => {
+  it("rejects non-portable, absolute, traversal, and duplicate target keys", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "paper-search-storage-reject-"));
     roots.push(parent);
-    expect(() => normalizeLocalStorageKey("../escape.pdf")).toThrow("Unsafe local storage key");
-    expect(() => normalizeLocalStorageKey("C:\\escape.pdf")).toThrow("Unsafe local storage key");
+    for (const key of [
+      "../escape.pdf",
+      "C:\\escape.pdf",
+      "reports/report.json:stream",
+      "reports/CON",
+      "reports/nul.txt",
+      "reports/trailing.",
+      "reports/trailing ",
+      "reports/control\u0001.json",
+    ]) {
+      expect(() => normalizeLocalStorageKey(key)).toThrow("Unsafe local storage key");
+    }
+    expect(normalizeLocalStorageKey("reports/research results.jsonl")).toBe(
+      "reports/research results.jsonl",
+    );
 
     const options = {
       root: path.join(parent, "root"),
@@ -78,6 +92,34 @@ describe("versioned local storage references", () => {
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
     const stored = await readFile(path.join(options.root, options.key), "utf8");
     expect(["first", "second"]).toContain(stored);
+  });
+
+  it("rejects an existing ancestor symlink before planning a deeper missing target", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "paper-search-storage-plan-link-"));
+    roots.push(parent);
+    const root = path.join(parent, "root");
+    const outside = path.join(parent, "outside");
+    await mkdir(root);
+    await mkdir(outside);
+    await symlink(
+      outside,
+      path.join(root, "linked"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    await expect(planLocalStorageWrite({
+      root,
+      key: "linked/not-created/export.json",
+      area: "export",
+    })).rejects.toThrow("Local storage parent must be a real directory: linked");
+    await expect(writeLocalStorageBytes({
+      root,
+      key: "linked/not-created/export.json",
+      area: "export",
+      bytes: Buffer.from("must-not-escape"),
+    })).rejects.toThrow("Local storage parent must be a real directory: linked");
+    await expect(readFile(path.join(outside, "not-created", "export.json"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps legacy workspace-relative record paths distinct from new captured roots", async () => {

@@ -333,7 +333,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "workspace_export",
     description:
-      "Export local workspace items as JSON, JSONL, CSV, or BibTeX. This is a portable local export sink.",
+      "Export local workspace items as JSON, JSONL, CSV, or BibTeX. The CLI may explicitly write through the managed export root.",
     inputSchema: {
       type: "object",
       properties: {
@@ -557,7 +557,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "material_ingest",
     description:
-      "Run or plan the material workflow from a file, URL, or workspace item through artifact and extraction primitives.",
+      "Run or plan the material workflow from a file, URL, or workspace item through managed artifact and extraction primitives.",
     inputSchema: {
       type: "object",
       properties: {

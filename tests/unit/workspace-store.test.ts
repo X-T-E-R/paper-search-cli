@@ -381,4 +381,70 @@ describe("workspace store", () => {
     expect(bibtex.content).toContain("author = {Ada Lovelace}");
     expect(bibtex.content).toContain("doi = {10.1234/export}");
   });
+
+  it("exports a missing workspace without creating any workspace state", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-missing-"));
+    tempDirs.push(parent);
+    const root = path.join(parent, "workspace");
+
+    const result = await exportWorkspaceItems(root, { format: "json" });
+
+    expect(result).toMatchObject({
+      format: "json",
+      workspaceRoot: path.resolve(root),
+      count: 0,
+      items: [],
+    });
+    await expect(readdir(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails export when a workspace item contains malformed JSON", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-corrupt-"));
+    tempDirs.push(root);
+    const itemsDir = path.join(root, "items");
+    await mkdir(itemsDir);
+    const itemPath = path.join(itemsDir, "broken.json");
+    const malformed = '{"id":"broken"';
+    await writeFile(itemPath, malformed, "utf8");
+
+    await expect(exportWorkspaceItems(root, { format: "json" })).rejects.toBeInstanceOf(SyntaxError);
+    await expect(readFile(itemPath, "utf8")).resolves.toBe(malformed);
+  });
+
+  it("tolerates an item deleted after its collection index was written", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-deleted-"));
+    tempDirs.push(root);
+    await writeFile(
+      path.join(root, "collections.json"),
+      JSON.stringify({
+        collections: [
+          {
+            key: "inbox",
+            name: "Inbox",
+            parentKey: null,
+            path: "Inbox",
+            itemIds: ["deleted-item"],
+            createdAt: "2026-07-15T00:00:00.000Z",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    await expect(
+      exportWorkspaceItems(root, { format: "json", collectionPath: "Inbox" }),
+    ).resolves.toMatchObject({ count: 0, items: [] });
+  });
+
+  it("fails export when the workspace items path is not a directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-not-dir-"));
+    tempDirs.push(root);
+    const itemsPath = path.join(root, "items");
+    await writeFile(itemsPath, "not a directory", "utf8");
+
+    await expect(exportWorkspaceItems(root, { format: "json" })).rejects.toMatchObject({
+      code: "ENOTDIR",
+    });
+    await expect(readFile(itemsPath, "utf8")).resolves.toBe("not a directory");
+  });
 });

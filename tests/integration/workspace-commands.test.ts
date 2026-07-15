@@ -1,10 +1,29 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildProgram } from "../../src/program.js";
 
 const tempDirs: string[] = [];
+
+async function runCli(
+  cwd: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
+  let stdout = "";
+  let stderr = "";
+  const originalCwd = process.cwd();
+  process.chdir(cwd);
+  try {
+    await buildProgram({
+      stdout: { write(chunk: string) { stdout += chunk; } },
+      stderr: { write(chunk: string) { stderr += chunk; } },
+    }).exitOverride().parseAsync(["node", "paper-search", ...args]);
+  } finally {
+    process.chdir(originalCwd);
+  }
+  return { stdout, stderr };
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -249,5 +268,201 @@ describe("workspace commands", () => {
     } finally {
       process.chdir(originalCwd);
     }
+  });
+
+  it("writes --store exports through the configured managed export root", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-store-"));
+    tempDirs.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    const exportRoot = path.join(root, "configured-exports");
+    await writeFile(
+      path.join(root, "paper-search.toml"),
+      [
+        "[workspace]",
+        `root = \"${workspaceRoot.replace(/\\/g, "\\\\")}\"`,
+        'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `exportRoot = \"${exportRoot.replace(/\\/g, "\\\\")}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await runCli(root, [
+      "resource-add",
+      "--url",
+      "https://example.com/managed-export",
+      "--title",
+      "Managed Export Resource",
+      "--json",
+    ]);
+
+    const stored = await runCli(root, [
+      "workspace-export",
+      "--store",
+      "reports/research.jsonl",
+      "--json",
+    ]);
+    expect(stored.stderr).toBe("");
+    const envelope = JSON.parse(stored.stdout);
+    const expectedPath = path.join(exportRoot, "reports", "research.jsonl");
+    expect(envelope).toMatchObject({
+      ok: true,
+      capability: "organize",
+      tool: "workspace_export",
+      data: {
+        out: expectedPath,
+        format: "jsonl",
+        count: 1,
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "export",
+          root: exportRoot,
+          key: "reports/research.jsonl",
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          sizeBytes: expect.any(Number),
+        },
+      },
+      diagnostics: {
+        exportRoot,
+        out: expectedPath,
+      },
+    });
+    expect((await readFile(expectedPath, "utf8")).trim()).toContain("Managed Export Resource");
+  });
+
+  it("plans --store without writing and rejects unsafe keys", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-store-plan-"));
+    tempDirs.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    const exportRoot = path.join(root, "not-created-exports");
+    await writeFile(
+      path.join(root, "paper-search.toml"),
+      [
+        "[workspace]",
+        `root = \"${workspaceRoot.replace(/\\/g, "\\\\")}\"`,
+        'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `exportRoot = \"${exportRoot.replace(/\\/g, "\\\\")}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const planned = await runCli(root, [
+      "workspace-export",
+      "--store",
+      "plans/export.csv",
+      "--dry-run",
+      "--json",
+    ]);
+    expect(planned.stderr).toBe("");
+    expect(JSON.parse(planned.stdout)).toMatchObject({
+      ok: true,
+      planned: true,
+      capability: "organize",
+      tool: "workspace_export",
+      data: {
+        out: path.join(exportRoot, "plans", "export.csv"),
+        format: "csv",
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "export",
+          root: exportRoot,
+          key: "plans/export.csv",
+        },
+      },
+    });
+    await expect(readFile(path.join(exportRoot, "plans", "export.csv"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(stat(exportRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const outside = path.join(root, "outside-exports");
+    await mkdir(exportRoot);
+    await mkdir(outside);
+    await symlink(
+      outside,
+      path.join(exportRoot, "linked"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await expect(runCli(root, [
+      "workspace-export",
+      "--store",
+      "linked/not-created/export.json",
+      "--dry-run",
+      "--json",
+    ])).rejects.toThrow("Local storage parent must be a real directory: linked");
+    await expect(stat(path.join(outside, "not-created"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    await expect(runCli(root, [
+      "workspace-export",
+      "--store",
+      "../escape.json",
+      "--dry-run",
+      "--json",
+    ])).rejects.toThrow("Unsafe local storage key");
+    for (const unsafeKey of ["reports/report.json:stream", "reports/CON", "reports/trailing."]) {
+      await expect(runCli(root, [
+        "workspace-export",
+        "--store",
+        unsafeKey,
+        "--dry-run",
+        "--json",
+      ])).rejects.toThrow("Unsafe local storage key");
+    }
+    await expect(readFile(path.join(root, "escape.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects --store collisions atomically and forbids combining --store with --out", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-store-collision-"));
+    tempDirs.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    const exportRoot = path.join(root, "exports");
+    await writeFile(
+      path.join(root, "paper-search.toml"),
+      [
+        "[workspace]",
+        `root = \"${workspaceRoot.replace(/\\/g, "\\\\")}\"`,
+        'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `exportRoot = \"${exportRoot.replace(/\\/g, "\\\\")}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await runCli(root, ["workspace-export", "--store", "stable/export.json", "--json"]);
+    const storedPath = path.join(exportRoot, "stable", "export.json");
+    const original = await readFile(storedPath, "utf8");
+    await expect(runCli(root, [
+      "workspace-export",
+      "--store",
+      "stable/export.json",
+      "--json",
+    ])).rejects.toThrow("Local storage target already exists");
+    await expect(runCli(root, [
+      "workspace-export",
+      "--store",
+      "stable/export.json",
+      "--dry-run",
+      "--json",
+    ])).rejects.toThrow("Local storage target already exists");
+    expect(await readFile(storedPath, "utf8")).toBe(original);
+
+    const explicitOut = path.join(root, "explicit.json");
+    await expect(runCli(root, [
+      "workspace-export",
+      "--store",
+      "other/export.json",
+      "--out",
+      explicitOut,
+    ])).rejects.toThrow("--store and --out are mutually exclusive");
+    await expect(readFile(explicitOut, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

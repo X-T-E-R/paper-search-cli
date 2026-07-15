@@ -47,7 +47,7 @@ export const CLI_TOOL_MAPPINGS: CliToolMapping[] = [
   {
     tool: "workspace_export",
     commands: ["workspace-export", "resource-export", "resource_export"],
-    note: "Exports local workspace records as JSON, JSONL, CSV, or BibTeX.",
+    note: "Exports workspace records; CLI --store writes through the configured managed export root.",
   },
   {
     tool: "resource_pdf",
@@ -77,7 +77,7 @@ export const CLI_TOOL_MAPPINGS: CliToolMapping[] = [
   {
     tool: "material_ingest",
     commands: ["material ingest"],
-    note: "Orchestrates artifact acquisition and extraction through the shared material primitives.",
+    note: "Orchestrates managed artifact acquisition and extraction; local files are copied into artifact storage.",
   },
   {
     tool: "material_status",

@@ -63,7 +63,11 @@ explicit `zotero sink` handoff.
 5. Add selected records explicitly. Do not auto-ingest all discovery or graph
    results.
 6. Discover material providers and run `--dry-run` before PDF acquisition,
-   extraction, or ingest. Core has no source-specific network fallback.
+   extraction, or ingest. Local-file ingest copies the source into managed
+   artifact storage and therefore needs an extractor that advertises the
+   `artifact` input kind. Direct
+   path extraction does not create that copy. Core has no source-specific
+   network fallback.
 7. Use `assess plan` or `assess run` only with an exact snapshot checksum. Read
    conflicts and the policy trace; do not treat assessment as a ranking oracle.
 8. If requested, use `zotero sink` plan, preview, and digest-acknowledged apply.

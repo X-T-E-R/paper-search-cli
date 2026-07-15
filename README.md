@@ -171,8 +171,8 @@ Default local records and outputs are separated by purpose:
   config.toml              config.d/
   subscriptions.toml       credentials.toml
   external-search.toml     adapters/
-  providers/               registries/
-  cache/                   state/
+  providers/               cache/registries/
+  cache/archives/          state/
   workspace/               runs/
   storage/artifacts/       storage/extractions/
   exports/
@@ -185,6 +185,12 @@ workspace-relative meaning. The default `runs.maxAgeDays = -1` disables
 age-based eligibility; Paper Search never prunes runs opportunistically during
 another command. Durable history is private local plaintext and may therefore
 be retained indefinitely until you explicitly run `runs prune --apply`.
+
+`workspace-export --store <safe-relative-key>` is the managed export path: it
+writes atomically below `storage.exportRoot`, rejects an existing target, and
+supports `--dry-run`. The existing `--out <path>` remains an explicit
+caller-working-directory path, while omitting both options continues to write
+the export to stdout.
 
 Effective values use this precedence, from lowest to highest:
 
@@ -535,6 +541,8 @@ paper-search resource-add --item-file ./search.json --index 0 --collection-path 
 paper-search resource-pdf <workspace-item-id> --url https://example.org/paper.pdf --filename paper.pdf --json
 paper-search collection-list --flat --json
 paper-search workspace-export --collection-path Research --include-children --out ./paper-search-export.bib --json
+paper-search workspace-export --collection-path Research --store reports/research.bib --dry-run --json
+paper-search workspace-export --collection-path Research --store reports/research.bib --json
 ```
 
 `lookup` is the recommended step before `resource-add` when you already have a
@@ -578,6 +586,14 @@ candidate feeds the normal download path in order. Dry-run plans list the
 `load-resolver` and `run-resolver` steps, resolver failures are typed as
 `no_resolver`, `no_candidates`, or `resolver_error`, and resolved acquisitions
 record `resolverProviderId` and `resolverSource` in artifact provenance.
+
+For `material ingest <local-file>`, Paper Search preserves the source file and
+copies its bytes into `storage.artifactRoot` before committing the artifact
+record. The record contains a versioned storage reference, digest, and byte
+size, and extraction consumes that managed artifact. An extractor used by this
+orchestrated local-ingest path must advertise `artifact` input support. Direct
+`extract <local-file>` remains available for a one-off path-based extraction and
+does not copy the source into artifact storage.
 
 ```bash
 paper-search artifact download 10.1038/nature12373 --resolver unpaywall --dry-run --json

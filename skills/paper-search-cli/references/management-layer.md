@@ -66,6 +66,10 @@ the default cutoff for the explicit prune plan; it does not schedule deletion.
 Durable history is sanitized private local plaintext and may be retained
 indefinitely.
 
+`storage.exportRoot` is consumed only by the explicit managed export form,
+`workspace-export --store <safe-relative-key>`. Use `--dry-run` to inspect its
+resolved target. The existing `--out` option is not relocated under this root.
+
 ```bash
 node scripts/paper-search.mjs runs list
 node scripts/paper-search.mjs runs show <id>

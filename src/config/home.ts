@@ -62,7 +62,7 @@ export function resolvePaperSearchPaths(
     adaptersRoot: path.join(home, "adapters"),
     binRoot: path.join(home, "bin"),
     providersRoot: path.join(home, "providers"),
-    registriesRoot: path.join(home, "registries"),
+    registriesRoot: path.join(home, "cache", "registries"),
     cacheRoot: path.join(home, "cache"),
     stateRoot: path.join(home, "state"),
     runsRoot: path.join(home, "runs"),

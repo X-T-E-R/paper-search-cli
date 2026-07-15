@@ -15,6 +15,7 @@ describe("Paper Search conventional home", () => {
     const paths = resolvePaperSearchPaths(env, userHome);
 
     expect(paths.home).toBe(path.join(userHome, ".paper-search"));
+    expect(paths.registriesRoot).toBe(path.join(paths.cacheRoot, "registries"));
     for (const value of Object.values(paths)) {
       expect(path.relative(paths.home, value)).not.toMatch(/^\.\.(?:[\\/]|$)/u);
     }

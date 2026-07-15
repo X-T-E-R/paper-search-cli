@@ -211,11 +211,17 @@ Use `--dry-run` when rows mix search, local writes, or material actions. With `-
 - Workspace records, artifact bytes, extraction outputs, exports, and runs use
   independent resolved roots: `workspace.root`, `storage.artifactRoot`,
   `storage.extractionRoot`, `storage.exportRoot`, and `runs.root`.
+- `workspace-export --store <safe-relative-key>` writes a collision-safe,
+  versioned export below `storage.exportRoot`; add `--dry-run` for a no-write
+  plan. `--out` remains caller-relative, and no file option means stdout.
 - `resource_add` writes normalized resource items to the local workspace sink.
 - `resource_pdf` treats `itemKey` as the workspace item id and uses the same
   provider-mediated artifact path as `artifact_download`.
 - `artifact_download` creates artifact records with source, attempts, policy, provider provenance, local/remote references, and optional workspace item links. DOI-resolved acquisitions also record `provenance.resolverProviderId`, `provenance.resolverSource`, the originating identifier in `resolvedFrom`, and per-candidate resolver attempts.
 - `extract` creates extraction records with source, backend/provider id, options, outputs, cache status, and optional workspace item links.
+- `material_ingest` copies a local-file input into managed artifact storage,
+  records its storage ref/digest/size, and invokes an extractor that supports
+  `artifact` input by artifact id. Direct `extract <path>` remains path-based.
 - `material_status` reports related artifact and extraction ids for a workspace item, artifact, or extraction.
 - `workspace_export` emits portable JSON, JSONL, CSV, or BibTeX files from local workspace records.
 - `research_run`, citation runs, and assessment runs write sanitized private

@@ -4,6 +4,10 @@ import type { Command } from "commander";
 import { loadConfig } from "../config/load.js";
 import type { ResourceItem } from "../providers/sdk/types.js";
 import {
+  planLocalStorageWrite,
+  writeLocalStorageBytes,
+} from "../storage/local.js";
+import {
   addResourceToWorkspace,
   exportWorkspaceItems,
   listWorkspaceCollections,
@@ -244,17 +248,29 @@ export function registerWorkspaceCommands(program: Command, io: Io): void {
     .alias("resource-export")
     .alias("resource_export")
     .description("Export local workspace items as JSON, JSONL, CSV, or BibTeX.")
-    .option("--format <format>", "json, jsonl, csv, or bibtex; defaults to --out extension or json")
-    .option("--out <path>", "write export content to a file instead of stdout")
+    .option("--format <format>", "json, jsonl, csv, or bibtex; defaults to target extension or json")
+    .option("--out <path>", "write export content to an explicit file instead of stdout")
+    .option(
+      "--store <safe-relative-key>",
+      "write through managed local storage below storage.exportRoot",
+    )
+    .option("--dry-run", "plan a managed --store export without writing files")
     .option("--collection-key <key>", "export only one collection key")
     .option("--collection-path <path>", "export only one collection path")
     .option("--include-children", "include child collection paths when filtering by --collection-path")
-    .option("--json", "when --out is used, emit a machine-readable summary")
+    .option("--json", "when a file target is used, emit a machine-readable summary")
     .action(async (options: Record<string, unknown>, command: Command) => {
+      const storeKey = typeof options.store === "string" ? options.store : undefined;
+      const outPath = typeof options.out === "string" ? options.out : undefined;
+      if (storeKey && outPath) {
+        throw new Error("--store and --out are mutually exclusive");
+      }
+      if (options.dryRun === true && !storeKey) {
+        throw new Error("--dry-run requires --store");
+      }
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
-      const outPath = typeof options.out === "string" ? options.out : undefined;
-      const format = resolveExportFormat(options.format, outPath);
+      const format = resolveExportFormat(options.format, outPath ?? storeKey);
       const result = await exportWorkspaceItems(config.workspace.root, {
         format,
         collectionKey: typeof options.collectionKey === "string" ? options.collectionKey : undefined,
@@ -265,6 +281,59 @@ export function registerWorkspaceCommands(program: Command, io: Io): void {
         workspaceRoot: config.workspace.root,
         sourceCounts: { items: result.count },
       });
+
+      if (storeKey) {
+        if (options.dryRun === true) {
+          const planned = await planLocalStorageWrite({
+            root: config.storage.exportRoot,
+            key: storeKey,
+            area: "export",
+          });
+          const envelope = okEnvelope({
+            capability: "organize",
+            tool: "workspace_export",
+            planned: true,
+            data: { ...result, out: planned.path, storage: planned.ref },
+            diagnostics: {
+              workspaceRoot: config.workspace.root,
+              exportRoot: planned.ref.root,
+              out: planned.path,
+              sourceCounts: { items: result.count },
+            },
+          });
+          if (options.json) {
+            io.writeJson(envelope);
+            return;
+          }
+          io.writeLine(
+            `would export ${result.count} item(s) to ${planned.path} as ${result.format}`,
+          );
+          return;
+        }
+
+        const stored = await writeLocalStorageBytes({
+          root: config.storage.exportRoot,
+          key: storeKey,
+          area: "export",
+          bytes: Buffer.from(result.content, "utf8"),
+        });
+        const envelope = workspaceEnvelope(
+          "workspace_export",
+          { ...result, out: stored.path, storage: stored.ref },
+          {
+            workspaceRoot: config.workspace.root,
+            exportRoot: stored.ref.root,
+            out: stored.path,
+            sourceCounts: { items: result.count },
+          },
+        );
+        if (options.json) {
+          io.writeJson(envelope);
+          return;
+        }
+        io.writeLine(`exported ${result.count} item(s) to ${stored.path} as ${result.format}`);
+        return;
+      }
 
       if (outPath) {
         const resolvedOut = path.resolve(outPath);

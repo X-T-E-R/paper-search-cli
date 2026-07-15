@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedConfig } from "../config/schema.js";
+import { planLocalStorageWrite, writeLocalStorageBytes } from "../storage/local.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
 import {
   ARTIFACT_RECORDS_DIR,
   createArtifactRecord,
@@ -8,6 +11,7 @@ import {
 import {
   planArtifactDownload,
   runArtifactDownload,
+  sanitizeArtifactFilename,
   type ArtifactDownloadInputSummary,
 } from "./artifactDownload.js";
 import {
@@ -154,6 +158,24 @@ export interface MaterialIngestExecutionData extends Omit<PlannedOperationData, 
   outputs: MaterialIngestOutputPlan;
 }
 
+/** Managed bytes were committed, but their durable artifact record was not. */
+export interface MaterialIngestOrphanOutcome {
+  outcome: "orphaned";
+  commitStage: "metadata";
+  artifactId: string;
+  artifactPath: string;
+  storage: LocalStorageRefV1;
+  sha256: string;
+  sizeBytes: number;
+  metadataPath: string;
+  error: string;
+}
+
+export type MaterialIngestResultEnvelope = ResultEnvelope<MaterialIngestExecutionData> & {
+  /** Present only when managed local bytes committed but record metadata did not. */
+  orphan?: MaterialIngestOrphanOutcome;
+};
+
 interface ResolvedMaterialIngestInput {
   resource: MaterialIngestResourcePlan;
   attachTo: string | null;
@@ -166,6 +188,13 @@ export class MaterialIngestPlanError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "MaterialIngestPlanError";
+  }
+}
+
+class LocalArtifactMetadataCommitError extends Error {
+  constructor(readonly orphan: MaterialIngestOrphanOutcome) {
+    super(orphan.error);
+    this.name = "LocalArtifactMetadataCommitError";
   }
 }
 
@@ -429,6 +458,22 @@ function plannedJsonPath(extractionRoot: string): string {
   return path.join(plannedExtractionOutputPath(extractionRoot), "result.json");
 }
 
+function localArtifactFilename(localPath: string): string {
+  return sanitizeArtifactFilename(path.basename(localPath));
+}
+
+function localArtifactStorageKey(artifactId: string, filename: string): string {
+  return `${artifactId}/${filename}`;
+}
+
+async function plannedLocalArtifactFilePath(artifactRoot: string, localPath: string): Promise<string> {
+  return (await planLocalStorageWrite({
+    root: artifactRoot,
+    key: localArtifactStorageKey(PLANNED_ARTIFACT_ID, localArtifactFilename(localPath)),
+    area: "artifact",
+  })).path;
+}
+
 function providerPackagePath(
   steps: readonly PlannedOperationStep[],
   providerId: string,
@@ -557,6 +602,7 @@ function resourceStep(resource: MaterialIngestResourcePlan): PlannedOperationSte
 function localArtifactSteps(options: {
   resource: MaterialIngestResourcePlan;
   recordTargetPath: string;
+  fileTargetPath: string;
   policy: string;
 }): PlannedOperationStep[] {
   return [
@@ -569,9 +615,17 @@ function localArtifactSteps(options: {
       policy: options.policy,
     },
     {
+      id: "artifact.write-local-artifact",
+      action: "write",
+      description: "Copy the local file into managed artifact storage using atomic placement.",
+      targetPaths: [options.fileTargetPath],
+      providerId: LOCAL_ARTIFACT_PROVIDER.id,
+      policy: options.policy,
+    },
+    {
       id: "artifact.record-local-artifact",
       action: "record",
-      description: "Record the local file as a workspace artifact without copying bytes during the plan.",
+      description: "Record the managed local artifact in the workspace.",
       targetPaths: [options.recordTargetPath],
       providerId: LOCAL_ARTIFACT_PROVIDER.id,
       policy: options.policy,
@@ -582,6 +636,7 @@ function localArtifactSteps(options: {
 function artifactPlanFromLocalResource(options: {
   resource: MaterialIngestResourcePlan;
   recordTargetPath: string;
+  fileTargetPath: string;
 }): MaterialIngestArtifactPlan {
   return {
     mode: "record_local",
@@ -592,6 +647,7 @@ function artifactPlanFromLocalResource(options: {
     },
     provider: LOCAL_ARTIFACT_PROVIDER,
     recordTargetPath: options.recordTargetPath,
+    fileTargetPath: options.fileTargetPath,
   };
 }
 
@@ -627,7 +683,9 @@ function artifactPlanFromDownload(options: {
 }
 
 function plannedExtractionInputKind(resolved: ResolvedMaterialIngestInput): MaterialInputKind {
-  return resolved.artifactInput ? "artifact" : resolved.extractionInputKind;
+  return resolved.artifactInput || resolved.resource.kind === "path"
+    ? "artifact"
+    : resolved.extractionInputKind;
 }
 
 function extractionPlanFromSubplan(options: {
@@ -638,7 +696,7 @@ function extractionPlanFromSubplan(options: {
   outputTargetPath: string;
   extractionRoot: string;
 }): MaterialIngestExtractionPlan {
-  const source = options.resource.kind === "path"
+  const source = options.materialInputKind !== "artifact" && options.resource.kind === "path"
     ? {
         kind: "path" as const,
         path: options.resource.path,
@@ -731,42 +789,68 @@ function contentTypeFromLocalPath(filePath: string): string | undefined {
 
 async function createLocalArtifactRecord(options: {
   workspaceRoot: string;
+  artifactRoot: string;
   localPath: string;
   attachTo: string | null;
   policy: string;
-}): Promise<ArtifactRecord> {
+}): Promise<{ record: ArtifactRecord; artifactPath: string }> {
   const localStat = await stat(options.localPath);
   if (!localStat.isFile()) {
     fail(`Path input must be a file: ${options.localPath}`);
   }
+  const artifactId = randomUUID();
   const createdAt = new Date().toISOString();
-  const filename = path.basename(options.localPath) || "artifact.bin";
+  const filename = localArtifactFilename(options.localPath);
   const contentType = contentTypeFromLocalPath(options.localPath);
-  return createArtifactRecord(options.workspaceRoot, {
-    kind: inferLocalArtifactKind(options.localPath),
-    status: "recorded",
-    ...(options.attachTo ? { itemId: options.attachTo } : {}),
-    filename,
-    ...(contentType ? { contentType } : {}),
-    sizeBytes: localStat.size,
-    provenance: {
-      origin: "user_supplied",
-      providerId: LOCAL_ARTIFACT_PROVIDER.id,
-      policy: options.policy,
-    },
-    attempts: [
-      {
-        tier: "material-ingest-local-artifact",
-        source: options.localPath,
-        providerId: LOCAL_ARTIFACT_PROVIDER.id,
-        ok: true,
-        message: "Local file recorded as a user-supplied artifact",
-        at: createdAt,
-      },
-    ],
-    message: "Local file recorded as a user-supplied artifact",
-    createdAt,
+  const stored = await writeLocalStorageBytes({
+    root: options.artifactRoot,
+    key: localArtifactStorageKey(artifactId, filename),
+    area: "artifact",
+    bytes: await readFile(options.localPath),
   });
+  let record: ArtifactRecord;
+  try {
+    record = await createArtifactRecord(options.workspaceRoot, {
+      id: artifactId,
+      kind: inferLocalArtifactKind(options.localPath),
+      status: "recorded",
+      ...(options.attachTo ? { itemId: options.attachTo } : {}),
+      filename,
+      ...(contentType ? { contentType } : {}),
+      storage: stored.ref,
+      sizeBytes: stored.ref.sizeBytes,
+      provenance: {
+        origin: "user_supplied",
+        providerId: LOCAL_ARTIFACT_PROVIDER.id,
+        policy: options.policy,
+      },
+      attempts: [
+        {
+          tier: "material-ingest-local-artifact",
+          source: options.localPath,
+          providerId: LOCAL_ARTIFACT_PROVIDER.id,
+          ok: true,
+          message: "Local file copied into managed artifact storage",
+          at: createdAt,
+        },
+      ],
+      message: "Local file copied into managed artifact storage and recorded",
+      createdAt,
+    });
+  } catch (error) {
+    throw new LocalArtifactMetadataCommitError({
+      outcome: "orphaned",
+      commitStage: "metadata",
+      artifactId,
+      artifactPath: stored.path,
+      storage: stored.ref,
+      sha256: stored.ref.sha256!,
+      sizeBytes: stored.ref.sizeBytes!,
+      metadataPath: artifactRecordFilePath(options.workspaceRoot, artifactId),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return { record, artifactPath: stored.path };
 }
 
 function requireLocalResourcePath(resource: MaterialIngestResourcePlan): string {
@@ -801,6 +885,7 @@ function buildArtifactExecutionFromDownload(options: {
 function buildArtifactExecutionFromLocal(options: {
   plan: MaterialIngestPlanData;
   record: ArtifactRecord;
+  artifactPath: string;
   workspaceRoot: string;
 }): MaterialIngestArtifactExecution {
   return {
@@ -809,6 +894,7 @@ function buildArtifactExecutionFromLocal(options: {
     source: options.plan.artifact.source,
     provider: LOCAL_ARTIFACT_PROVIDER,
     recordTargetPath: artifactRecordFilePath(options.workspaceRoot, options.record.id),
+    fileTargetPath: options.artifactPath,
     record: options.record,
   };
 }
@@ -861,6 +947,7 @@ function executedStepTargetPaths(options: {
 }): string[] {
   switch (options.step.id) {
     case "artifact.write-artifact":
+    case "artifact.write-local-artifact":
       return options.outputs.artifactFilePath ? [options.outputs.artifactFilePath] : [];
     case "artifact.record-artifact":
     case "artifact.record-local-artifact":
@@ -927,6 +1014,9 @@ export async function planMaterialIngest(
   const artifactRecordPath = plannedArtifactRecordPath(options.config.workspace.root);
   const extractionRecordPath = plannedExtractionRecordPath(options.config.workspace.root);
   const extractionOutputPath = plannedExtractionOutputPath(options.config.storage.extractionRoot);
+  const localArtifactFilePath = resolved.resource.kind === "path" && resolved.resource.path
+    ? await plannedLocalArtifactFilePath(options.config.storage.artifactRoot, resolved.resource.path)
+    : undefined;
 
   const artifactEnvelope = resolved.artifactInput
     ? await planArtifactDownload({
@@ -942,7 +1032,7 @@ export async function planMaterialIngest(
   const extractionEnvelope = await planMaterialExtractionForInputKind({
     config: options.config,
     inputKind: extractionInputKind,
-    sourceKind: resolved.artifactInput ? "artifact" : "path",
+    sourceKind: extractionInputKind === "artifact" ? "artifact" : "path",
     attachTo: attachTo ?? undefined,
     providerId: options.extractProviderId,
     policy,
@@ -978,6 +1068,7 @@ export async function planMaterialIngest(
     : artifactPlanFromLocalResource({
         resource: resolved.resource,
         recordTargetPath: artifactRecordPath,
+        fileTargetPath: localArtifactFilePath!,
       });
   const extraction = extractionPlanFromSubplan({
     resource: resolved.resource,
@@ -1000,7 +1091,12 @@ export async function planMaterialIngest(
     ? replaceStepTargetPaths(prefixSteps("artifact", artifactData.intendedSteps), {
         "artifact.record-artifact": [artifactRecordPath],
       })
-    : localArtifactSteps({ resource: resolved.resource, recordTargetPath: artifactRecordPath, policy });
+    : localArtifactSteps({
+        resource: resolved.resource,
+        recordTargetPath: artifactRecordPath,
+        fileTargetPath: localArtifactFilePath!,
+        policy,
+      });
   const extractionIntendedSteps = replaceStepTargetPaths(
     prefixSteps("extraction", extractionEnvelope.data.intendedSteps),
     {
@@ -1023,6 +1119,7 @@ export async function planMaterialIngest(
     targetPaths: [
       ...resolved.resource.targetPaths,
       ...(artifactData?.targetPaths.filter((targetPath) => targetPath !== artifactRecordsDir) ?? []),
+      ...(localArtifactFilePath ? [localArtifactFilePath] : []),
       ...extractionEnvelope.data.targetPaths.filter((targetPath) => targetPath !== extractionRecordsDir),
       artifactRecordPath,
       extractionRecordPath,
@@ -1071,7 +1168,7 @@ export async function planMaterialIngest(
 
 export async function runMaterialIngest(
   options: MaterialIngestPlanOptions,
-): Promise<ResultEnvelope<MaterialIngestExecutionData>> {
+): Promise<MaterialIngestResultEnvelope> {
   const started = Date.now();
   const planEnvelope = await planMaterialIngest(options);
   if (!planEnvelope.data) {
@@ -1109,19 +1206,49 @@ export async function runMaterialIngest(
     extractionInputKind = "artifact";
   } else {
     const localPath = requireLocalResourcePath(plan.resource);
-    const record = await createLocalArtifactRecord({
-      workspaceRoot,
-      localPath,
-      attachTo,
-      policy,
-    });
+    let stored: Awaited<ReturnType<typeof createLocalArtifactRecord>>;
+    try {
+      stored = await createLocalArtifactRecord({
+        workspaceRoot,
+        artifactRoot: options.config.storage.artifactRoot,
+        localPath,
+        attachTo,
+        policy,
+      });
+    } catch (error) {
+      if (!(error instanceof LocalArtifactMetadataCommitError)) throw error;
+      return {
+        ok: false,
+        capability: "orchestrate",
+        tool: "material_ingest",
+        data: null,
+        orphan: error.orphan,
+        diagnostics: {
+          elapsedMs: Date.now() - started,
+          inputKind: plan.resource.kind,
+          extractionInputKind: "artifact",
+          workspaceRoot,
+          attachTo,
+          partial: true,
+          orphanedBytes: true,
+          commitStage: "metadata",
+        },
+        errors: [`Local artifact metadata commit failed after bytes were committed: ${error.orphan.error}`],
+        provenance: {
+          configPaths: options.config.meta.loadedFiles,
+          providerIds: [LOCAL_ARTIFACT_PROVIDER.id],
+          policy,
+        },
+      };
+    }
     artifact = buildArtifactExecutionFromLocal({
       plan,
-      record,
+      record: stored.record,
+      artifactPath: stored.artifactPath,
       workspaceRoot,
     });
-    extractionInput = localPath;
-    extractionInputKind = "local_file";
+    extractionInput = stored.record.id;
+    extractionInputKind = "artifact";
   }
 
   const extractionEnvelope = await runMaterialExtraction({

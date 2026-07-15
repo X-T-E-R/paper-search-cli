@@ -112,7 +112,10 @@ checksum and `minCliVersion` gates enforced.
 The material ingest execution test proves the runnable fixture workflow: it
 copies fixture providers into a temporary install directory, writes a temporary
 `paper-search.toml`, runs URL and local-file ingestion, asserts artifact and
-extraction records exist, and verifies extracted Markdown paths.
+extraction records exist, verifies managed local-file bytes and storage refs,
+and verifies extracted Markdown paths. The workspace command integration test
+also covers managed export planning, collision rejection, and writes below a
+configured `storage.exportRoot`.
 
 ## Offline CLI Fixture Example
 
@@ -167,8 +170,9 @@ Expected result shape:
 - every command emits a `ResultEnvelope`
 - material plans include `planned: true`, selected policy/provider, intended
   steps, and target paths
-- executed material ingest writes artifact records, extraction records, and
-  extracted Markdown/JSON under `$tmp/workspace/material/`
+- executed material ingest writes artifact/extraction records below the
+  workspace root, artifact bytes below the configured artifact root, and
+  Markdown/JSON below the configured extraction root
 - the example URL is metadata for the fixture provider; no live request is made
 
 ## Official Compatibility Probe

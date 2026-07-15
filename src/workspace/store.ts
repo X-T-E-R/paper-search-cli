@@ -273,17 +273,16 @@ export async function readWorkspaceItemRecord(root: string, itemId: string): Pro
 }
 
 async function loadAllWorkspaceItems(root: string): Promise<WorkspaceItemRecord[]> {
-  try {
-    const entries = await readdir(path.join(root, ITEMS_DIR), { withFileTypes: true });
-    const records = await Promise.all(
-      entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-        .map(async (entry) => readWorkspaceItemRecord(root, path.basename(entry.name, ".json"))),
-    );
-    return records.filter((record): record is WorkspaceItemRecord => Boolean(record));
-  } catch {
-    return [];
-  }
+  const entries = await readdir(path.join(root, ITEMS_DIR), { withFileTypes: true }).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  });
+  const records = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map(async (entry) => readWorkspaceItemRecord(root, path.basename(entry.name, ".json"))),
+  );
+  return records.filter((record): record is WorkspaceItemRecord => Boolean(record));
 }
 
 async function saveWorkspaceItem(root: string, record: WorkspaceItemRecord): Promise<void> {
@@ -702,7 +701,6 @@ export async function exportWorkspaceItems(
   },
 ): Promise<WorkspaceExportResult> {
   return withWorkspaceMutation(root, async () => {
-    await ensureWorkspace(root);
     const includeChildren = Boolean(options.includeChildren);
     const collectionsFile = await loadCollectionsFile(root);
     let items: WorkspaceItemRecord[];
