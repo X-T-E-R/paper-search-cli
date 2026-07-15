@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: X-T-E-R/resource-search-providers
-          ref: 0ed6006bf3ef5bcfba071282610e7d25afc2bc20
+          ref: b4125c9d917ebc5b5fa1dc1e63d225054250bcda
           path: resource-search-providers
           persist-credentials: false
 

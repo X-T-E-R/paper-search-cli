@@ -1528,12 +1528,76 @@ async function runScopusProbe() {
 async function runSemanticProbe() {
   const { providerId, manifest, bundleCode } = await loadOfficialProvider("semantic");
   const seenRequests = [];
+  const backwardFixture = {
+    offset: 0,
+    next: 2,
+    data: [
+      {
+        citedPaper: {
+          paperId: "1111111111111111111111111111111111111111",
+          title: "Backward fixture with exact identifiers",
+          abstract: "A deterministic cited-paper fixture.",
+          venue: "Fixture Journal",
+          year: 2023,
+          citationCount: 17,
+          publicationDate: "2023-05-06",
+          authors: [{ authorId: "fixture-author-1", name: "Ada Lovelace" }],
+          externalIds: {
+            DOI: "10.1000/backward.1",
+            ArXiv: "2305.00001",
+          },
+          url: "https://www.semanticscholar.org/paper/1111111111111111111111111111111111111111",
+        },
+      },
+      {
+        citedPaper: {
+          paperId: "2222222222222222222222222222222222222222",
+          title: "Backward fixture with native identity",
+          year: 2022,
+          authors: [{ name: "Grace Hopper" }],
+          externalIds: {},
+        },
+      },
+    ],
+  };
+  const forwardFixture = {
+    offset: 4,
+    data: [
+      {
+        citingPaper: {
+          paperId: "3333333333333333333333333333333333333333",
+          title: "Forward fixture paper",
+          venue: "Fixture Conference",
+          year: 2025,
+          citationCount: 3,
+          authors: [{ name: "Katherine Johnson" }],
+          externalIds: { DOI: "10.1000/forward.1" },
+        },
+      },
+    ],
+  };
   const api = createCompatApi({
     manifest,
     providerConfig: { apiKey: "compat-semantic-key" },
     transport: {
       async get(url, options) {
         seenRequests.push({ method: "GET", url, options });
+        if (url.endsWith("/references")) {
+          return {
+            data: backwardFixture,
+            status: 200,
+            statusText: "OK",
+            headers: { "content-type": "application/json" },
+          };
+        }
+        if (url.endsWith("/citations")) {
+          return {
+            data: forwardFixture,
+            status: 200,
+            statusText: "OK",
+            headers: { "content-type": "application/json" },
+          };
+        }
         return {
           data: {
             total: 3,
@@ -1564,6 +1628,21 @@ async function runSemanticProbe() {
     },
   });
   const loaded = await inspectProvider(bundleCode, manifest, api);
+  const expectedCitationGraph = {
+    directions: ["backward", "forward"],
+    targetIdentifierKinds: ["semantic", "doi", "arxiv"],
+    maxPageSize: 100,
+  };
+  if (JSON.stringify(manifest.capabilities?.citationGraph) !== JSON.stringify(expectedCitationGraph)) {
+    throw new Error("Semantic Scholar ZIP did not declare the expected citationGraph capability");
+  }
+  if (!loaded.inspection.hasSearch || !loaded.inspection.hasGetCitationPage) {
+    throw new Error("Semantic Scholar ZIP did not expose search() and getCitationPage()");
+  }
+  const getCitationPage = loaded.provider.getCitationPage;
+  if (!getCitationPage) {
+    throw new Error("Semantic Scholar host runtime did not load getCitationPage()");
+  }
   const result = await loaded.provider.search("graphene sensor", {
     maxResults: 1,
     page: 2,
@@ -1575,11 +1654,110 @@ async function runSemanticProbe() {
     throw new Error("Semantic Scholar compatibility probe returned unexpected metadata");
   }
   if (
+    request?.url !== "https://api.semanticscholar.org/graph/v1/paper/search" ||
+    request.options.params.query !== "graphene sensor" ||
+    request.options.params.limit !== 1 ||
     request?.options?.headers?.["x-api-key"] !== "compat-semantic-key" ||
     request?.options?.params?.offset !== 1 ||
     request?.options?.params?.fieldsOfStudy !== "Computer Science"
   ) {
-    throw new Error("Semantic Scholar did not apply paging, field, or credential parameters");
+    throw new Error("Semantic Scholar did not apply search endpoint, query, paging, field, or credential parameters");
+  }
+
+  const backwardTarget = {
+    identifiers: { doi: "10.1000/seed" },
+    item: { itemType: "journalArticle", title: "Seed paper" },
+  };
+  const backwardPage = await getCitationPage({
+    direction: "backward",
+    target: backwardTarget,
+    pageSize: 2,
+  });
+  const backwardRequest = seenRequests[1];
+  if (
+    backwardRequest?.method !== "GET" ||
+    backwardRequest?.url !==
+      "https://api.semanticscholar.org/graph/v1/paper/DOI%3A10.1000%2Fseed/references" ||
+    backwardRequest?.options?.headers?.["x-api-key"] !== "compat-semantic-key" ||
+    JSON.stringify(backwardRequest?.options?.params) !==
+      JSON.stringify({
+        offset: 0,
+        limit: 2,
+        fields:
+          "paperId,title,abstract,venue,year,citationCount,isOpenAccess,openAccessPdf,fieldsOfStudy,publicationDate,journal,authors,externalIds,url",
+      })
+  ) {
+    throw new Error("Semantic Scholar backward citation request contract drifted");
+  }
+  if (
+    backwardPage.direction !== "backward" ||
+    JSON.stringify(backwardPage.target) !== JSON.stringify(backwardTarget) ||
+    backwardPage.relations.length !== 2 ||
+    JSON.stringify(backwardPage.relations[0]?.identifiers) !==
+      JSON.stringify({
+        semantic: "1111111111111111111111111111111111111111",
+        doi: "10.1000/backward.1",
+        arxiv: "2305.00001",
+      }) ||
+    backwardPage.relations[0]?.providerNativeId !==
+      "1111111111111111111111111111111111111111" ||
+    backwardPage.relations[0]?.item.source !== "semantic" ||
+    backwardPage.relations[0]?.item.sourceId !==
+      "1111111111111111111111111111111111111111" ||
+    backwardPage.relations[0]?.item.DOI !== "10.1000/backward.1" ||
+    backwardPage.nextCursor !== "2" ||
+    backwardPage.exhausted !== false ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(backwardPage.observedAt)
+  ) {
+    throw new Error("Semantic Scholar backward citation response was not normalized correctly");
+  }
+
+  const forwardTarget = {
+    identifiers: { semantic: "seed-semantic-id", doi: "10.1000/fallback" },
+    item: { itemType: "journalArticle", title: "Seed paper" },
+  };
+  const forwardPage = await getCitationPage({
+    direction: "forward",
+    target: forwardTarget,
+    pageSize: 25,
+    cursor: "4",
+  });
+  const forwardRequest = seenRequests[2];
+  if (
+    forwardRequest?.method !== "GET" ||
+    forwardRequest?.url !==
+      "https://api.semanticscholar.org/graph/v1/paper/seed-semantic-id/citations" ||
+    forwardRequest?.options?.headers?.["x-api-key"] !== "compat-semantic-key" ||
+    JSON.stringify(forwardRequest?.options?.params) !==
+      JSON.stringify({
+        offset: 4,
+        limit: 25,
+        fields:
+          "paperId,title,abstract,venue,year,citationCount,isOpenAccess,openAccessPdf,fieldsOfStudy,publicationDate,journal,authors,externalIds,url",
+      })
+  ) {
+    throw new Error("Semantic Scholar forward citation request contract drifted");
+  }
+  if (
+    forwardPage.direction !== "forward" ||
+    JSON.stringify(forwardPage.target) !== JSON.stringify(forwardTarget) ||
+    forwardPage.relations.length !== 1 ||
+    JSON.stringify(forwardPage.relations[0]?.identifiers) !==
+      JSON.stringify({
+        semantic: "3333333333333333333333333333333333333333",
+        doi: "10.1000/forward.1",
+      }) ||
+    forwardPage.relations[0]?.providerNativeId !==
+      "3333333333333333333333333333333333333333" ||
+    forwardPage.relations[0]?.item.source !== "semantic" ||
+    forwardPage.relations[0]?.item.sourceId !==
+      "3333333333333333333333333333333333333333" ||
+    forwardPage.relations[0]?.item.DOI !== "10.1000/forward.1" ||
+    forwardPage.nextCursor !== undefined ||
+    forwardPage.exhausted !== true ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(forwardPage.observedAt)
+  ) {
+    throw new Error("Semantic Scholar forward citation response was not normalized correctly");
   }
   return { ok: true, providerId, inspection: loaded.inspection, request, result };
 }
