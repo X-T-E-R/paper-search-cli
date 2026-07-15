@@ -31,6 +31,7 @@ import {
 import { ExternalSearchConfigFileSchema } from "../external-search/config.js";
 import {
   ConfigLocationMigrationRequiredError,
+  isConfigLocationMigrationComplete,
   planConfigLocationMigration,
 } from "./locationMigration.js";
 
@@ -43,6 +44,7 @@ export interface LoadConfigOptions {
 
 async function assertConfigLocationReady(options: LoadConfigOptions): Promise<void> {
   if (options.allowPendingLocationMigration) return;
+  if (await isConfigLocationMigrationComplete()) return;
   const plan = await planConfigLocationMigration();
   if (["pending", "ambiguous", "conflicted", "blocked"].includes(plan.status)) {
     throw new ConfigLocationMigrationRequiredError(plan);

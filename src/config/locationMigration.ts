@@ -246,6 +246,14 @@ async function receiptPresent(receiptPath: string): Promise<boolean> {
   }
 }
 
+export async function isConfigLocationMigrationComplete(options: {
+  env?: NodeJS.ProcessEnv;
+  userHome?: string;
+} = {}): Promise<boolean> {
+  const paths = resolvePaperSearchPaths(options.env ?? process.env, options.userHome);
+  return receiptPresent(path.join(paths.stateRoot, "migrations", "config-location-v1.json"));
+}
+
 export async function planConfigLocationMigration(options: {
   env?: NodeJS.ProcessEnv;
   legacyConfigRoot?: string;

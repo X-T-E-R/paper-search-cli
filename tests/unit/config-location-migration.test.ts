@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -69,6 +69,16 @@ describe("legacy config-location migration", () => {
 
     const rerun = await applyConfigLocationMigration({ env: testEnv, userHome: path.join(actualRoot, "user") });
     expect(rerun).toMatchObject({ applied: true, changed: false });
+
+    process.env.PAPER_SEARCH_INSTALL_TEST_MODE = "1";
+    process.env.PAPER_SEARCH_TEST_DATA_ROOT = path.join(actualRoot, "home");
+    process.env.APPDATA = path.join(actualRoot, "appdata");
+    process.env.XDG_CONFIG_HOME = path.join(actualRoot, "xdg");
+    await rm(legacy, { recursive: true });
+    await writeFile(legacy, "normal config loading must not inspect this legacy path", "utf8");
+
+    const loaded = await loadConfig({ cwd: actualRoot });
+    expect(loaded.defaults.maxResults).toBe(17);
   });
 
   it("requires an explicit source when different non-empty legacy roots coexist", async () => {
