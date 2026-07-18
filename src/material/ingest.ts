@@ -9,6 +9,7 @@ import {
   createArtifactRecord,
 } from "./artifactStore.js";
 import {
+  ArtifactDownloadError,
   planArtifactDownload,
   runArtifactDownload,
   sanitizeArtifactFilename,
@@ -18,6 +19,7 @@ import {
   EXTRACTION_RECORDS_DIR,
 } from "./extractionStore.js";
 import {
+  commitMaterialExtractionProviderProbe,
   planMaterialExtractionForInputKind,
   runMaterialExtraction,
   type MaterialExtractionOrphanOutcome,
@@ -28,15 +30,22 @@ import {
   type PlannedOperationStep,
   type PlannedProviderSelection,
 } from "../surface/plan.js";
-import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
+import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import {
   ensureResourceSelectedInWorkspace,
   type WorkspaceItemRecord,
 } from "../workspace/store.js";
-import type { ArtifactKind, ArtifactRecord, ExtractionRecord, ExtractionSource } from "./records.js";
+import type {
+  ArtifactAttempt,
+  ArtifactKind,
+  ArtifactRecord,
+  ExtractionRecord,
+  ExtractionSource,
+} from "./records.js";
 import type { MaterialInputKind } from "./types.js";
 import { tryParseDoiIdentifier } from "./resolverResult.js";
 import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
+import { runJinaReaderUrlProbe } from "../lookup/jinaReader.js";
 
 export interface MaterialIngestPlanOptions {
   config: ResolvedConfig;
@@ -116,6 +125,16 @@ export interface MaterialIngestProvidersPlan {
   selected: MaterialIngestProviderPlan[];
 }
 
+export interface MaterialIngestExactUrlFallbackPlan {
+  mode: "exact_url_extraction";
+  source: { kind: "url"; url: string };
+  eligibleHttpStatuses: readonly [401, 403, 429];
+  artifactOnSuccess: false;
+  managedProvider: MaterialIngestProviderPlan | null;
+  terminalProvider: MaterialIngestProviderPlan;
+  targetPaths: string[];
+}
+
 export interface MaterialIngestPlanData extends PlannedOperationData {
   resource: MaterialIngestResourcePlan;
   artifact: MaterialIngestArtifactPlan;
@@ -123,6 +142,7 @@ export interface MaterialIngestPlanData extends PlannedOperationData {
   policy: MaterialIngestPolicyPlan;
   providers: MaterialIngestProvidersPlan;
   outputs: MaterialIngestOutputPlan;
+  exactUrlFallback: MaterialIngestExactUrlFallbackPlan | null;
 }
 
 export interface MaterialIngestExecutedStep extends PlannedOperationStep {
@@ -163,6 +183,35 @@ export interface MaterialIngestExecutionData extends Omit<PlannedOperationData, 
   outputs: MaterialIngestOutputPlan;
 }
 
+export interface MaterialIngestUnavailableArtifact {
+  mode: "unavailable";
+  status: "not_materialized";
+  source: { kind: "url"; url: string };
+  provider: MaterialIngestProviderPlan;
+  httpStatusCodes: number[];
+  attempts: ArtifactAttempt[];
+  error: string;
+}
+
+export interface MaterialIngestExtractionOnlyOutputPlan {
+  extractionRecordPath: string;
+  extractionOutputPath: string;
+  markdownPath: string;
+  jsonPath: string;
+}
+
+export interface MaterialIngestExactUrlExecutionData extends Omit<PlannedOperationData, "intendedSteps"> {
+  executionMode: "exact_url_extraction";
+  executedSteps: MaterialIngestExecutedStep[];
+  resource: MaterialIngestResourcePlan;
+  artifact: null;
+  acquisition: MaterialIngestUnavailableArtifact;
+  extraction: MaterialIngestExtractionExecution;
+  policy: MaterialIngestPolicyPlan;
+  providers: MaterialIngestProvidersPlan;
+  outputs: MaterialIngestExtractionOnlyOutputPlan;
+}
+
 /** Managed bytes were committed, but their durable artifact record was not. */
 export interface MaterialIngestOrphanOutcome {
   outcome: "orphaned";
@@ -176,7 +225,11 @@ export interface MaterialIngestOrphanOutcome {
   error: string;
 }
 
-export type MaterialIngestResultEnvelope = ResultEnvelope<MaterialIngestExecutionData> & {
+export type MaterialIngestExecutionOutcomeData =
+  | MaterialIngestExecutionData
+  | MaterialIngestExactUrlExecutionData;
+
+export type MaterialIngestResultEnvelope = ResultEnvelope<MaterialIngestExecutionOutcomeData> & {
   /** Present only when managed local bytes committed but record metadata did not. */
   orphan?: MaterialIngestOrphanOutcome;
   /** Present when extraction committed outputs but its record could not be committed. */
@@ -214,6 +267,13 @@ const LOCAL_ARTIFACT_PROVIDER: MaterialIngestProviderPlan = {
   kind: "builtin",
   capabilities: ["acquire"],
 };
+const JINA_READER_PROVIDER: MaterialIngestProviderPlan = {
+  id: "jina-reader",
+  kind: "builtin",
+  capabilities: ["extract"],
+  packagePath: "builtin:lookup/jina-reader",
+};
+const EXACT_URL_FALLBACK_HTTP_STATUSES = [401, 403, 429] as const;
 
 function fail(message: string): never {
   throw new MaterialIngestPlanError(message);
@@ -760,9 +820,10 @@ function providerFromExtractionExecution(
     packagePath: string;
   },
 ): MaterialIngestProviderPlan {
+  const builtin = provider.packagePath.startsWith("builtin:");
   return {
     id: provider.id,
-    kind: "material",
+    kind: builtin ? "builtin" : "material",
     capabilities: ["extract"],
     packagePath: provider.packagePath,
   };
@@ -1090,6 +1151,61 @@ function targetPathsFromExecution(options: {
   ]);
 }
 
+async function planExactUrlFallback(options: {
+  config: ResolvedConfig;
+  resource: MaterialIngestResourcePlan;
+  attachTo: string | null;
+  policy: string;
+  artifactProvider: MaterialIngestProviderPlan | null;
+  extractionProvider: MaterialIngestProviderPlan;
+  extractionRecordPath: string;
+  extractionOutputPath: string;
+  markdownPath: string;
+  jsonPath: string;
+}): Promise<MaterialIngestExactUrlFallbackPlan | null> {
+  if (options.artifactProvider?.id !== "direct-url-downloader") return null;
+  if (options.resource.kind !== "url" || !options.resource.url) return null;
+  const sourceUrl = new URL(options.resource.url);
+  if (sourceUrl.protocol !== "https:") return null;
+
+  let managedProvider: MaterialIngestProviderPlan | null = null;
+  try {
+    const managedPlan = await planMaterialExtractionForInputKind({
+      config: options.config,
+      inputKind: "url",
+      sourceKind: "url",
+      attachTo: options.attachTo ?? undefined,
+      providerId: options.extractionProvider.id,
+      policy: options.policy,
+    });
+    if (managedPlan.data) {
+      managedProvider = providerFromSelection(
+        managedPlan.data.selectedProvider,
+        managedPlan.data.intendedSteps,
+      );
+    }
+  } catch {
+    // The primary extractor may intentionally support managed artifacts only.
+    // Jina Reader remains a separately declared exact-URL terminal fallback.
+  }
+
+  return {
+    mode: "exact_url_extraction",
+    source: { kind: "url", url: sourceUrl.toString() },
+    eligibleHttpStatuses: EXACT_URL_FALLBACK_HTTP_STATUSES,
+    artifactOnSuccess: false,
+    managedProvider,
+    terminalProvider: JINA_READER_PROVIDER,
+    targetPaths: [
+      ...(managedProvider?.packagePath ? [managedProvider.packagePath] : []),
+      options.extractionOutputPath,
+      options.markdownPath,
+      options.jsonPath,
+      options.extractionRecordPath,
+    ],
+  };
+}
+
 export async function planMaterialIngest(
   options: MaterialIngestPlanOptions,
 ): Promise<ResultEnvelope<MaterialIngestPlanData>> {
@@ -1179,6 +1295,18 @@ export async function planMaterialIngest(
     outputTargetPath: extractionOutputPath,
     extractionRoot: options.config.storage.extractionRoot,
   });
+  const exactUrlFallback = await planExactUrlFallback({
+    config: options.config,
+    resource: resolved.resource,
+    attachTo,
+    policy,
+    artifactProvider: artifact.provider,
+    extractionProvider,
+    extractionRecordPath,
+    extractionOutputPath,
+    markdownPath: extraction.markdownPath,
+    jsonPath: extraction.jsonPath,
+  });
   const outputs: MaterialIngestOutputPlan = {
     artifactRecordPath,
     extractionRecordPath,
@@ -1265,8 +1393,335 @@ export async function planMaterialIngest(
         selected: selectedProviders,
       },
       outputs,
+      exactUrlFallback,
     },
   };
+}
+
+interface ExactUrlFallbackAttempt {
+  providerId: string;
+  status: "succeeded" | "failed";
+  error?: string;
+}
+
+function isEligibleExactUrlAcquisitionFailure(
+  error: unknown,
+  fallback: MaterialIngestExactUrlFallbackPlan | null,
+): error is ArtifactDownloadError {
+  if (!fallback || !(error instanceof ArtifactDownloadError)) return false;
+  const statusCodes = error.details?.statusCodes ?? [];
+  return statusCodes.length > 0 && statusCodes.every((status) =>
+    fallback.eligibleHttpStatuses.includes(status as 401 | 403 | 429));
+}
+
+function assertExactUrlExtractionSource(
+  extraction: NonNullable<Awaited<ReturnType<typeof runMaterialExtraction>>["data"]>,
+  expectedUrl: string,
+): void {
+  const source = extraction.record.source;
+  if (
+    source.kind !== "url" ||
+    !source.url ||
+    new URL(source.url).toString() !== expectedUrl
+  ) {
+    throw new Error("Exact-URL extraction provider did not preserve the requested URL identity");
+  }
+}
+
+function extractionOnlyOutputs(
+  extraction: MaterialIngestExtractionExecution,
+): MaterialIngestExtractionOnlyOutputPlan {
+  return {
+    extractionRecordPath: extraction.recordTargetPath,
+    extractionOutputPath: extraction.outputTargetPath,
+    markdownPath: extraction.markdownPath,
+    jsonPath: extraction.jsonPath,
+  };
+}
+
+function exactUrlExecutedSteps(options: {
+  extraction: MaterialIngestExtractionExecution;
+  policy: string;
+}): MaterialIngestExecutedStep[] {
+  return [
+    {
+      id: "fallback.extract-exact-url",
+      action: "network",
+      description: "Extract verified Markdown from the exact URL after byte acquisition was denied.",
+      targetPaths: [],
+      providerId: options.extraction.provider.id,
+      policy: options.policy,
+      status: "completed",
+    },
+    {
+      id: "fallback.write-markdown",
+      action: "write",
+      description: "Write exact-URL Markdown and structured provider output without an artifact record.",
+      targetPaths: [
+        options.extraction.outputTargetPath,
+        options.extraction.markdownPath,
+        options.extraction.jsonPath,
+      ],
+      providerId: options.extraction.provider.id,
+      policy: options.policy,
+      status: "completed",
+    },
+    {
+      id: "fallback.record-extraction",
+      action: "record",
+      description: "Record the URL-sourced extraction with no materialized artifact.",
+      targetPaths: [options.extraction.recordTargetPath],
+      providerId: options.extraction.provider.id,
+      policy: options.policy,
+      status: "completed",
+    },
+  ];
+}
+
+async function runExactUrlExtractionFallback(options: {
+  config: ResolvedConfig;
+  plan: MaterialIngestPlanData;
+  acquisitionError: ArtifactDownloadError;
+  started: number;
+}): Promise<MaterialIngestResultEnvelope> {
+  const fallback = options.plan.exactUrlFallback!;
+  const attempts: ExactUrlFallbackAttempt[] = [];
+  let extractionEnvelope: Awaited<ReturnType<typeof runMaterialExtraction>> | undefined;
+
+  if (fallback.managedProvider) {
+    try {
+      extractionEnvelope = await runMaterialExtraction({
+        config: options.config,
+        input: fallback.source.url,
+        attachTo: options.plan.policy.attachTo ?? undefined,
+        providerId: fallback.managedProvider.id,
+        policy: options.plan.policy.name,
+      });
+      if (extractionEnvelope.data) {
+        assertExactUrlExtractionSource(extractionEnvelope.data, fallback.source.url);
+        attempts.push({ providerId: fallback.managedProvider.id, status: "succeeded" });
+      } else {
+        attempts.push({
+          providerId: fallback.managedProvider.id,
+          status: "failed",
+          error: extractionEnvelope.errors?.join("; ") ?? "Managed extraction returned no data",
+        });
+        if (extractionEnvelope.orphan) {
+          return {
+            ...failEnvelope({
+              capability: "orchestrate",
+              tool: "material_ingest",
+              errors: [
+                "Exact-URL extraction fallback committed outputs without durable metadata; refusing another provider attempt.",
+              ],
+              diagnostics: {
+                elapsedMs: Date.now() - options.started,
+                inputKind: "url",
+                extractionInputKind: "url",
+                sourceCounts: { artifacts: 0, extractions: 0 },
+                acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+                fallbackAttempts: attempts,
+              },
+              provenance: {
+                configPaths: options.config.meta.loadedFiles,
+                providerIds: uniqueStrings([
+                  options.plan.artifact.provider?.id,
+                  fallback.managedProvider.id,
+                ]),
+                policy: options.plan.policy.name,
+              },
+            }),
+            extractionOrphan: extractionEnvelope.orphan,
+          };
+        }
+        extractionEnvelope = undefined;
+      }
+    } catch (error) {
+      attempts.push({
+        providerId: fallback.managedProvider.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      extractionEnvelope = undefined;
+    }
+  }
+
+  if (!extractionEnvelope?.data) {
+    try {
+      const probe = await runJinaReaderUrlProbe(
+        fallback.source.url,
+        options.plan.policy.name,
+      );
+      if (
+        probe.source.kind !== "url" ||
+        !probe.source.url ||
+        new URL(probe.source.url).toString() !== fallback.source.url
+      ) {
+        throw new Error("Jina Reader did not preserve the exact requested URL identity");
+      }
+      extractionEnvelope = await commitMaterialExtractionProviderProbe({
+        config: options.config,
+        probe,
+        attachTo: options.plan.policy.attachTo ?? undefined,
+      });
+      if (!extractionEnvelope.data) {
+        attempts.push({
+          providerId: fallback.terminalProvider.id,
+          status: "failed",
+          error: extractionEnvelope.errors?.join("; ") ?? "Jina Reader extraction returned no data",
+        });
+        return {
+          ...failEnvelope({
+            capability: "orchestrate",
+            tool: "material_ingest",
+            errors: [
+              "Exact-URL Jina Reader fallback could not commit a durable extraction; no artifact record was created.",
+            ],
+            diagnostics: {
+              elapsedMs: Date.now() - options.started,
+              inputKind: "url",
+              extractionInputKind: "url",
+              sourceCounts: { artifacts: 0, extractions: 0 },
+              acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+              fallbackAttempts: attempts,
+            },
+            provenance: {
+              configPaths: options.config.meta.loadedFiles,
+              providerIds: uniqueStrings([
+                options.plan.artifact.provider?.id,
+                fallback.terminalProvider.id,
+              ]),
+              policy: options.plan.policy.name,
+            },
+          }),
+          ...(extractionEnvelope.orphan ? { extractionOrphan: extractionEnvelope.orphan } : {}),
+        };
+      }
+      assertExactUrlExtractionSource(extractionEnvelope.data, fallback.source.url);
+      attempts.push({ providerId: fallback.terminalProvider.id, status: "succeeded" });
+    } catch (error) {
+      attempts.push({
+        providerId: fallback.terminalProvider.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        ...failEnvelope({
+          capability: "orchestrate",
+          tool: "material_ingest",
+          errors: [
+            "Byte acquisition and every exact-URL extraction fallback failed; no artifact or extraction record was created.",
+          ],
+          diagnostics: {
+            elapsedMs: Date.now() - options.started,
+            inputKind: "url",
+            extractionInputKind: "url",
+            sourceCounts: { artifacts: 0, extractions: 0 },
+            acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+            fallbackAttempts: attempts,
+          },
+          provenance: {
+            configPaths: options.config.meta.loadedFiles,
+            providerIds: uniqueStrings([
+              options.plan.artifact.provider?.id,
+              fallback.managedProvider?.id,
+              fallback.terminalProvider.id,
+            ]),
+            policy: options.plan.policy.name,
+          },
+        }),
+      };
+    }
+  }
+
+  const extractionData = extractionEnvelope.data!;
+  const extraction = buildExtractionExecution({
+    data: extractionData,
+    workspaceRoot: options.config.workspace.root,
+    materialInputKind: "url",
+  });
+  const acquisitionProvider = options.plan.artifact.provider;
+  if (!acquisitionProvider) fail("Exact-URL fallback requires a planned artifact provider");
+  const providers = {
+    artifact: acquisitionProvider,
+    extraction: extraction.provider,
+    selected: uniqueProviders([acquisitionProvider, extraction.provider]),
+  };
+  const outputs = extractionOnlyOutputs(extraction);
+  const executedSteps = exactUrlExecutedSteps({
+    extraction,
+    policy: options.plan.policy.name,
+  });
+  const targetPaths = uniqueStrings([
+    extraction.provider.kind === "material" ? extraction.provider.packagePath : undefined,
+    ...executedSteps.flatMap((step) => step.targetPaths),
+    outputs.extractionRecordPath,
+    outputs.extractionOutputPath,
+    outputs.markdownPath,
+    outputs.jsonPath,
+  ]);
+  const zoteroSync = options.plan.policy.attachTo
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: options.plan.policy.attachTo,
+        extractionId: extraction.extractionId,
+      })
+    : { status: "not_requested" as const };
+
+  return okEnvelope({
+    capability: "orchestrate",
+    tool: "material_ingest",
+    data: {
+      executionMode: "exact_url_extraction",
+      executedSteps,
+      selectedPolicy: options.plan.policy.name,
+      selectedProvider: {
+        id: extraction.provider.id,
+        kind: extraction.provider.kind,
+        capabilities: ["extract"],
+      },
+      targetPaths,
+      resource: options.plan.resource,
+      artifact: null,
+      acquisition: {
+        mode: "unavailable",
+        status: "not_materialized",
+        source: fallback.source,
+        provider: acquisitionProvider,
+        httpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+        attempts: options.acquisitionError.details?.attempts ?? [],
+        error: options.acquisitionError.message,
+      },
+      extraction,
+      policy: options.plan.policy,
+      providers,
+      outputs,
+    },
+    warnings: [
+      "Original bytes were not materialized after the exact URL returned an eligible HTTP denial.",
+      "The retained extraction is URL-sourced; no artifact record or artifact bytes were created.",
+    ],
+    diagnostics: {
+      elapsedMs: Date.now() - options.started,
+      inputKind: "url",
+      extractionInputKind: "url",
+      workspaceRoot: options.config.workspace.root,
+      attachTo: options.plan.policy.attachTo,
+      acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+      fallbackAttempts: attempts,
+      extractionId: extraction.extractionId,
+      sourceCounts: { artifacts: 0, extractions: 1 },
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
+    },
+    provenance: {
+      configPaths: options.config.meta.loadedFiles,
+      providerIds: uniqueStrings([
+        acquisitionProvider.id,
+        extraction.provider.id,
+      ]),
+      policy: options.plan.policy.name,
+    },
+  });
 }
 
 export async function runMaterialIngest(
@@ -1287,17 +1742,28 @@ export async function runMaterialIngest(
   let extractionInputKind: MaterialInputKind;
 
   if (plan.artifact.mode === "download") {
-    const artifactEnvelope = await runArtifactDownload({
-      config: options.config,
-      input: plan.resource.kind === "workspace_item"
-        ? plan.resource.input
-        : plan.resource.url ?? options.input,
-      attachTo: attachTo ?? undefined,
-      providerId: options.artifactProviderId,
-      policy,
-      download: true,
-      deferZoteroSync: true,
-    });
+    let artifactEnvelope: Awaited<ReturnType<typeof runArtifactDownload>>;
+    try {
+      artifactEnvelope = await runArtifactDownload({
+        config: options.config,
+        input: plan.resource.kind === "workspace_item"
+          ? plan.resource.input
+          : plan.resource.url ?? options.input,
+        attachTo: attachTo ?? undefined,
+        providerId: options.artifactProviderId,
+        policy,
+        download: true,
+        deferZoteroSync: true,
+      });
+    } catch (error) {
+      if (!isEligibleExactUrlAcquisitionFailure(error, plan.exactUrlFallback)) throw error;
+      return runExactUrlExtractionFallback({
+        config: options.config,
+        plan,
+        acquisitionError: error,
+        started,
+      });
+    }
     if (!artifactEnvelope.data) {
       fail("Artifact download did not return execution data");
     }

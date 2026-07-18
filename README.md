@@ -727,6 +727,18 @@ selects the document pipeline when the remote URL has no extension. Local-only
 inputs remain an explicit unsupported path until the host implements MinerU's
 signed batch-upload flow.
 
+`material ingest` remains byte-first for an explicit HTTPS URL. If the selected
+`direct-url-downloader` is denied with HTTP 401, 403, or 429, the plan may declare an
+`exact_url_extraction` fallback: first the selected extractor when it advertises
+URL input, then the built-in exact-URL Jina Reader adapter. A successful
+fallback stores only a URL-sourced extraction record and Markdown/JSON output;
+the result reports `artifact: null`, `acquisition.status: "not_materialized"`,
+and artifact source count zero. It never fabricates artifact bytes or an
+artifact record. Jina content is accepted only when it reports the exact
+requested URL and is not a challenge page. Other HTTP statuses, non-HTTPS URLs,
+DOIs, workspace items, other downloader providers, and direct `artifact download` keep their existing
+fail-closed behavior.
+
 The registry also includes `local-pymupdf4llm` for explicit, offline extraction
 of a managed PDF artifact or a directly selected local PDF. It is never chosen
 implicitly, so installing it does not change MinerU or other default extractor

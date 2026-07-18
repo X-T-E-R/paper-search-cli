@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "kind": "extractor",
   "entry": "provider.js",
-  "description": "External MinerU material extractor wrapper for URL extraction into Markdown retrieved from the bounded result archive; local-file upload request construction is exposed as a wrapper contract for host-mediated integration.",
+  "description": "External MinerU material extractor wrapper for exact-URL extraction into Markdown, including managed material-ingest recovery after eligible byte-acquisition denial; local-file upload request construction remains a host-mediated contract.",
   "author": "Paper Search fixtures",
   "capabilities": {
     "inputs": ["url", "artifact"],

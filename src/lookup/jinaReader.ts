@@ -82,7 +82,7 @@ export async function runJinaReaderUrlProbe(
         contentType: response.headers.get("content-type") ?? undefined,
       },
       cacheHit: false,
-      message: "Jina Reader fetched the exact requested URL without retaining extracted content.",
+      message: "Jina Reader fetched and verified the exact requested URL.",
       provider: {
         id: "jina-reader",
         name: "Jina Reader",

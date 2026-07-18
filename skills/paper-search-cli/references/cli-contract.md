@@ -213,6 +213,14 @@ selection.
 
 For DOI inputs, `artifact download` accepts `--resolver <id>` and the canonical tool accepts `resolverId`/`resolver_id`. DOI dry-run plans list resolver loading and invocation before the download steps, and resolver failures are typed as `no_resolver`, `no_candidates`, or `resolver_error` in envelope diagnostics.
 
+For a direct HTTPS URL, `material_ingest` dry-run may expose an
+`exactUrlFallback` plan. Execution enters `exact_url_extraction` only after
+`direct-url-downloader` reports HTTP 401, 403, or 429. Its success data has `artifact: null`,
+an `acquisition` object with `status: "not_materialized"`, and extraction-only
+output paths. Treat that as retained URL Markdown, not as acquired bytes.
+Standalone `artifact_download`, other status codes, and unsafe/non-URL inputs do
+not use this fallback.
+
 ## Batch JSONL
 
 `batch` accepts CSV, JSONL, JSON, and YAML rows. Supported row tools include:

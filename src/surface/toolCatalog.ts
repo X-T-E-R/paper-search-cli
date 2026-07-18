@@ -573,7 +573,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "material_ingest",
     description:
-      "Run or plan the material workflow from a file, URL, or workspace item through managed artifact and extraction primitives.",
+      "Run or plan byte-first material acquisition and extraction; an eligible exact HTTPS denial may retain URL extraction with no artifact.",
     inputSchema: {
       type: "object",
       properties: {

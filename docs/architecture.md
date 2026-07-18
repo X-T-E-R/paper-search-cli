@@ -414,6 +414,20 @@ copies the bytes into the configured artifact root, commits the versioned
 storage reference, and then addresses the managed artifact by id for extraction.
 Direct `extract <path>` remains path-based and does not create an artifact.
 
+For a direct HTTPS URL, ingest is still byte-first. A `direct-url-downloader` failure is
+eligible for exact-URL extraction recovery only when every observed upstream
+status is 401, 403, or 429 and the dry-run plan declared the fallback. Core then
+tries the selected URL-capable material extractor (for example MinerU), followed
+by the existing verified Jina Reader exact-URL adapter. The terminal adapter
+rejects missing/mismatched `URL Source` identity and challenge content. Recovery
+commits an `ExtractionRecord` whose source is the requested URL, but commits no
+artifact bytes or `ArtifactRecord`; its execution envelope exposes
+`executionMode: "exact_url_extraction"`, `artifact: null`, and the unavailable
+acquisition attempts/statuses. Any partial extraction commit stops the provider
+chain so a second provider cannot hide an orphan. Non-eligible status codes and
+non-HTTPS, DOI, workspace-item, other downloader-provider, or direct artifact
+workflows are unchanged.
+
 ### Local PyMuPDF4LLM Sidecar
 
 `local-pymupdf4llm` is an explicit-only material extractor for `local_file` and
@@ -500,7 +514,8 @@ meaning.
 - `extract <artifactId|path|url>` produces extraction records and output files.
 - `material ingest <path|url|itemKey|doi>` plans or runs acquisition plus
   extraction. A local path is copied into managed artifact storage before the
-  extractor receives it as an artifact.
+  extractor receives it as an artifact. An exact HTTPS URL may use the declared
+  extraction-only recovery above after a 401/403/429 byte-acquisition denial.
 - `material status <itemKey|artifactId|extractionId>` reports related artifacts
   and extracted outputs.
 - `batch` can run `artifact_download`, `extract`, and `material_ingest` rows and

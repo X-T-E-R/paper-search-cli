@@ -439,6 +439,149 @@ function authorizedPdfPath(resolvedInput: ResolvedExtractionInput): string | und
   return undefined;
 }
 
+async function commitResolvedExtraction(options: {
+  options: MaterialExtractionOptions;
+  started: number;
+  attachTo?: string;
+  policy: string;
+  resolvedInput: ResolvedExtractionInput;
+  provider: MaterialExtractionProviderSummary;
+  providerResult: ProviderExtractionResult;
+}): Promise<MaterialExtractionResultEnvelope> {
+  const extractionId = randomUUID();
+  const outputs = outputRelativePaths(extractionId);
+  let storedOutputs: Awaited<ReturnType<typeof writeExtractionOutputs>>;
+  try {
+    storedOutputs = await writeExtractionOutputs({
+      extractionRoot: options.options.config.storage.extractionRoot,
+      markdownPath: outputs.markdownPath,
+      jsonPath: outputs.jsonPath,
+      markdown: options.providerResult.markdown,
+      providerResult: options.providerResult,
+    });
+  } catch (error) {
+    if (error instanceof ExtractionOutputCommitError) {
+      return extractionOrphanEnvelope({
+        options: options.options,
+        started: options.started,
+        provider: options.provider,
+        policy: options.policy,
+        attachTo: options.attachTo,
+        resolvedInput: options.resolvedInput,
+        extractionId,
+        commitStage: "output",
+        committedOutputs: error.committedOutputs,
+        error: error.message,
+      });
+    }
+    throw error;
+  }
+  let record: ExtractionRecord;
+  try {
+    record = await createExtractionRecord(options.options.config.workspace.root, {
+      id: extractionId,
+      source: options.resolvedInput.source,
+      backend: options.provider.id,
+      options: {
+        policy: options.policy,
+        providerVersion: options.provider.version,
+      },
+      outputs: {
+        markdownStorage: storedOutputs.markdown.ref,
+        jsonStorage: storedOutputs.json.ref,
+        markdown: options.providerResult.markdown,
+      },
+      cacheHit: options.providerResult.cacheHit,
+      ...(options.attachTo ? { itemId: options.attachTo } : {}),
+      ...(options.providerResult.message ? { message: options.providerResult.message } : {}),
+    });
+  } catch (error) {
+    return extractionOrphanEnvelope({
+      options: options.options,
+      started: options.started,
+      provider: options.provider,
+      policy: options.policy,
+      attachTo: options.attachTo,
+      resolvedInput: options.resolvedInput,
+      extractionId,
+      commitStage: "metadata",
+      committedOutputs: [
+        committedOutput("markdown", storedOutputs.markdown),
+        committedOutput("json", storedOutputs.json),
+      ],
+      error: formatError(error),
+    });
+  }
+
+  return okEnvelope({
+    capability: "extract",
+    tool: "extract",
+    data: {
+      record,
+      markdown: options.providerResult.markdown,
+      markdownPath: storedOutputs.markdown.path,
+      jsonPath: storedOutputs.json.path,
+      provider: options.provider,
+    },
+    diagnostics: {
+      elapsedMs: Date.now() - options.started,
+      inputKind: options.resolvedInput.materialInputKind,
+      workspaceRoot: options.options.config.workspace.root,
+      attachTo: options.attachTo ?? null,
+    },
+    provenance: {
+      providerIds: [options.provider.id],
+      policy: options.policy,
+      configPaths: options.options.config.meta.loadedFiles,
+    },
+  });
+}
+
+/** Commit already verified exact-URL Markdown without inventing an artifact record. */
+export async function commitMaterialExtractionProviderProbe(options: {
+  config: ResolvedConfig;
+  probe: MaterialExtractionProviderProbeData;
+  attachTo?: string;
+}): Promise<MaterialExtractionResultEnvelope> {
+  const started = Date.now();
+  const attachTo = normalizeAttachTo(options.attachTo);
+  if (options.probe.source.kind !== "url" || !options.probe.source.url) {
+    fail("Only an exact URL extraction probe can be committed without an artifact");
+  }
+  const sourceUrl = new URL(options.probe.source.url);
+  if (sourceUrl.protocol !== "https:") {
+    fail("Only a safe HTTPS exact URL extraction probe can be committed without an artifact");
+  }
+  const normalizedUrl = sourceUrl.toString();
+  const providerId = normalizeProviderId(options.probe.provider.id);
+  if (!providerId) fail("Exact URL extraction probe must identify its provider");
+  const policy = normalizePolicy(options.probe.policy);
+  const providerResult = parseProviderExtractionResult(options.probe);
+  return commitResolvedExtraction({
+    options: {
+      config: options.config,
+      input: normalizedUrl,
+      attachTo,
+      providerId,
+      policy,
+    },
+    started,
+    attachTo,
+    policy,
+    resolvedInput: {
+      source: { kind: "url", url: normalizedUrl },
+      materialInputKind: "url",
+    },
+    provider: {
+      id: providerId,
+      name: options.probe.provider.name,
+      version: options.probe.provider.version,
+      packagePath: options.probe.provider.packagePath,
+    },
+    providerResult,
+  });
+}
+
 export async function planMaterialExtractionForInputKind(
   options: MaterialExtractionPlanForInputKindOptions,
 ): Promise<ResultEnvelope<PlannedOperationData>> {
@@ -566,92 +709,14 @@ export async function runMaterialExtraction(
   const providerResult = parseProviderExtractionResult(
     await extractMethod(providerInput({ resolvedInput, attachTo, policy })),
   );
-  const extractionId = randomUUID();
-  const outputs = outputRelativePaths(extractionId);
-  let storedOutputs: Awaited<ReturnType<typeof writeExtractionOutputs>>;
-  try {
-    storedOutputs = await writeExtractionOutputs({
-      extractionRoot: options.config.storage.extractionRoot,
-      markdownPath: outputs.markdownPath,
-      jsonPath: outputs.jsonPath,
-      markdown: providerResult.markdown,
-      providerResult,
-    });
-  } catch (error) {
-    if (error instanceof ExtractionOutputCommitError) {
-      return extractionOrphanEnvelope({
-        options,
-        started,
-        provider,
-        policy,
-        attachTo,
-        resolvedInput,
-        extractionId,
-        commitStage: "output",
-        committedOutputs: error.committedOutputs,
-        error: error.message,
-      });
-    }
-    throw error;
-  }
-  let record: ExtractionRecord;
-  try {
-    record = await createExtractionRecord(options.config.workspace.root, {
-      id: extractionId,
-      source: resolvedInput.source,
-      backend: provider.id,
-      options: {
-        policy,
-        providerVersion: provider.version,
-      },
-      outputs: {
-        markdownStorage: storedOutputs.markdown.ref,
-        jsonStorage: storedOutputs.json.ref,
-        markdown: providerResult.markdown,
-      },
-      cacheHit: providerResult.cacheHit,
-      ...(attachTo ? { itemId: attachTo } : {}),
-      ...(providerResult.message ? { message: providerResult.message } : {}),
-    });
-  } catch (error) {
-    return extractionOrphanEnvelope({
-      options,
-      started,
-      provider,
-      policy,
-      attachTo,
-      resolvedInput,
-      extractionId,
-      commitStage: "metadata",
-      committedOutputs: [
-        committedOutput("markdown", storedOutputs.markdown),
-        committedOutput("json", storedOutputs.json),
-      ],
-      error: formatError(error),
-    });
-  }
-
-  return okEnvelope({
-    capability: "extract",
-    tool: "extract",
-    data: {
-      record,
-      markdown: providerResult.markdown,
-      markdownPath: storedOutputs.markdown.path,
-      jsonPath: storedOutputs.json.path,
-      provider,
-    },
-    diagnostics: {
-      elapsedMs: Date.now() - started,
-      inputKind: resolvedInput.materialInputKind,
-      workspaceRoot: options.config.workspace.root,
-      attachTo: attachTo ?? null,
-    },
-    provenance: {
-      providerIds: [provider.id],
-      policy,
-      configPaths: options.config.meta.loadedFiles,
-    },
+  return commitResolvedExtraction({
+    options,
+    started,
+    attachTo,
+    policy,
+    resolvedInput,
+    provider,
+    providerResult,
   });
 }
 

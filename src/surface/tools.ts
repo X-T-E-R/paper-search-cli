@@ -77,7 +77,7 @@ export const CLI_TOOL_MAPPINGS: CliToolMapping[] = [
   {
     tool: "material_ingest",
     commands: ["material ingest"],
-    note: "Orchestrates managed artifact acquisition and extraction; local files are copied into artifact storage.",
+    note: "Orchestrates byte-first acquisition and extraction; an eligible exact HTTPS denial may retain a URL extraction with no artifact.",
   },
   {
     tool: "material_status",

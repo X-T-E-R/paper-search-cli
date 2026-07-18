@@ -176,8 +176,16 @@ interface ProviderDownloadResult {
 
 export { AcquireResolverError } from "./acquireResolver.js";
 
+export interface ArtifactDownloadFailureDetails {
+  attempts: ArtifactAttempt[];
+  statusCodes: number[];
+}
+
 export class ArtifactDownloadError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly details?: ArtifactDownloadFailureDetails,
+  ) {
     super(message);
     this.name = "ArtifactDownloadError";
   }
@@ -712,6 +720,7 @@ async function downloadWithResolverFunnel(options: {
 
   const attempts = [...priorAttempts];
   const candidateErrors: string[] = [];
+  const statusCodes: number[] = [];
   for (const [index, candidate] of candidates.entries()) {
     const attemptAt = new Date().toISOString();
     try {
@@ -748,24 +757,40 @@ async function downloadWithResolverFunnel(options: {
       };
     } catch (error) {
       const message = formatError(error);
+      const status = providerHttpStatus(error);
+      if (status !== undefined) statusCodes.push(status);
       candidateErrors.push(`${sanitizeUrlForPersistence(candidate.url)}: ${message}`);
       attempts.push({
         tier: "artifact-download-candidate",
         source: candidate.url,
         providerId: options.provider.id,
         ok: false,
+        ...(status !== undefined ? { status } : {}),
         message,
         at: attemptAt,
       });
     }
   }
 
-  fail(
+  throw new ArtifactDownloadError(
     [
       "All resolver candidate downloads failed",
       ...candidateErrors.map((entry) => `- ${entry}`),
     ].join("\n"),
+    { attempts, statusCodes: [...new Set(statusCodes)] },
   );
+}
+
+function providerHttpStatus(error: unknown): number | undefined {
+  if (typeof error === "object" && error !== null && "status" in error) {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) {
+      return status;
+    }
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/\bHTTP\s+([1-5]\d{2})\b/iu);
+  return match ? Number.parseInt(match[1]!, 10) : undefined;
 }
 
 export async function planArtifactDownload(

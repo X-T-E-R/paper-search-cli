@@ -3,7 +3,7 @@ import { loadConfig } from "../config/load.js";
 import {
   planMaterialIngest,
   runMaterialIngest,
-  type MaterialIngestExecutionData,
+  type MaterialIngestExecutionOutcomeData,
   type MaterialIngestPlanData,
 } from "../material/ingest.js";
 import type { Io } from "../runtime/io.js";
@@ -21,7 +21,7 @@ export interface MaterialIngestCommandOptions {
 
 type MaterialIngestCommandEnvelope =
   | ResultEnvelope<MaterialIngestPlanData>
-  | ResultEnvelope<MaterialIngestExecutionData>
+  | ResultEnvelope<MaterialIngestExecutionOutcomeData>
   | ResultEnvelope<null>;
 
 export function registerMaterialIngestCommand(material: Command, io: Io): void {

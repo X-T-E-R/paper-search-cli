@@ -130,7 +130,15 @@ one.
 
 Resolvers return candidate locations only; byte download stays in downloader providers.
 
-No networked material resolver, downloader, or extractor is built into the core CLI. Installed material providers must be discovered and validated at runtime; do not infer that MinerU or any other network extractor exists just because `extract` is available.
+Normal networked material resolution, byte download, and extraction require
+installed material providers; do not infer that MinerU exists just because
+`extract` is available. The one bounded exception is the existing built-in Jina
+Reader exact-URL adapter: `material ingest` may use it only as the terminal
+fallback declared in an exact HTTPS URL plan after `direct-url-downloader`
+reports only HTTP 401/403/429. Prefer the selected URL-capable extractor first. A
+fallback result with `artifact: null` is extraction-only; never describe it as
+a downloaded artifact. Identity mismatch, challenge content, and all-provider
+failure are terminal, and direct `artifact download` is unchanged.
 The official material registry publishes `direct-url-downloader` for bounded,
 provider-mediated acquisition from explicit HTTPS URLs. Its manifest requires
 CLI `>= 0.5.0`, and dry-run must show it as the selected acquire provider before

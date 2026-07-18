@@ -301,6 +301,15 @@ provider. The compatibility commands `resource-pdf`, `resource_pdf`, and `pdf`
 use the same provider-mediated artifact path; they do not restore a core HTTP
 download fallback.
 
+For `material ingest <exact-https-url>`, acquisition remains the primary path.
+When `direct-url-downloader` reports HTTP 401, 403, or 429, a declared fallback may run
+the selected URL-capable extractor and then the verified exact-URL Jina Reader
+adapter. Extraction-only success is represented honestly: `artifact` is null,
+the acquisition is `not_materialized`, and only the URL-sourced extraction
+record/output exists. Source mismatch, challenge content, all-provider failure,
+non-HTTPS input, other providers, and other HTTP statuses fail closed. This behavior does not
+change the standalone `artifact download` contract.
+
 `material ingest <local-file>` is the durable local-file path: it copies the
 source into `storage.artifactRoot`, records its storage reference and digest,
 then passes the managed artifact to an extractor that advertises `artifact`

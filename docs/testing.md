@@ -97,6 +97,7 @@ npx vitest run tests/integration/unpaywall-resolver-funnel.test.ts
 npx vitest run tests/integration/extract-command.test.ts
 npx vitest run tests/integration/material-ingest-plan-command.test.ts
 npx vitest run tests/integration/material-ingest-execution-command.test.ts
+npx vitest run tests/integration/material-ingest-exact-url-fallback.test.ts
 npx vitest run tests/integration/material-provider-mineru-distribution.test.ts
 npx vitest run tests/integration/material-status-command.test.ts
 npx vitest run tests/integration/provider-kind-command.test.ts
@@ -117,6 +118,11 @@ extraction records exist, verifies managed local-file bytes and storage refs,
 and verifies extracted Markdown paths. The workspace command integration test
 also covers managed export planning, collision rejection, and writes below a
 configured `storage.exportRoot`.
+
+The exact-URL fallback test keeps transport offline while proving the byte-first
+success path, managed MinerU recovery from HTTP 403, honest extraction-only
+records, Jina source/challenge rejection, all-provider failure, and unchanged
+unsafe, non-eligible, and non-`direct-url-downloader` behavior.
 
 ## Offline CLI Fixture Example
 
