@@ -347,6 +347,7 @@ async function runCoreProbe() {
     throw new Error("CORE compatibility probe did not normalize title and DOI metadata");
   }
   if (
+    request?.url !== "https://api.core.ac.uk/v3/search/works/" ||
     request?.options?.params?.q !== "open repositories" ||
     request.options.params.limit !== 5 ||
     request.options.params.offset !== 10 ||
