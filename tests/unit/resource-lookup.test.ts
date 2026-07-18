@@ -25,7 +25,111 @@ describe("resource lookup", () => {
     expect(detectIdentifierType("10.1145/3366423.3380130")).toBe("doi");
     expect(detectIdentifierType("12345678")).toBe("pmid");
     expect(detectIdentifierType("arXiv:2401.01234")).toBe("arxiv");
+    expect(detectIdentifierType("2401.01234v3")).toBe("arxiv");
+    expect(detectIdentifierType("hep-th/9901001v2")).toBe("arxiv");
     expect(detectIdentifierType("9780262046305")).toBe("isbn");
+  });
+
+  it.each([
+    ["2603.25762", "2603.25762"],
+    ["arXiv:2603.25762", "2603.25762"],
+    ["2603.25762v4", "2603.25762"],
+    ["arXiv:hep-th/9901001v2", "hep-th/9901001"],
+  ])("resolves exact arXiv identifier variant %s through the installed arXiv provider", async (input, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const searchArxiv = vi.fn(async (_config: ResolvedConfig, identifier: string) => ({
+      providerId: "arxiv",
+      items: [{
+        itemType: "preprint",
+        title: "Exact arXiv Record",
+        url: `https://arxiv.org/abs/${identifier}v5`,
+        extra: `arXiv ID: ${identifier}v5`,
+        source: "arxiv",
+      }],
+    }));
+
+    const result = await runResourceLookup(
+      createConfig(),
+      { identifier: input, identifierType: "arxiv" },
+      { fetch, searchArxiv },
+    );
+
+    expect(searchArxiv).toHaveBeenCalledWith(expect.any(Object), expected);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      kind: "identifier",
+      identifier: expected,
+      identifierType: "arxiv",
+      resolvedBy: "arxiv",
+      item: {
+        itemType: "preprint",
+        title: "Exact arXiv Record",
+        source: "arxiv",
+      },
+      warnings: [],
+    });
+  });
+
+  it("routes the arXiv DOI namespace directly to arXiv while preserving DOI identity", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const searchArxiv = vi.fn(async (_config: ResolvedConfig, identifier: string) => ({
+      providerId: "arxiv",
+      items: [{
+        itemType: "preprint",
+        title: "DOI-Aliased arXiv Record",
+        url: `https://arxiv.org/abs/${identifier}`,
+        source: "arxiv",
+      }],
+    }));
+
+    const result = await runResourceLookup(
+      createConfig(),
+      { identifier: "10.48550/arXiv.2603.25762v2", identifierType: "doi" },
+      { fetch, searchArxiv },
+    );
+
+    expect(searchArxiv).toHaveBeenCalledWith(expect.any(Object), "2603.25762");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      identifier: "10.48550/arxiv.2603.25762v2",
+      identifierType: "doi",
+      resolvedBy: "arxiv",
+      item: { title: "DOI-Aliased arXiv Record", source: "arxiv" },
+    });
+  });
+
+  it("fails closed when arXiv search returns only non-matching records", async () => {
+    await expect(runResourceLookup(
+      createConfig(),
+      { identifier: "2603.25762", identifierType: "arxiv" },
+      {
+        fetch: vi.fn<typeof globalThis.fetch>(),
+        searchArxiv: async () => ({
+          providerId: "arxiv",
+          items: [{
+            itemType: "preprint",
+            title: "A Different Record",
+            url: "https://arxiv.org/abs/2603.99999",
+            source: "arxiv",
+          }],
+        }),
+      },
+    )).rejects.toThrow("returned no exact record for arXiv:2603.25762");
+  });
+
+  it("reports arXiv provider failure without manufacturing metadata", async () => {
+    await expect(runResourceLookup(
+      createConfig(),
+      { identifier: "arXiv:2603.25762", identifierType: "arxiv" },
+      {
+        fetch: vi.fn<typeof globalThis.fetch>(),
+        searchArxiv: async () => ({
+          providerId: "arxiv",
+          items: [],
+          error: "HTTP 503 Service Unavailable",
+        }),
+      },
+    )).rejects.toThrow("arXiv provider arxiv failed: HTTP 503 Service Unavailable");
   });
 
   it("resolves DOI metadata through Crossref", async () => {

@@ -1,6 +1,7 @@
 import type { ResolvedConfig } from "../config/schema.js";
 import type { Creator, ResourceItem } from "../providers/sdk/types.js";
-import { normalizeArxiv, normalizeDoi } from "../identifiers/paper.js";
+import { normalizeDoi, normalizeExactIdentifier } from "../identifiers/paper.js";
+import { loadInstalledProviderRuntime } from "../search/runtime.js";
 import type {
   AssessmentIdentityEvidence,
   AssessmentObservation,
@@ -73,6 +74,16 @@ export interface LookupDeps {
   fetch: typeof fetch;
   now?: () => Date;
   extractUrl?: (config: ResolvedConfig, url: string) => Promise<MaterialExtractionProviderProbeData>;
+  searchArxiv?: (
+    config: ResolvedConfig,
+    identifier: string,
+  ) => Promise<ArxivProviderSearchResult>;
+}
+
+export interface ArxivProviderSearchResult {
+  providerId: string;
+  items: ResourceItem[];
+  error?: string;
 }
 
 export interface UrlLookupFallbackProvenance {
@@ -799,21 +810,72 @@ async function lookupIsbn(
 }
 
 async function lookupArxiv(
+  config: ResolvedConfig,
   deps: LookupDeps,
-  timeoutMs: number,
   arxiv: string,
+  identity?: Pick<ResourceLookupResult, "identifier" | "identifierType">,
 ): Promise<ResourceLookupResult> {
-  const normalized = normalizeArxiv(arxiv);
-  const doiResult = await lookupDoi(deps, timeoutMs, `10.48550/arXiv.${normalized}`);
+  const normalized = normalizeExactIdentifier("arxiv", arxiv);
+  const search = deps.searchArxiv ?? searchInstalledArxiv;
+  const providerResult = await search(config, normalized);
+  if (providerResult.error) {
+    throw new Error(`arXiv provider ${providerResult.providerId} failed: ${providerResult.error}`);
+  }
+  const item = providerResult.items.find((candidate) => itemMatchesArxiv(candidate, normalized));
+  if (!item) {
+    throw new Error(
+      `arXiv provider ${providerResult.providerId} returned no exact record for arXiv:${normalized}`,
+    );
+  }
   return {
-    ...doiResult,
-    identifier: normalized,
-    identifierType: "arxiv",
+    kind: "identifier",
+    identifier: identity?.identifier ?? normalized,
+    identifierType: identity?.identifierType ?? "arxiv",
+    resolvedBy: providerResult.providerId,
     item: {
-      ...doiResult.item,
-      source: "arxiv-lookup",
+      ...item,
+      source: item.source ?? providerResult.providerId,
     },
+    warnings: [],
   };
+}
+
+async function searchInstalledArxiv(
+  config: ResolvedConfig,
+  identifier: string,
+): Promise<ArxivProviderSearchResult> {
+  const { provider, runtime } = await loadInstalledProviderRuntime(config, "arxiv", "academic");
+  const result = await runtime.provider.search(identifier, {
+    maxResults: 5,
+    page: 1,
+    sortBy: "relevance",
+  });
+  return {
+    providerId: provider.id,
+    items: result.items,
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
+function normalizedArxivCandidate(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return normalizeExactIdentifier("arxiv", value);
+  } catch {
+    return undefined;
+  }
+}
+
+function itemMatchesArxiv(item: ResourceItem, identifier: string): boolean {
+  const extraIdentifier = item.extra?.match(/(?:^|\n)arXiv ID:\s*(\S+)/iu)?.[1];
+  return [item.sourceId, item.url, extraIdentifier]
+    .some((candidate) => normalizedArxivCandidate(candidate) === identifier);
+}
+
+function arxivIdentifierFromDoi(identifier: string): string | undefined {
+  const normalized = normalizeDoi(identifier);
+  const match = normalized.match(/^10\.48550\/arxiv\.(.+)$/u);
+  return match?.[1] ? normalizeExactIdentifier("arxiv", match[1]) : undefined;
 }
 
 async function lookupUrl(
@@ -998,7 +1060,10 @@ async function lookupUrlWithExtractionProvider(
 export function detectIdentifierType(identifier: string): LookupIdentifierType {
   const trimmed = identifier.trim();
   if (/^10\.\d{4,}\//i.test(normalizeDoi(trimmed))) return "doi";
-  if (/^(arxiv:)?\d{4}\.\d{4,}(v\d+)?$/i.test(trimmed) || /^(arxiv:)/i.test(trimmed)) {
+  if (
+    /^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?\/\d{7})(?:v\d+)?$/iu.test(trimmed) ||
+    /^(arxiv:)/i.test(trimmed)
+  ) {
     return "arxiv";
   }
   if (/^\d+$/.test(trimmed) && trimmed.length >= 4 && trimmed.length <= 12) return "pmid";
@@ -1036,14 +1101,23 @@ export async function runResourceLookup(
 
   const identifierType = request.identifierType ?? detectIdentifierType(normalizedIdentifier);
   switch (identifierType) {
-    case "doi":
+    case "doi": {
+      const normalizedDoi = normalizeDoi(normalizedIdentifier);
+      const arxivIdentifier = arxivIdentifierFromDoi(normalizedDoi);
+      if (arxivIdentifier) {
+        return lookupArxiv(config, deps, arxivIdentifier, {
+          identifier: normalizedDoi,
+          identifierType: "doi",
+        });
+      }
       return lookupDoi(deps, timeoutMs, normalizedIdentifier);
+    }
     case "pmid":
       return lookupPmid(deps, timeoutMs, normalizedIdentifier);
     case "isbn":
       return lookupIsbn(deps, timeoutMs, normalizedIdentifier);
     case "arxiv":
-      return lookupArxiv(deps, timeoutMs, normalizedIdentifier);
+      return lookupArxiv(config, deps, normalizedIdentifier);
     default:
       throw new Error(`Unsupported identifier type: ${identifierType satisfies never}`);
   }
