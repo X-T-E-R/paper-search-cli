@@ -1106,6 +1106,8 @@ function executedStepTargetPaths(options: {
     case "artifact.record-artifact":
     case "artifact.record-local-artifact":
       return [options.outputs.artifactRecordPath];
+    case "extraction.load-extractor":
+      return options.extraction.provider.packagePath ? [options.extraction.provider.packagePath] : [];
     case "extraction.write-markdown":
       return [options.outputs.extractionOutputPath, options.outputs.markdownPath, options.outputs.jsonPath];
     case "extraction.record-extraction":
@@ -1123,11 +1125,15 @@ function executedStepsFromPlan(options: {
   extraction: MaterialIngestExtractionExecution;
   outputs: MaterialIngestOutputPlan;
 }): MaterialIngestExecutedStep[] {
-  return options.plan.intendedSteps.map((step) => ({
-    ...step,
-    targetPaths: uniqueStrings(executedStepTargetPaths({ ...options, step })),
-    status: "completed",
-  }));
+  return options.plan.intendedSteps.map((step) => {
+    const extractionStep = step.id.startsWith("extraction.");
+    return {
+      ...step,
+      ...(extractionStep ? { providerId: options.extraction.provider.id } : {}),
+      targetPaths: uniqueStrings(executedStepTargetPaths({ ...options, step })),
+      status: "completed",
+    };
+  });
 }
 
 function targetPathsFromExecution(options: {
@@ -1138,9 +1144,13 @@ function targetPathsFromExecution(options: {
   executedSteps: readonly MaterialIngestExecutedStep[];
 }): string[] {
   return uniqueStrings([
-    ...options.plan.targetPaths.map((targetPath) =>
-      replacePlanPlaceholders(targetPath, options.artifact.artifactId, options.extraction.extractionId),
-    ),
+    ...options.plan.targetPaths
+      .filter((targetPath) =>
+        options.plan.extraction.provider.id === options.extraction.provider.id ||
+        targetPath !== options.plan.extraction.provider.packagePath)
+      .map((targetPath) =>
+        replacePlanPlaceholders(targetPath, options.artifact.artifactId, options.extraction.extractionId),
+      ),
     ...options.executedSteps.flatMap((step) => step.targetPaths),
     options.outputs.artifactRecordPath,
     options.outputs.extractionRecordPath,

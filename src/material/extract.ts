@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   listProviderPackageDirectories,
@@ -21,6 +21,7 @@ import { writeLocalStorageBytes } from "../storage/local.js";
 import type { LocalStorageRefV1 } from "../storage/types.js";
 import { PYMUPDF4LLM_PROVIDER_ID } from "./pymupdf4llm/sidecar.js";
 import { sanitizeForPersistence } from "../runtime/sanitizeUrl.js";
+import { localHtmlToMarkdown } from "./htmlToMarkdown.js";
 
 export interface MaterialExtractionOptions {
   config: ResolvedConfig;
@@ -124,6 +125,13 @@ export class MaterialExtractionError extends Error {
 
 const ARTIFACT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const PROVIDER_ID_RE = /^[a-z][a-z0-9_-]{1,63}$/;
+const MINERU_PROVIDER_ID = "mineru-extractor";
+const LOCAL_HTML_PROVIDER: MaterialExtractionProviderSummary = {
+  id: "builtin-local-html",
+  name: "Paper Search Local HTML Extractor",
+  version: "1.0.0",
+  packagePath: "builtin:material/html-to-markdown",
+};
 
 function fail(message: string): never {
   throw new MaterialExtractionError(message);
@@ -392,6 +400,33 @@ function providerInput(options: {
   };
 }
 
+function isStoredHtmlArtifact(resolvedInput: ResolvedExtractionInput): boolean {
+  const artifact = resolvedInput.artifact;
+  if (!artifact?.path) return false;
+  const contentType = artifact.contentType?.toLowerCase() ?? "";
+  return artifact.kind === "html" || contentType.includes("text/html") || /\.html?$/iu.test(artifact.filename ?? "");
+}
+
+async function localHtmlProviderResult(
+  resolvedInput: ResolvedExtractionInput,
+): Promise<ProviderExtractionResult> {
+  const artifact = resolvedInput.artifact;
+  if (!artifact?.path) fail("Stored HTML extraction requires managed artifact bytes");
+  const converted = localHtmlToMarkdown(await readFile(artifact.path, "utf8"));
+  return parseProviderExtractionResult({
+    markdown: converted.markdown,
+    metadata: {
+      mode: "stored-html",
+      artifactId: artifact.id,
+      contentType: artifact.contentType ?? null,
+      rootSelector: converted.rootSelector,
+      title: converted.title ?? null,
+    },
+    cacheHit: false,
+    message: "Extracted from the stored HTML artifact without refetching its remote URL.",
+  });
+}
+
 export async function runMaterialExtractionProviderProbe(
   options: MaterialExtractionOptions,
 ): Promise<MaterialExtractionProviderProbeData> {
@@ -403,6 +438,18 @@ export async function runMaterialExtractionProviderProbe(
     providerId: options.providerId,
   });
   const provider = providerSummary(providerPackage);
+  if (provider.id === MINERU_PROVIDER_ID && isStoredHtmlArtifact(resolvedInput)) {
+    const result = await localHtmlProviderResult(resolvedInput);
+    return {
+      source: resolvedInput.source,
+      markdown: result.markdown,
+      ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+      cacheHit: result.cacheHit,
+      ...(result.message !== undefined ? { message: result.message } : {}),
+      provider: LOCAL_HTML_PROVIDER,
+      policy,
+    };
+  }
   const runtimeContext = createMaterialRuntimeContext({
     manifest: providerPackage.manifest,
     providerConfig: (options.config.platform[provider.id] ?? {}) as Record<string, unknown>,
@@ -690,6 +737,17 @@ export async function runMaterialExtraction(
     providerId: options.providerId,
   });
   const provider = providerSummary(providerPackage);
+  if (provider.id === MINERU_PROVIDER_ID && isStoredHtmlArtifact(resolvedInput)) {
+    return commitResolvedExtraction({
+      options,
+      started,
+      attachTo,
+      policy,
+      resolvedInput,
+      provider: LOCAL_HTML_PROVIDER,
+      providerResult: await localHtmlProviderResult(resolvedInput),
+    });
+  }
   const runtimeContext = createMaterialRuntimeContext({
     manifest: providerPackage.manifest,
     providerConfig: (options.config.platform[provider.id] ?? {}) as Record<string, unknown>,

@@ -386,6 +386,100 @@ describe("material ingest execution command", () => {
     await expect(stat(path.join(workspaceRoot, "material", "extractions"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("extracts a valid stored HTML artifact locally instead of letting MinerU refetch its challenged URL", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-stored-html-");
+    await enableMineruProvider(root);
+    const articleHtml = [
+      "<!doctype html>",
+      "<html>",
+      "<head><meta name=\"citation_title\" content=\"Stored Science Article\"></head>",
+      "<body>",
+      "<nav>Publisher navigation</nav>",
+      "<article>",
+      "<h1>Stored Science Article</h1>",
+      "<p>This paragraph came from the already acquired artifact bytes.</p>",
+      "<h2>Results</h2>",
+      "<p>The stored experiment produced a reproducible result.</p>",
+      "</article>",
+      "</body>",
+      "</html>",
+    ].join("");
+    await writeFile(
+      path.join(root, "providers", "fixture-artifact-downloader", "provider.js"),
+      [
+        "globalThis.__material_provider_exports = {",
+        "  createProvider() {",
+        "    return {",
+        "      async download(input) {",
+        "        return {",
+        "          kind: 'html',",
+        "          filename: 'article.html',",
+        "          contentType: 'text/html; charset=utf-8',",
+        "          remoteUrl: input.url,",
+        "          status: 200,",
+        `          text: ${JSON.stringify(articleHtml)}`,
+        "        };",
+        "      }",
+        "    };",
+        "  }",
+        "};",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const fetchMock = vi.fn(async () => {
+      throw new Error("stored HTML extraction must not refetch the remote URL or invoke MinerU");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const challengedRemoteUrl = "https://publisher.example/articles/remote-would-challenge";
+    const result = await runMaterialCommand(root, [
+      "material",
+      "ingest",
+      challengedRemoteUrl,
+      "--artifact-provider",
+      "fixture-artifact-downloader",
+      "--extract-provider",
+      "mineru-extractor",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const data = expectExecutionData(result.envelope);
+    expect(data.artifact.record).toMatchObject({
+      kind: "html",
+      contentType: "text/html; charset=utf-8",
+      remoteUrl: challengedRemoteUrl,
+    });
+    expect(data.extraction).toMatchObject({
+      provider: {
+        id: "builtin-local-html",
+        kind: "builtin",
+        packagePath: "builtin:material/html-to-markdown",
+      },
+      record: {
+        backend: "builtin-local-html",
+        source: { kind: "artifact", artifactId: data.artifact.artifactId },
+        message: "Extracted from the stored HTML artifact without refetching its remote URL.",
+      },
+    });
+    expect(data.providers.extraction.id).toBe("builtin-local-html");
+    expect(data.executedSteps
+      .filter((step) => step.id.startsWith("extraction."))
+      .map((step) => step.providerId))
+      .toEqual(Array(4).fill("builtin-local-html"));
+    expect(data.targetPaths).not.toContain(path.join(root, "providers", "mineru-extractor"));
+    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toContain("# Stored Science Article");
+    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toContain(
+      "This paragraph came from the already acquired artifact bytes.",
+    );
+    await expect(readExtractionRecord(workspaceRoot, data.extraction.extractionId)).resolves.toMatchObject({
+      backend: "builtin-local-html",
+      source: { kind: "artifact", artifactId: data.artifact.artifactId },
+    });
+  });
+
   it("copies a local file into managed artifact storage and extracts by durable artifact id", async () => {
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-path-");
     await writeFile(
