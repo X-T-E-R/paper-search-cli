@@ -259,7 +259,7 @@ describe("MCP HTTP server", () => {
       method: "tools/call",
       params: {
         name: "artifact_list",
-        arguments: { standalone: true },
+        arguments: {},
       },
     });
     const artifactListText = (artifactList.result as { content: Array<{ text: string }> }).content[0]!.text;
@@ -269,7 +269,6 @@ describe("MCP HTTP server", () => {
       tool: "artifact_list",
       data: {
         count: 1,
-        standalone: true,
         records: [
           expect.objectContaining({
             id: artifactResult.data.record.id,
@@ -278,7 +277,6 @@ describe("MCP HTTP server", () => {
       },
       diagnostics: {
         sourceCounts: { artifacts: 1 },
-        standalone: true,
       },
     });
 

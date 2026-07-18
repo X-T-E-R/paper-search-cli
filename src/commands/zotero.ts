@@ -13,6 +13,7 @@ import {
 import type { ZoteroResolvedSettings } from "../zotero/types.js";
 import { resolveZoteroSelectionBinding } from "../zotero/binding.js";
 import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 interface ZoteroSinkCommandOptions {
   extraction?: string;
@@ -58,9 +59,9 @@ export function registerZoteroCommands(program: Command, io: Io): void {
     .command("zotero")
     .description("Inspect, sync, or explicitly project selected records through Zotero MCP Neo.");
 
-  zotero
+  acceptAlwaysJsonFlag(zotero
     .command("status")
-    .description("Show the compact effective Zotero connection and selection policy.")
+    .description("Show the compact effective Zotero connection and selection policy."))
     .action(async (_options: unknown, command: Command) => {
       try {
         const globalOptions = command.optsWithGlobals<{ config?: string }>();
@@ -87,9 +88,9 @@ export function registerZoteroCommands(program: Command, io: Io): void {
       }
     });
 
-  zotero
+  acceptAlwaysJsonFlag(zotero
     .command("sync <itemId>")
-    .description("Retry the durably configured selected-item projection.")
+    .description("Retry the durably configured selected-item projection."))
     .option("--extraction <id>", "include one selected extraction")
     .action(async (itemId: string, options: { extraction?: string }, command: Command) => {
       try {
@@ -114,9 +115,9 @@ export function registerZoteroCommands(program: Command, io: Io): void {
       }
     });
 
-  zotero
+  acceptAlwaysJsonFlag(zotero
     .command("sink <itemId>")
-    .description("Plan by default; use --preview before a digest-acknowledged --apply.")
+    .description("Plan by default; use --preview before a digest-acknowledged --apply."))
     .option("--extraction <id>", "render one local extraction as a Zotero child note")
     .option("--collection-key <key>", "existing Zotero collection key; repeat for multiple collections", appendOption, [])
     .option("--zotero-item-key <key>", "bind the local item to an existing Zotero item on first sync")

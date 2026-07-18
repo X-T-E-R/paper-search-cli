@@ -217,6 +217,7 @@ describe("material ingest plan command", () => {
       "artifact.load-downloader",
       "artifact.run-downloader",
       "artifact.write-artifact",
+      "artifact.select-downloaded-resource",
       "artifact.record-artifact",
       "extraction.load-extractor",
       "extraction.run-extractor",

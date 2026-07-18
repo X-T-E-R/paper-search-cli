@@ -11,6 +11,7 @@ import {
 } from "../config/userConfig.js";
 import type { Io } from "../runtime/io.js";
 import { failEnvelope, okEnvelope } from "../surface/resultEnvelope.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 type ContextKind = "standalone" | "paperflow";
 
@@ -61,9 +62,11 @@ export function registerContextCommands(program: Command, io: Io): void {
     .command("context")
     .description("Inspect or initialize the nearest Paper Search persistence context.");
 
-  context
-    .command("status")
-    .description("Show the effective context and durable-run destination.")
+  acceptAlwaysJsonFlag(
+    context
+      .command("status")
+      .description("Show the effective context and durable-run destination."),
+  )
     .action(async (_options: unknown, command: Command) => {
       try {
         const config = await loadConfig({
@@ -84,9 +87,11 @@ export function registerContextCommands(program: Command, io: Io): void {
       }
     });
 
-  context
-    .command("init [directory]")
-    .description("Create a non-overwriting project context config for direct nested-directory use.")
+  acceptAlwaysJsonFlag(
+    context
+      .command("init [directory]")
+      .description("Create a non-overwriting project context config for direct nested-directory use."),
+  )
     .option("--id <id>", "stable context id; defaults to the directory name")
     .option("--kind <kind>", "context kind: standalone or paperflow", "standalone")
     .option("--runs-root <path>", "run directory relative to the context config or an absolute path")

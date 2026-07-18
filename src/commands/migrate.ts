@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { executeCombinedMigration } from "../config/migrateService.js";
 import type { Io } from "../runtime/io.js";
 import { failEnvelope, okEnvelope } from "../surface/resultEnvelope.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 interface MigrateOptions {
   apply?: boolean;
@@ -11,9 +12,9 @@ interface MigrateOptions {
 
 /** Command composition exported for the root program/catalog registration slice. */
 export function registerMigrateCommand(program: Command, io: Io): void {
-  program
+  acceptAlwaysJsonFlag(program
     .command("migrate")
-    .description("Plan or apply journaled config and provider-directory migration.")
+    .description("Plan or apply journaled config and provider-directory migration."))
     .option("--legacy-config-root <path>", "explicitly select one legacy config root when candidates differ")
     .option("--legacy-install-dir <path>", "explicitly select a custom legacy provider directory")
     .option("--apply", "apply the displayed migration plan")

@@ -54,6 +54,8 @@ export * from "./material/status.js";
 export * from "./material/package/load.js";
 export * from "./material/runtime/createContext.js";
 export * from "./material/runtime/invokeNodeFactory.js";
+export * from "./material/pymupdf4llm/sidecar.js";
+export * from "./material/pymupdf4llm/setup.js";
 export * from "./material/install/package.js";
 export * from "./material/registry/load.js";
 export * from "./material/registry/plan.js";

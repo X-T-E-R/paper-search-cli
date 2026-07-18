@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import { loadConfig } from "../config/load.js";
 import type { Io } from "../runtime/io.js";
 import { runCanonicalTool } from "../surface/toolRunner.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 interface AssessmentInputOptions {
   snapshot: string;
@@ -35,13 +36,13 @@ export function registerAssessmentCommands(program: Command, io: Io): void {
     .description("Inspect source-backed observations, conflicts, and explicit policy traces.");
 
   for (const mode of ["plan", "run"] as const) {
-    inputOptions(
+    acceptAlwaysJsonFlag(inputOptions(
       assess.command(mode).description(
         mode === "plan"
           ? "Validate and evaluate a snapshot without creating a durable run."
           : "Evaluate a snapshot and persist one durable assessment run.",
       ),
-    ).action(async (options: AssessmentInputOptions, command: Command) => {
+    )).action(async (options: AssessmentInputOptions, command: Command) => {
       try {
         const global = command.optsWithGlobals<{ config?: string }>();
         const config = await loadConfig({ explicitConfigPath: global.config });
@@ -63,9 +64,9 @@ export function registerAssessmentCommands(program: Command, io: Io): void {
     });
   }
 
-  assess
+  acceptAlwaysJsonFlag(assess
     .command("show <run-id>")
-    .description("Replay a completed assessment from stored observations without reading the snapshot.")
+    .description("Replay a completed assessment from stored observations without reading the snapshot."))
     .option("--policy <path>", "optional replacement transparent policy JSON path")
     .action(async (runId: string, options: { policy?: string }, command: Command) => {
       try {
@@ -86,9 +87,9 @@ export function registerAssessmentCommands(program: Command, io: Io): void {
       }
     });
 
-  assess
+  acceptAlwaysJsonFlag(assess
     .command("list")
-    .description("List durable assessment run headers.")
+    .description("List durable assessment run headers."))
     .action(async (_options: unknown, command: Command) => {
       const global = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: global.config });

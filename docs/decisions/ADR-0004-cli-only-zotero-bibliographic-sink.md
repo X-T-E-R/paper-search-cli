@@ -37,6 +37,20 @@ policy and always states that no Zotero write occurred. Partial completion
 returns the created item key and is neither retried nor rolled back
 automatically.
 
+The preview digest is the canonical hash of semantic preflight authority rather
+than the raw diagnostic responses. It binds the endpoint, stable plan digest,
+required readiness and write/read/list capabilities, each targeted collection's
+identity and availability, and each planned action's stable dry-run outcome and
+code. Aggregate library counts, returned collection contents, version/config
+metadata, and descriptive preview payloads are excluded so unrelated Zotero
+activity does not revoke an approval. The raw status, collection probes, and
+action previews remain in the preview result for diagnosis.
+Required authority is fail-closed: missing, malformed, false, or mismatched
+readiness/capability, collection identity/availability, or action dry-run fields
+produce no acknowledgeable preview. A deferred attachment is dry-run again after
+the parent key exists; an unsuccessful or mismatched result records a partial
+item outcome and stops before the attachment write.
+
 Version 1 may create a lossy bibliographic item, an optional rendered note, and
 membership in one explicit existing collection. It may not create collections,
 launch or configure Zotero, access a Zotero profile/database directly, or claim

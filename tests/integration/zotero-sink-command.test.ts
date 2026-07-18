@@ -143,6 +143,34 @@ function receiptDirectory(workspaceRoot: string): string {
   return path.join(workspaceRoot, "zotero", "receipts");
 }
 
+function successfulPreflightResponse(request: RpcRequest): Record<string, unknown> {
+  if (request.name === "zotero_status") {
+    return {
+      ok: true,
+      connected: true,
+      capabilities: {
+        write: { level: "create", enabled: true },
+        read: { metadata: true, abstract: true, notes: true },
+        list: { collectionItems: true },
+      },
+    };
+  }
+  if (request.name === "zotero_list" && request.arguments.limit === 1) {
+    return {
+      ok: true,
+      scope: request.arguments.scope,
+      type: "items",
+      results: [],
+      total: 0,
+      hasMore: false,
+    };
+  }
+  if (request.name === "zotero_write" && request.arguments.dryRun === true) {
+    return { ok: true, dryRun: true, action: request.arguments.action };
+  }
+  return { ok: true };
+}
+
 describe("zotero sink CLI command", () => {
   it("creates a local-only plan with explicit omissions and no remote request or receipt", async () => {
     const fixture = await createWorkspaceFixture();
@@ -172,7 +200,7 @@ describe("zotero sink CLI command", () => {
 
   it("uses only status, list, and dry-run RPC calls during a remote preview", async () => {
     const fixture = await createWorkspaceFixture();
-    const rpc = await startRpcServer((request) => ({ ok: true, request }));
+    const rpc = await startRpcServer(successfulPreflightResponse);
 
     const { envelope, stderr } = await runCommand([
       "zotero", "sink", fixture.itemId,
@@ -202,19 +230,53 @@ describe("zotero sink CLI command", () => {
     await expect(readdir(receiptDirectory(fixture.workspaceRoot))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("refuses incomplete status, collection, and action authority before issuing an approval digest", async () => {
+    const responders: Array<(request: RpcRequest) => unknown> = [
+      () => ({ ok: true }),
+      (request) => request.name === "zotero_list"
+        ? { ok: true, type: "items" }
+        : successfulPreflightResponse(request),
+      (request) => request.name === "zotero_write" && request.arguments.dryRun === true
+        ? { ok: true, dryRun: true }
+        : successfulPreflightResponse(request),
+    ];
+
+    for (const respond of responders) {
+      const fixture = await createWorkspaceFixture();
+      const rpc = await startRpcServer(respond);
+      const { envelope } = await runCommand([
+        "zotero", "sink", fixture.itemId,
+        "--extraction", fixture.extractionId,
+        "--collection-key", "COLLECTION1",
+        "--endpoint", rpc.endpoint,
+        "--preview",
+      ]);
+
+      expect(envelope).toMatchObject({
+        ok: false,
+        tool: "zotero_sink",
+        errors: [expect.stringContaining("preflight authority")],
+      });
+      expect(rpc.requests.some((request) =>
+        request.name === "zotero_write" && request.arguments.dryRun === false,
+      )).toBe(false);
+      await expect(readdir(receiptDirectory(fixture.workspaceRoot))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it("repeats the preview, applies acknowledged item and note writes, verifies them, and records one receipt", async () => {
     const fixture = await createWorkspaceFixture();
     const rpc = await startRpcServer((request) => {
       if (request.name === "zotero_list") {
         return request.arguments.limit === 100
           ? { items: [{ key: "ITEMKEY1" }] }
-          : { items: [{ key: "EXISTING" }] };
+          : successfulPreflightResponse(request);
       }
       if (request.name === "zotero_read") return { key: "ITEMKEY1", title: "CLI Zotero export" };
       if (request.name === "zotero_write" && request.arguments.dryRun === false) {
         return request.arguments.action === "create_item" ? { key: "ITEMKEY1" } : { key: "NOTEKEY1" };
       }
-      return { ok: true };
+      return successfulPreflightResponse(request);
     });
     const baseArgs = [
       "zotero", "sink", fixture.itemId,

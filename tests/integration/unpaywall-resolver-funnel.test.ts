@@ -1,12 +1,13 @@
 import { cp, mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/program.js";
 import { readArtifactRecord } from "../../src/material/artifactStore.js";
 import type { ArtifactDownloadData } from "../../src/material/artifactDownload.js";
 import { isResultEnvelope, type ResultEnvelope } from "../../src/surface/resultEnvelope.js";
 import { resolveDistributableMaterialPackageDir } from "../helpers/distributableMaterialProviders.js";
+import { setSafeExternalHttpsTestHooksForTests } from "../../src/runtime/safeExternalHttps.js";
 
 const tempDirs: string[] = [];
 const downloaderFixture = path.resolve("tests", "fixtures", "material-downloaders", "fixture-artifact-downloader");
@@ -17,7 +18,15 @@ beforeAll(async () => {
   unpaywallPackageDir = await resolveDistributableMaterialPackageDir("unpaywall");
 });
 
+beforeEach(() => {
+  setSafeExternalHttpsTestHooksForTests({
+    resolve: async () => [{ address: "8.8.8.8", family: 4 }],
+    requestPinned: async (url, init) => fetch(url, init),
+  });
+});
+
 afterEach(async () => {
+  setSafeExternalHttpsTestHooksForTests(undefined);
   vi.unstubAllGlobals();
   const { rm } = await import("node:fs/promises");
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));

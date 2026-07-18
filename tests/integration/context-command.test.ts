@@ -57,6 +57,15 @@ describe("context commands", () => {
         },
       });
 
+      const statusWithJson = await runCli([
+        "--config",
+        path.join(project, "paper-search.toml"),
+        "context",
+        "status",
+        "--json",
+      ]);
+      expect(statusWithJson).toEqual(status);
+
       await expect(runCli(["context", "init", project])).resolves.toMatchObject({
         ok: false,
         tool: "context_init",
@@ -66,5 +75,25 @@ describe("context commands", () => {
       if (originalHome === undefined) delete process.env.PAPER_SEARCH_HOME;
       else process.env.PAPER_SEARCH_HOME = originalHome;
     }
+  });
+
+  it("keeps rejecting unknown context status options", async () => {
+    const program = buildProgram({
+      stdout: { write(_chunk: string) {} },
+      stderr: { write(_chunk: string) {} },
+    });
+    const statusCommand = program.commands
+      .find((command) => command.name() === "context")
+      ?.commands.find((command) => command.name() === "status");
+    expect(statusCommand).toBeDefined();
+    statusCommand!.exitOverride();
+
+    await expect(program.parseAsync([
+      "node",
+      "paper-search",
+      "context",
+      "status",
+      "--unknown-output-option",
+    ])).rejects.toMatchObject({ code: "commander.unknownOption" });
   });
 });

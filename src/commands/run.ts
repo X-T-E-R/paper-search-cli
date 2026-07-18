@@ -19,6 +19,7 @@ import {
   openRunStoreFromResolvedConfig,
   type ConfiguredRunStoreResolver,
 } from "../runs/config.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 export {
   DURABLE_DISCOVERY_TOOL_ALLOWLIST,
@@ -45,9 +46,9 @@ export function registerRunCommand(
   registration: RegisterRunCommandOptions = {},
 ): void {
   const resolveStore = registration.resolveStore ?? openRunStoreFromResolvedConfig;
-  program
+  acceptAlwaysJsonFlag(program
     .command("run <tool>")
-    .description("Durably invoke one allowlisted, non-destructive discovery tool.")
+    .description("Durably invoke one allowlisted, non-destructive discovery tool."))
     .option("--json-args <json>", "canonical tool arguments as a JSON object")
     .option(
       "--arg <key=value>",

@@ -1,5 +1,6 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
+import JSZip from "jszip";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadMaterialProviderPackage } from "../../src/material/package/load.js";
 import {
@@ -154,7 +155,7 @@ describe("MinerU provider compatibility", () => {
         url: "https://example.org/article.html",
         model_version: "MinerU-HTML",
         language: "en",
-        is_ocr: true,
+        is_ocr: false,
         enable_table: true,
         enable_formula: false,
         page_ranges: "3-5",
@@ -225,6 +226,31 @@ describe("MinerU provider compatibility", () => {
     });
     expect(firstFile?.data_id).toMatch(/^paper_search_[a-f0-9]+$/);
     expect(localFileRequest.headers.authorization).toBe("Bearer <redacted>");
+    expect(transport.requests).toEqual([]);
+  });
+
+  it("recognizes an extensionless ArXiv PDF and uses the official wrapper defaults", async () => {
+    const { runtime, transport } = await loadMineruRuntime();
+    const buildRequest = providerMethod(runtime, "buildRequest");
+
+    const request = (await buildRequest({
+      source: { kind: "url", url: "https://arxiv.org/pdf/2404.06314" },
+      options: {},
+    })) as { body: Record<string, unknown>; headers: Record<string, string> };
+
+    expect(request.body).toEqual({
+      url: "https://arxiv.org/pdf/2404.06314",
+      model_version: "pipeline",
+      language: "ch",
+      is_ocr: false,
+    });
+    expect(Object.keys(request.body)).toEqual([
+      "url",
+      "model_version",
+      "language",
+      "is_ocr",
+    ]);
+    expect(request.headers["user-agent"]).toBe("openclaw-mineru");
     expect(transport.requests).toEqual([]);
   });
 
@@ -426,7 +452,10 @@ describe("MinerU provider compatibility", () => {
         source: { kind: "artifact", artifactId: "artifact-123" },
         artifact: {
           id: "artifact-123",
-          remoteUrl: "https://example.org/from-artifact.pdf",
+          kind: "pdf",
+          contentType: "application/pdf",
+          filename: "10597581.pdf",
+          remoteUrl: "https://par.nsf.gov/servlets/purl/10597581",
           path: "material/files/artifact-123/from-artifact.pdf",
         },
         options: {},
@@ -434,16 +463,95 @@ describe("MinerU provider compatibility", () => {
     ).resolves.toMatchObject({
       markdown: "# Artifact-backed MinerU result",
       cacheHit: false,
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/task_artifact_remote.zip",
+      message: "MinerU extraction completed with inline Markdown.",
     });
     expect(transport.requests).toEqual([
       expect.objectContaining({
         method: "POST",
         url: "https://mineru.net/api/v4/extract/task",
+        body: expect.objectContaining({
+          url: "https://par.nsf.gov/servlets/purl/10597581",
+          model_version: "pipeline",
+        }),
       }),
       expect.objectContaining({
         method: "GET",
         url: "https://mineru.net/api/v4/extract/task/task_artifact_remote",
+      }),
+    ]);
+  });
+
+  it("downloads a bounded result ZIP and returns its preferred Markdown entry", async () => {
+    const zip = new JSZip();
+    zip.file("README.md", "# Archive notes\n");
+    zip.file("outputs/full.md", "# MinerU archive result\n\nExtracted body.\n");
+    zip.file("outputs/layout.json", "{}\n");
+    const archiveBase64 = await zip.generateAsync({ type: "base64" });
+    const resultUrl = "https://oss.aliyuncs.com/mineru/task_archive.zip";
+    const transport = createQueuedTransport({
+      post: [
+        {
+          code: 0,
+          data: { task_id: "task_archive", state: "submitted" },
+        },
+      ],
+      get: [
+        {
+          code: 0,
+          data: {
+            task_id: "task_archive",
+            state: "done",
+            full_zip_url: resultUrl,
+          },
+        },
+        archiveBase64,
+      ],
+    });
+    const { runtime } = await loadMineruRuntime({
+      transport,
+      providerConfig: { cache: false },
+    });
+    const extract = providerMethod(runtime, "extract");
+
+    await expect(extract({
+      source: { kind: "url", url: "https://example.org/archive-paper.pdf" },
+      options: {},
+    })).resolves.toMatchObject({
+      markdown: "# MinerU archive result\n\nExtracted body.\n",
+      cacheHit: false,
+      message: "MinerU extraction completed from archive entry outputs/full.md.",
+      metadata: {
+        resultRetrieval: {
+          mode: "result-archive",
+          entryPath: "outputs/full.md",
+          entryCount: 3,
+          markdownBytes: 41,
+        },
+      },
+    });
+    expect(transport.requests).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        url: "https://mineru.net/api/v4/extract/task",
+        body: {
+          url: "https://example.org/archive-paper.pdf",
+          model_version: "pipeline",
+          language: "ch",
+          is_ocr: false,
+        },
+      }),
+      expect.objectContaining({
+        method: "GET",
+        url: "https://mineru.net/api/v4/extract/task/task_archive",
+      }),
+      expect.objectContaining({
+        method: "GET",
+        url: resultUrl,
+        options: expect.objectContaining({
+          headers: { "user-agent": "openclaw-mineru" },
+          responseType: "base64",
+          maxResponseBytes: 67108864,
+        }),
       }),
     ]);
   });
@@ -494,14 +602,14 @@ describe("MinerU provider compatibility", () => {
     await expect(extract(input)).resolves.toMatchObject({
       markdown: "# First MinerU result",
       cacheHit: false,
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/cache-first.zip",
+      message: "MinerU extraction completed with inline Markdown.",
     });
     expect(transport.requests).toHaveLength(2);
 
     await expect(extract(input)).resolves.toMatchObject({
       markdown: "# First MinerU result",
       cacheHit: true,
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/cache-first.zip",
+      message: "MinerU extraction completed with inline Markdown.",
     });
     expect(transport.requests).toHaveLength(2);
 
@@ -513,14 +621,14 @@ describe("MinerU provider compatibility", () => {
     ).resolves.toMatchObject({
       markdown: "# Forced MinerU result",
       cacheHit: false,
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/cache-forced.zip",
+      message: "MinerU extraction completed with inline Markdown.",
     });
     expect(transport.requests).toHaveLength(4);
 
     await expect(extract(input)).resolves.toMatchObject({
       markdown: "# Forced MinerU result",
       cacheHit: true,
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/cache-forced.zip",
+      message: "MinerU extraction completed with inline Markdown.",
     });
     expect(transport.requests).toHaveLength(4);
   });

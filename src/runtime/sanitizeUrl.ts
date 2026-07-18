@@ -34,3 +34,60 @@ export function sanitizeUrlForDisplay(value: string): string {
     );
   }
 }
+
+/**
+ * Durable and user-visible URL form. Query keys are useful provenance, but
+ * query values and fragments may carry short-lived credentials and are never
+ * retained.
+ */
+export function sanitizeUrlForPersistence(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return sanitizeUrlForDisplay(value);
+    }
+    if (url.username) url.username = "<masked>";
+    if (url.password) url.password = "<masked>";
+    const keys = [...url.searchParams.keys()];
+    url.search = "";
+    for (const key of keys) url.searchParams.append(key, "<redacted>");
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return sanitizeUrlForDisplay(value)
+      .replace(/([?&])([^=&#]+)=[^&#]*/gu, "$1$2=<redacted>")
+      .replace(/#.*$/u, "");
+  }
+}
+
+const HTTP_URL_IN_TEXT_RE = /https?:\/\/[^\s<>"']+/giu;
+
+export function sanitizeUrlsForPersistenceInText(value: string): string {
+  return value.replace(HTTP_URL_IN_TEXT_RE, (candidate) => {
+    const trailing = candidate.match(/[),.;:!?]+$/u)?.[0] ?? "";
+    const url = trailing ? candidate.slice(0, -trailing.length) : candidate;
+    return `${sanitizeUrlForPersistence(url)}${trailing}`;
+  });
+}
+
+export function sanitizeForPersistence<T>(value: T): T {
+  if (typeof value === "string") {
+    return sanitizeUrlsForPersistenceInText(value) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeForPersistence(entry)) as T;
+  }
+  if (value && typeof value === "object") {
+    // Provider values can originate in a Node vm realm, where the realm's
+    // Object.prototype is not reference-equal to the host Object.prototype.
+    // The intrinsic tag still distinguishes record-like values from URL,
+    // Date, Buffer, Error, and other objects that should remain opaque here.
+    if (Object.prototype.toString.call(value) !== "[object Object]") return value;
+    const result: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      result[key] = sanitizeForPersistence(entry);
+    }
+    return result as T;
+  }
+  return value;
+}

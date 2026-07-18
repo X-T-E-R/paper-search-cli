@@ -226,11 +226,20 @@ providers validate-manifest <path> --kind material
 providers plan-registry <source> --kind material
 providers sync-registry <source> --kind material
 providers install-zip <zip> --kind material
+providers uninstall <id> --kind material
+providers rollback <id> --kind material --revision <sha256>
 ```
 
 The default provider kind is `search` for `providers`. The
 `material-providers` command is a compatibility alias with default kind
 `material`.
+
+Manual ZIP ownership transitions are explicit. A subscription-bound target is
+rejected unless `--replace-bound` is present; the plan pins its receipt/source
+and installed revision. Successful replacement or uninstall retains the exact
+prior provider directory below the kind-specific hidden rollback store. The
+emitted revision is the only selector accepted by `providers rollback`, which
+uses compare-and-swap preconditions and retains any displaced current revision.
 
 ### Search Providers
 
@@ -289,12 +298,18 @@ The material runtime gives providers controlled access to:
 
 - redacted config reads
 - permission-checked HTTP transport
+- bounded ZIP-to-Markdown reading for extractor result archives
 - provider-scoped cache
 - policy metadata
 - controlled workspace writes when the manifest permits them
 
 Core owns orchestration, records, validation, and workspace storage. Networked
 acquisition/extraction logic belongs in provider packages.
+
+Binary HTTP responses must declare a decoded-byte limit. Result-archive readers
+also enforce archive and Markdown limits, safe entry paths, entry-count bounds,
+and a deterministic preferred Markdown entry before returning text to a
+provider.
 
 ### Material Provider Distribution
 
@@ -398,6 +413,33 @@ When `material ingest` receives a local file, it preserves the caller's file,
 copies the bytes into the configured artifact root, commits the versioned
 storage reference, and then addresses the managed artifact by id for extraction.
 Direct `extract <path>` remains path-based and does not create an artifact.
+
+### Local PyMuPDF4LLM Sidecar
+
+`local-pymupdf4llm` is an explicit-only material extractor for `local_file` and
+managed `artifact` PDF inputs. The provider VM receives no process primitive.
+Instead, the host runtime authorizes the one resolved input path and exposes a
+single `sidecar.pymupdf4llm.toMarkdown({ ocr, timeoutMs })` operation only to
+that exact provider id and manifest permission shape. The provider cannot send
+a path, executable, script, argument list, working directory, or environment.
+
+The host resolves a versioned Python 3.11 executable below the Paper Search
+home and a packaged adapter next to the CLI bundle. It starts those two fixed
+paths with `shell: false`, sends one bounded JSON request on stdin, accepts one
+bounded JSON response on stdout, applies a deadline, and empties inherited
+environment values before adding only Python encoding, runtime temp, disabled
+proxy, and Windows loader variables. The adapter calls the official
+`pymupdf4llm.to_markdown()` API with image output disabled and the
+`lines_strict` table strategy. It reports parser versions, page count, elapsed
+time, output mode, and sanitized warnings; it never emits image assets or links.
+
+The dependency lock contains `pymupdf4llm 0.3.4`, `PyMuPDF 1.27.2.3`, and
+`tabulate 0.10.0`. The first two packages are dual licensed under GNU AGPL 3.0
+or an Artifex commercial license. The optional `pymupdf-layout` extension has a
+different license and is not part of this runtime. OCR is not installed; an
+explicit OCR request or unreadable embedded text produces `OCR_UNAVAILABLE`.
+The provider declares `network: false` and is excluded from implicit extractor
+selection, preserving existing online provider routing.
 
 ### Extraction Records
 

@@ -3,6 +3,7 @@ import { loadConfig } from "../config/load.js";
 import type { CitationDirection, CitationIdentifierKind } from "../providers/sdk/types.js";
 import type { Io } from "../runtime/io.js";
 import { runCanonicalTool } from "../surface/toolRunner.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 interface CitationOptions {
   doi?: string[];
@@ -129,14 +130,14 @@ export function registerCitationCommands(program: Command, io: Io): void {
     .description("Plan, run, resume, and inspect bounded citation-graph expansion.");
 
   for (const mode of ["plan", "run"] as const) {
-    addCitationOptions(
+    acceptAlwaysJsonFlag(addCitationOptions(
       citation.command(mode).description(
         mode === "plan"
           ? "Validate providers, exact identifiers, and limits without network or writes."
           : "Create a durable citation run and checkpoint each valid provider page.",
       ),
       mode === "run",
-    ).action(async (options: CitationOptions, command: Command) => {
+    )).action(async (options: CitationOptions, command: Command) => {
       try {
         const global = command.optsWithGlobals<{ config?: string }>();
         const config = await loadConfig({ explicitConfigPath: global.config });
@@ -153,18 +154,18 @@ export function registerCitationCommands(program: Command, io: Io): void {
     });
   }
 
-  citation
+  acceptAlwaysJsonFlag(citation
     .command("resume <run-id>")
-    .description("Resume remaining work from a validated citation checkpoint.")
+    .description("Resume remaining work from a validated citation checkpoint."))
     .action(async (runId: string, _options: unknown, command: Command) => {
       const global = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: global.config });
       io.writeJson(await runCanonicalTool(config, "citation_expand", { mode: "resume", runId }));
     });
 
-  citation
+  acceptAlwaysJsonFlag(citation
     .command("status <run-id>")
-    .description("Inspect one durable citation run without provider calls.")
+    .description("Inspect one durable citation run without provider calls."))
     .action(async (runId: string, _options: unknown, command: Command) => {
       const global = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: global.config });

@@ -12,7 +12,7 @@ import {
   type ZoteroToolClient,
 } from "../../src/zotero/client.js";
 import { applyZoteroSink, planZoteroSink, previewZoteroSink } from "../../src/zotero/sink.js";
-import type { ZoteroResolvedSettings } from "../../src/zotero/types.js";
+import type { ZoteroResolvedSettings, ZoteroSinkPlan } from "../../src/zotero/types.js";
 import { readZoteroItemMapping, writeZoteroItemMapping } from "../../src/zotero/mapping.js";
 import { syncSelectedItemToZotero } from "../../src/zotero/autoSync.js";
 import { DEFAULT_CONFIG } from "../../src/config/defaults.js";
@@ -60,6 +60,44 @@ async function fixturePlan() {
     collectionKey: "COLLECTION1",
   });
   return { workspaceRoot, plan };
+}
+
+function successfulPreflightResponse(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (name === "zotero_status") {
+    return {
+      ok: true,
+      connected: true,
+      capabilities: {
+        write: { level: "create", enabled: true },
+        read: { metadata: true, abstract: true, notes: true },
+        list: { collectionItems: true },
+      },
+    };
+  }
+  if (name === "zotero_list" && args.limit === 1) {
+    return { ok: true, scope: args.scope, type: "items", results: [], total: 0, hasMore: false };
+  }
+  if (name === "zotero_write" && args.dryRun === true) {
+    const params = args.params as Record<string, unknown> | undefined;
+    return {
+      ok: true,
+      dryRun: true,
+      action: args.action,
+      ...(args.action === "attach_file" && params
+        ? {
+            preview: {
+              itemKey: params.itemKey,
+              filePath: params.filePath,
+              mode: params.mode,
+              ...(typeof params.existingAttachmentKey === "string"
+                ? { existingAttachmentKey: params.existingAttachmentKey, operation: "verify_existing" }
+                : { operation: "create" }),
+            },
+          }
+        : {}),
+    };
+  }
+  return { ok: true };
 }
 
 describe("Zotero sink safety boundary", () => {
@@ -123,7 +161,8 @@ describe("Zotero sink safety boundary", () => {
 
   it("previews the exact action templates with dryRun true and performs no local write", async () => {
     const { workspaceRoot, plan } = await fixturePlan();
-    const callTool = vi.fn(async (name: string, args: Record<string, unknown>) => ({ name, args, ok: true }));
+    const callTool = vi.fn(async (name: string, args: Record<string, unknown>) =>
+      successfulPreflightResponse(name, args));
     const preview = await previewZoteroSink({ plan, settings, client: { callTool } });
     expect(callTool.mock.calls).toEqual([
       ["zotero_status", {}],
@@ -135,28 +174,95 @@ describe("Zotero sink safety boundary", () => {
     await expect(readFile(path.join(workspaceRoot, "zotero", "receipts", "missing.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("canonically binds readiness, collection probe, and exact dry-run responses before any write", async () => {
-    const { plan } = await fixturePlan();
-    const baselineObservations = {
-      status: { ready: true, version: "1.2.3" },
-      collectionProbe: { items: [{ key: "EXISTING" }], total: 1 },
+  it("canonically binds semantic preflight authority while ignoring volatile library diagnostics", async () => {
+    const { workspaceRoot, plan } = await fixturePlan();
+    interface PreviewObservations {
+      status: {
+        ok: boolean;
+        connected: boolean;
+        zoteroVersion: string;
+        library: { items: number; collections: number };
+        capabilities: {
+          write: { level: string; enabled: boolean };
+          read: { metadata: boolean; abstract: boolean; notes: boolean; content: boolean };
+          list: { collections: boolean; collectionItems: boolean };
+        };
+        config: { timeoutMs: number; defaultLimit: number };
+      };
+      collectionProbe: {
+        ok: boolean;
+        code?: string;
+        scope: string;
+        type: string;
+        results: Array<{ key: string }>;
+        total: number;
+        hasMore: boolean;
+      };
+      actionPreviews: Array<{
+        ok: boolean;
+        code?: string;
+        dryRun: boolean;
+        action: string;
+        preview: Record<string, unknown>;
+      }>;
+    }
+    interface ClientObservations {
+      status: unknown;
+      collectionProbe: unknown;
+      actionPreviews: unknown[];
+    }
+    const baselineObservations: PreviewObservations = {
+      status: {
+        ok: true,
+        connected: true,
+        zoteroVersion: "7.0.15",
+        library: { items: 10, collections: 2 },
+        capabilities: {
+          write: { level: "create", enabled: true },
+          read: { metadata: true, abstract: true, notes: true, content: true },
+          list: { collections: true, collectionItems: true },
+        },
+        config: { timeoutMs: 10_000, defaultLimit: 20 },
+      },
+      collectionProbe: {
+        ok: true,
+        scope: "collection:COLLECTION1",
+        type: "items",
+        results: [{ key: "EXISTING" }],
+        total: 1,
+        hasMore: false,
+      },
       actionPreviews: [
-        { ok: true, normalized: { itemType: "journalArticle", title: "Plan <Title>" } },
-        { ok: true, normalized: { itemKey: "$createdItemKey", noteLength: 115 } },
+        {
+          ok: true,
+          dryRun: true,
+          action: "create_item",
+          preview: { itemType: "journalArticle", title: "Plan <Title>" },
+        },
+        {
+          ok: true,
+          dryRun: true,
+          action: "create_note",
+          preview: { parentKey: "$createdItemKey", noteLength: 115 },
+        },
       ],
     };
-    function clientFor(observations: typeof baselineObservations, onWrite?: () => void): ZoteroToolClient {
+    function clientFor(observations: ClientObservations, onWrite?: () => void): ZoteroToolClient {
       let dryRunIndex = 0;
       return {
         async callTool(name, args) {
           if (name === "zotero_status") return observations.status;
           if (name === "zotero_list" && args.limit === 1) return observations.collectionProbe;
+          if (name === "zotero_list" && args.limit === 100) {
+            return { ok: true, scope: "collection:COLLECTION1", type: "items", results: [{ key: "ITEMKEY1" }] };
+          }
+          if (name === "zotero_read") return { ok: true, key: "ITEMKEY1" };
           if (name === "zotero_write" && args.dryRun === true) {
             return observations.actionPreviews[dryRunIndex++];
           }
           if (name === "zotero_write" && args.dryRun === false) {
             onWrite?.();
-            return { ok: true, key: "UNEXPECTED_WRITE" };
+            return { ok: true, key: args.action === "create_item" ? "ITEMKEY1" : "NOTEKEY1" };
           }
           return { ok: true };
         },
@@ -172,51 +278,228 @@ describe("Zotero sink safety boundary", () => {
       plan,
       settings,
       client: clientFor({
-        status: { version: "1.2.3", ready: true },
-        collectionProbe: { total: 1, items: [{ key: "EXISTING" }] },
+        status: {
+          config: { defaultLimit: 99, timeoutMs: 25_000 },
+          capabilities: {
+            list: { collectionItems: true, collections: false },
+            read: { content: false, notes: true, abstract: true, metadata: true },
+            write: { enabled: true, level: "create" },
+          },
+          library: { collections: 50, items: 9999 },
+          zoteroVersion: "7.0.99",
+          connected: true,
+          ok: true,
+        },
+        collectionProbe: {
+          hasMore: true,
+          total: 999,
+          results: [{ key: "DIFFERENT_LIBRARY_ITEM" }],
+          type: "items",
+          scope: "collection:COLLECTION1",
+          ok: true,
+        },
         actionPreviews: [
-          { normalized: { title: "Plan <Title>", itemType: "journalArticle" }, ok: true },
-          { normalized: { noteLength: 115, itemKey: "$createdItemKey" }, ok: true },
+          {
+            preview: { title: "Plan <Title>", itemType: "journalArticle", incidental: "changed" },
+            action: "create_item",
+            dryRun: true,
+            ok: true,
+          },
+          {
+            preview: { noteLength: 999, parentKey: "$createdItemKey" },
+            action: "create_note",
+            dryRun: true,
+            ok: true,
+          },
         ],
       }),
     });
     expect(reordered.previewDigest).toBe(baseline.previewDigest);
 
-    const changedObservations = [
+    const invalidObservations: ClientObservations[] = [
       {
         ...baselineObservations,
-        status: { ready: false, version: "1.2.3" },
+        status: {
+          ok: true,
+          capabilities: baselineObservations.status.capabilities,
+        },
       },
       {
         ...baselineObservations,
-        collectionProbe: { items: [], total: 0 },
+        status: { ...baselineObservations.status, connected: false },
+      },
+      {
+        ...baselineObservations,
+        status: {
+          ...baselineObservations.status,
+          capabilities: {
+            ...baselineObservations.status.capabilities,
+            write: { ...baselineObservations.status.capabilities.write, enabled: false },
+          },
+        },
+      },
+      {
+        ...baselineObservations,
+        status: {
+          ...baselineObservations.status,
+          capabilities: {
+            ...baselineObservations.status.capabilities,
+            read: { ...baselineObservations.status.capabilities.read, metadata: false },
+          },
+        },
+      },
+      {
+        ...baselineObservations,
+        status: {
+          ...baselineObservations.status,
+          capabilities: {
+            ...baselineObservations.status.capabilities,
+            read: { ...baselineObservations.status.capabilities.read, notes: false },
+          },
+        },
+      },
+      {
+        ...baselineObservations,
+        status: {
+          ...baselineObservations.status,
+          capabilities: {
+            ...baselineObservations.status.capabilities,
+            list: { ...baselineObservations.status.capabilities.list, collectionItems: false },
+          },
+        },
+      },
+      {
+        ...baselineObservations,
+        collectionProbe: {
+          ...baselineObservations.collectionProbe,
+          ok: false,
+          code: "NOT_FOUND",
+          scope: "collection:OTHER",
+        },
+      },
+      {
+        ...baselineObservations,
+        collectionProbe: { ok: true, type: "items" },
       },
       {
         ...baselineObservations,
         actionPreviews: [
-          { ok: false, normalized: { itemType: "journalArticle", title: "Plan <Title>" } },
+          { ok: false, code: "NOT_AVAILABLE", dryRun: true, action: "create_item", preview: {} },
+          baselineObservations.actionPreviews[1]!,
+        ],
+      },
+      {
+        ...baselineObservations,
+        actionPreviews: [
+          { ok: true, action: "create_item", preview: {} },
           baselineObservations.actionPreviews[1]!,
         ],
       },
     ];
-    for (const observations of changedObservations) {
-      const changed = await previewZoteroSink({ plan, settings, client: clientFor(observations) });
-      expect(changed.previewDigest).not.toBe(baseline.previewDigest);
-
+    for (const observations of invalidObservations) {
+      await expect(previewZoteroSink({
+        plan,
+        settings,
+        client: clientFor(observations),
+      })).rejects.toThrow("preflight authority");
       let writeCount = 0;
       await expect(applyZoteroSink({
         plan,
         settings,
         acknowledgedPreviewDigest: baseline.previewDigest,
         client: clientFor(observations, () => { writeCount += 1; }),
-      })).rejects.toThrow("does not match");
+      })).rejects.toThrow("preflight authority");
       expect(writeCount).toBe(0);
     }
+
+    const changedCapability = await previewZoteroSink({
+      plan,
+      settings,
+      client: clientFor({
+        ...baselineObservations,
+        status: {
+          ...baselineObservations.status,
+          capabilities: {
+            ...baselineObservations.status.capabilities,
+            write: { ...baselineObservations.status.capabilities.write, level: "full" },
+          },
+        },
+      }),
+    });
+    expect(changedCapability.previewDigest).not.toBe(baseline.previewDigest);
+
+    const changedOutcomeCode = await previewZoteroSink({
+      plan,
+      settings,
+      client: clientFor({
+        ...baselineObservations,
+        actionPreviews: [
+          { ...baselineObservations.actionPreviews[0]!, code: "OK" },
+          baselineObservations.actionPreviews[1]!,
+        ],
+      }),
+    });
+    expect(changedOutcomeCode.previewDigest).not.toBe(baseline.previewDigest);
+
+    const differentEndpoint = await previewZoteroSink({
+      plan,
+      settings: { ...settings, endpoint: "http://127.0.0.1:23121/mcp" },
+      client: clientFor(baselineObservations),
+    });
+    expect(differentEndpoint.previewDigest).not.toBe(baseline.previewDigest);
+
+    const actionChangedPlan = await planZoteroSink({
+      workspaceRoot,
+      itemId: plan.itemId,
+      extractionId: plan.extractionId,
+      collectionKey: "COLLECTION1",
+      markdownMode: "none",
+    });
+    const actionChanged = await previewZoteroSink({
+      plan: actionChangedPlan,
+      settings,
+      client: clientFor(baselineObservations),
+    });
+    expect(actionChanged.previewDigest).not.toBe(baseline.previewDigest);
+
+    const collectionChangedPlan = await planZoteroSink({
+      workspaceRoot,
+      itemId: plan.itemId,
+      extractionId: plan.extractionId,
+      collectionKey: "COLLECTION2",
+    });
+    const collectionChanged = await previewZoteroSink({
+      plan: collectionChangedPlan,
+      settings,
+      client: clientFor({
+        ...baselineObservations,
+        collectionProbe: { ...baselineObservations.collectionProbe, scope: "collection:COLLECTION2" },
+      }),
+    });
+    expect(collectionChanged.previewDigest).not.toBe(baseline.previewDigest);
+
+    let writeCount = 0;
+    const applied = await applyZoteroSink({
+      plan,
+      settings,
+      acknowledgedPreviewDigest: baseline.previewDigest,
+      client: clientFor({
+        ...baselineObservations,
+        status: {
+          ...baselineObservations.status,
+          library: { ...baselineObservations.status.library, items: 11 },
+        },
+      }, () => { writeCount += 1; }),
+    });
+    expect(applied.receipt.status).toBe("complete");
+    expect(writeCount).toBe(2);
   });
 
   it("requires the preview digest and preserves the returned item key on partial note failure", async () => {
     const { workspaceRoot, plan } = await fixturePlan();
-    const previewClient: ZoteroToolClient = { callTool: async () => ({ ok: true }) };
+    const previewClient: ZoteroToolClient = {
+      callTool: async (name, args) => successfulPreflightResponse(name, args),
+    };
     const preview = await previewZoteroSink({ plan, settings, client: previewClient });
     const calls: Array<[string, Record<string, unknown>]> = [];
     let realWriteCount = 0;
@@ -228,7 +511,7 @@ describe("Zotero sink safety boundary", () => {
           if (realWriteCount === 1) return { ok: true, key: "ITEMKEY1" };
           throw new Error("note rejected");
         }
-        return { ok: true };
+        return successfulPreflightResponse(name, args);
       },
     };
     await expect(applyZoteroSink({
@@ -258,7 +541,11 @@ describe("Zotero sink safety boundary", () => {
 
   it("verifies the returned item and explicit collection before writing a complete receipt", async () => {
     const { plan } = await fixturePlan();
-    const preview = await previewZoteroSink({ plan, settings, client: { callTool: async () => ({ ok: true }) } });
+    const preview = await previewZoteroSink({
+      plan,
+      settings,
+      client: { callTool: async (name, args) => successfulPreflightResponse(name, args) },
+    });
     let realWrites = 0;
     const applied = await applyZoteroSink({
       plan,
@@ -272,7 +559,7 @@ describe("Zotero sink safety boundary", () => {
           }
           if (name === "zotero_read") return { key: "ITEMKEY2", title: "Plan <Title>" };
           if (name === "zotero_list" && args.limit === 100) return { items: [{ key: "ITEMKEY2" }] };
-          return { ok: true };
+          return successfulPreflightResponse(name, args);
         },
       },
     });
@@ -335,7 +622,7 @@ describe("Zotero sink safety boundary", () => {
         }
         if (name === "zotero_read") return { key: "ITEMATTACH1" };
         if (name === "zotero_list" && args.limit === 100) return { items: [{ key: "ITEMATTACH1" }] };
-        return { ok: true };
+        return successfulPreflightResponse(name, args);
       },
     };
     const preview = await previewZoteroSink({ plan, settings, client });
@@ -388,6 +675,87 @@ describe("Zotero sink safety boundary", () => {
     ]);
   });
 
+  it("records a partial item and skips the attachment write when its resolved dry-run is invalid", async () => {
+    const invalidResolvedPreviews = [
+      { ok: false, code: "NOT_AVAILABLE", dryRun: true, action: "attach_file" },
+      { ok: true, dryRun: false, action: "attach_file" },
+      { ok: true, dryRun: true, action: "create_item" },
+      {
+        ok: true,
+        dryRun: true,
+        action: "attach_file",
+        preview: { itemKey: "OTHER", filePath: "other.pdf", mode: "link", operation: "create" },
+      },
+    ];
+
+    for (const [index, invalidResolvedPreview] of invalidResolvedPreviews.entries()) {
+      const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paper-search-zotero-deferred-"));
+      roots.push(workspaceRoot);
+      const itemId = `deferred-item-${index}`;
+      const itemKey = `DEFERRED${index}`;
+      const plan: ZoteroSinkPlan = {
+        schemaVersion: 1,
+        workspaceRoot,
+        itemId,
+        collectionKeys: [],
+        actions: [
+          { action: "create_item", params: { itemType: "journalArticle", title: "Deferred attachment" } },
+          {
+            action: "attach_file",
+            sourceRef: `artifact:deferred-${index}`,
+            params: {
+              itemKey: "$createdItemKey",
+              filePath: path.join(workspaceRoot, "paper.pdf"),
+              mode: "link",
+            },
+          },
+        ],
+        omissions: [],
+        planDigest: String(index).repeat(64),
+      };
+      const realWriteActions: string[] = [];
+      const client: ZoteroToolClient = {
+        async callTool(name, args) {
+          if (name === "zotero_write" && args.dryRun === false) {
+            realWriteActions.push(String(args.action));
+            return args.action === "create_item"
+              ? { ok: true, itemKey }
+              : { ok: true, attachmentKey: `ATTACH${index}` };
+          }
+          if (
+            name === "zotero_write"
+            && args.dryRun === true
+            && args.action === "attach_file"
+            && (args.params as Record<string, unknown>).itemKey === itemKey
+          ) {
+            return invalidResolvedPreview;
+          }
+          return successfulPreflightResponse(name, args);
+        },
+      };
+      const preview = await previewZoteroSink({ plan, settings, client });
+      const applied = await applyZoteroSink({
+        plan,
+        settings,
+        acknowledgedPreviewDigest: preview.previewDigest,
+        client,
+      });
+
+      expect(applied.receipt).toMatchObject({
+        status: "partial",
+        zoteroItemKey: itemKey,
+        completedPhases: ["create_item"],
+        failedPhase: "attach_file_preflight",
+      });
+      expect(applied.receipt.zoteroAttachmentKeys).toBeUndefined();
+      expect(realWriteActions).toEqual(["create_item"]);
+      await expect(readZoteroItemMapping(workspaceRoot, itemId)).resolves.toMatchObject({
+        zoteroItemKey: itemKey,
+        attachments: {},
+      });
+    }
+  });
+
   it("records an unverified attachment key and prevents duplicate retry after post-write failure", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paper-search-zotero-attachment-partial-"));
     roots.push(workspaceRoot);
@@ -423,7 +791,7 @@ describe("Zotero sink safety boundary", () => {
             partial: { attachmentKey: "ATTACHPARTIAL" },
           });
         }
-        return { ok: true };
+        return successfulPreflightResponse(name, args);
       },
     };
     const preview = await previewZoteroSink({ plan, settings, client });
@@ -475,7 +843,7 @@ describe("Zotero sink safety boundary", () => {
           }
         }
         if (name === "zotero_read") return { ok: true, key: "ITEMPARTIAL" };
-        return { ok: true };
+        return successfulPreflightResponse(name, args);
       },
     };
     const retryPreview = await previewZoteroSink({ plan: repeat, settings, client: retryClient });
@@ -541,7 +909,7 @@ describe("Zotero sink safety boundary", () => {
           return { itemKey: "RECOVERED1" };
         }
         if (name === "zotero_read") return { ok: true, key: "RECOVERED1" };
-        return { ok: true };
+        return successfulPreflightResponse(name, args);
       },
     };
     const preview = await previewZoteroSink({ plan, settings, client });
@@ -559,7 +927,9 @@ describe("Zotero sink safety boundary", () => {
 
   it("rejects a stale create plan before any remote call when a mapping appeared concurrently", async () => {
     const { workspaceRoot, plan } = await fixturePlan();
-    const previewClient: ZoteroToolClient = { callTool: async () => ({ ok: true }) };
+    const previewClient: ZoteroToolClient = {
+      callTool: async (name, args) => successfulPreflightResponse(name, args),
+    };
     const preview = await previewZoteroSink({ plan, settings, client: previewClient });
     await writeZoteroItemMapping(workspaceRoot, {
       schemaVersion: 1,

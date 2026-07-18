@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import type { Io } from "../runtime/io.js";
 import { registerMaterialIngestCommand } from "./materialIngest.js";
+import { registerMaterialPyMuPDF4LLMCommand } from "./materialPyMuPDF4LLM.js";
 import { registerMaterialStatusCommand } from "./materialStatus.js";
 
 export function registerMaterialCommands(program: Command, io: Io): void {
@@ -9,5 +10,6 @@ export function registerMaterialCommands(program: Command, io: Io): void {
     .description("Plan and inspect material artifact/extraction workflows.");
 
   registerMaterialIngestCommand(material, io);
+  registerMaterialPyMuPDF4LLMCommand(material, io);
   registerMaterialStatusCommand(material, io);
 }

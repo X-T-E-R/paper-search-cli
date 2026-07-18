@@ -325,6 +325,151 @@ function isDeferredAttachmentPreview(action: ZoteroWriteAction): boolean {
   return action.action === "attach_file" && action.params.itemKey === CREATED_ITEM_PLACEHOLDER;
 }
 
+function authorityRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) throw new ZoteroSinkError(`Zotero preflight authority is missing ${label}`);
+  return value;
+}
+
+function requireAuthorityTrue(value: unknown, label: string): true {
+  if (value !== true) throw new ZoteroSinkError(`Zotero preflight authority requires ${label} to be true`);
+  return true;
+}
+
+function requireAuthorityString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ZoteroSinkError(`Zotero preflight authority requires a non-empty ${label}`);
+  }
+  return value;
+}
+
+function optionalAuthorityCode(value: unknown, label: string): string | null {
+  if (value === undefined) return null;
+  return requireAuthorityString(value, label);
+}
+
+function projectStatusAuthority(status: unknown, collectionProbeRequired: boolean): Record<string, unknown> {
+  const root = authorityRecord(status, "status response");
+  const capabilities = authorityRecord(root.capabilities, "status.capabilities");
+  const write = authorityRecord(capabilities.write, "status.capabilities.write");
+  const read = authorityRecord(capabilities.read, "status.capabilities.read");
+  const level = requireAuthorityString(write.level, "status.capabilities.write.level");
+  if (!new Set(["create", "full", "custom"]).has(level)) {
+    throw new ZoteroSinkError(`Zotero preflight authority does not permit writes at level ${level}`);
+  }
+  if (root.ready !== undefined) {
+    requireAuthorityTrue(root.ready, "status.ready");
+  }
+  let listAuthority: Record<string, unknown> | undefined;
+  if (collectionProbeRequired) {
+    const list = authorityRecord(capabilities.list, "status.capabilities.list");
+    listAuthority = {
+      collectionItems: requireAuthorityTrue(
+        list.collectionItems,
+        "status.capabilities.list.collectionItems",
+      ),
+    };
+  }
+  return {
+    ok: requireAuthorityTrue(root.ok, "status.ok"),
+    connected: requireAuthorityTrue(root.connected, "status.connected"),
+    ready: true,
+    capabilities: {
+      write: {
+        enabled: requireAuthorityTrue(write.enabled, "status.capabilities.write.enabled"),
+        level,
+      },
+      read: {
+        metadata: requireAuthorityTrue(read.metadata, "status.capabilities.read.metadata"),
+        abstract: requireAuthorityTrue(read.abstract, "status.capabilities.read.abstract"),
+        notes: requireAuthorityTrue(read.notes, "status.capabilities.read.notes"),
+      },
+      ...(listAuthority ? { list: listAuthority } : {}),
+    },
+  };
+}
+
+function projectCollectionAuthority(collectionKey: string, probe: unknown): Record<string, unknown> {
+  const label = `collection probe ${collectionKey}`;
+  const root = authorityRecord(probe, label);
+  const expectedScope = `collection:${collectionKey}`;
+  requireAuthorityTrue(root.ok, `${label}.ok`);
+  if (root.scope !== expectedScope) {
+    throw new ZoteroSinkError(`Zotero preflight authority expected ${label}.scope to be ${expectedScope}`);
+  }
+  if (root.type !== "items") {
+    throw new ZoteroSinkError(`Zotero preflight authority expected ${label}.type to be items`);
+  }
+  return {
+    collectionKey,
+    available: true,
+    code: optionalAuthorityCode(root.code, `${label}.code`),
+    scope: expectedScope,
+    type: "items",
+  };
+}
+
+function projectActionAuthority(
+  action: ZoteroWriteAction,
+  index: number,
+  preview: unknown,
+  options: { requireDeferredMarker?: boolean } = {},
+): Record<string, unknown> {
+  const label = `action preview ${index} (${action.action})`;
+  const root = authorityRecord(preview, label);
+  requireAuthorityTrue(root.ok, `${label}.ok`);
+  requireAuthorityTrue(root.dryRun, `${label}.dryRun`);
+  if (root.action !== action.action) {
+    throw new ZoteroSinkError(`Zotero preflight authority expected ${label}.action to be ${action.action}`);
+  }
+  const deferredUntilItemCreation = isDeferredAttachmentPreview(action);
+  if (options.requireDeferredMarker && root.deferredUntilItemCreation !== true) {
+    throw new ZoteroSinkError(`Zotero preflight authority requires ${label} to retain its deferred marker`);
+  }
+  return {
+    index,
+    action: action.action,
+    ok: true,
+    code: optionalAuthorityCode(root.code, `${label}.code`),
+    dryRun: true,
+    responseAction: action.action,
+    deferredUntilItemCreation,
+  };
+}
+
+function validateResolvedAttachmentAuthority(
+  action: ZoteroWriteAction,
+  index: number,
+  params: Record<string, unknown>,
+  preview: unknown,
+): void {
+  projectActionAuthority(action, index, preview);
+  const root = authorityRecord(preview, `resolved attachment preview ${index}`);
+  const detail = authorityRecord(root.preview, `resolved attachment preview ${index}.preview`);
+  const expectedItemKey = requireAuthorityString(params.itemKey, `resolved attachment ${index} itemKey`);
+  const expectedFilePath = requireAuthorityString(params.filePath, `resolved attachment ${index} filePath`);
+  const expectedMode = requireAuthorityString(params.mode, `resolved attachment ${index} mode`);
+  if (detail.itemKey !== expectedItemKey) {
+    throw new ZoteroSinkError(`Zotero preflight authority resolved attachment ${index} to another item`);
+  }
+  if (
+    typeof detail.filePath !== "string"
+    || path.resolve(detail.filePath) !== path.resolve(expectedFilePath)
+  ) {
+    throw new ZoteroSinkError(`Zotero preflight authority resolved attachment ${index} to another file`);
+  }
+  if (detail.mode !== expectedMode) {
+    throw new ZoteroSinkError(`Zotero preflight authority resolved attachment ${index} to another mode`);
+  }
+  const expectedAttachmentKey = params.existingAttachmentKey;
+  if (typeof expectedAttachmentKey === "string") {
+    if (detail.existingAttachmentKey !== expectedAttachmentKey || detail.operation !== "verify_existing") {
+      throw new ZoteroSinkError(`Zotero preflight authority resolved attachment ${index} to another existing key`);
+    }
+  } else if (detail.operation !== "create") {
+    throw new ZoteroSinkError(`Zotero preflight authority resolved attachment ${index} to an unexpected operation`);
+  }
+}
+
 export async function previewZoteroSink(options: {
   plan: ZoteroSinkPlan;
   settings: ZoteroResolvedSettings;
@@ -334,30 +479,40 @@ export async function previewZoteroSink(options: {
     throw new ZoteroSinkError("Zotero sink is disabled; enable it in user configuration or use an explicit CLI endpoint");
   }
   const status = await options.client.callTool("zotero_status", {});
+  const statusAuthority = projectStatusAuthority(status, options.plan.collectionKeys.length > 0);
   const collectionProbes: Record<string, unknown> = {};
+  const collectionAuthorities: Record<string, unknown>[] = [];
   for (const collectionKey of options.plan.collectionKeys) {
-    collectionProbes[collectionKey] = await options.client.callTool("zotero_list", {
+    const probe = await options.client.callTool("zotero_list", {
       scope: `collection:${collectionKey}`,
       type: "items",
       limit: 1,
     });
+    collectionProbes[collectionKey] = probe;
+    collectionAuthorities.push(projectCollectionAuthority(collectionKey, probe));
   }
   const actionPreviews: unknown[] = [];
-  for (const action of options.plan.actions) {
+  const actionAuthorities: Record<string, unknown>[] = [];
+  for (const [index, action] of options.plan.actions.entries()) {
+    let actionPreview: unknown;
     if (isDeferredAttachmentPreview(action)) {
-      actionPreviews.push({
+      actionPreview = {
         ok: true,
         dryRun: true,
         action: action.action,
         deferredUntilItemCreation: true,
         params: action.params,
+      };
+    } else {
+      actionPreview = await options.client.callTool("zotero_write", {
+        action: action.action,
+        params: action.params,
+        dryRun: true,
       });
-      continue;
     }
-    actionPreviews.push(await options.client.callTool("zotero_write", {
-      action: action.action,
-      params: action.params,
-      dryRun: true,
+    actionPreviews.push(actionPreview);
+    actionAuthorities.push(projectActionAuthority(action, index, actionPreview, {
+      requireDeferredMarker: isDeferredAttachmentPreview(action),
     }));
   }
   const collectionProbe = options.plan.collectionKeys[0]
@@ -367,9 +522,9 @@ export async function previewZoteroSink(options: {
     schemaVersion: 1,
     endpoint: options.settings.endpoint,
     planDigest: options.plan.planDigest,
-    status,
-    collectionProbes,
-    actionPreviews,
+    status: statusAuthority,
+    collectionProbes: collectionAuthorities,
+    actionPreviews: actionAuthorities,
   });
   return {
     plan: options.plan,
@@ -531,7 +686,7 @@ async function applyZoteroSinkUnderLock(options: {
   }
   const preview = await previewZoteroSink(options);
   if (options.acknowledgedPreviewDigest !== preview.previewDigest) {
-    throw new ZoteroSinkError("Acknowledged preview digest does not match the exact current remote dry-run preview");
+    throw new ZoteroSinkError("Acknowledged preview digest does not match the current semantic remote preflight");
   }
   const completedPhases: string[] = [];
   let mapping = initialMapping && initialMapping.zoteroItemKey === options.plan.existingZoteroItemKey
@@ -542,16 +697,22 @@ async function applyZoteroSinkUnderLock(options: {
   const zoteroAttachmentKeys: string[] = [];
   let failedPhase: string | undefined;
 
-  for (const action of options.plan.actions) {
+  for (const [actionIndex, action] of options.plan.actions.entries()) {
     if (failedPhase) break;
     try {
       const params = resolveActionParams(action, zoteroItemKey);
       if (isDeferredAttachmentPreview(action)) {
-        await options.client.callTool("zotero_write", {
-          action: action.action,
-          params,
-          dryRun: true,
-        });
+        try {
+          const resolvedPreview = await options.client.callTool("zotero_write", {
+            action: action.action,
+            params,
+            dryRun: true,
+          });
+          validateResolvedAttachmentAuthority(action, actionIndex, params, resolvedPreview);
+        } catch {
+          failedPhase = "attach_file_preflight";
+          continue;
+        }
       }
       const response = await options.client.callTool("zotero_write", {
         action: action.action,

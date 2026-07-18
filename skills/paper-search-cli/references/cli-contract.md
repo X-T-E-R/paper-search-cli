@@ -68,6 +68,22 @@ node scripts/paper-search.mjs material status <target> --json
 
 Many source-compatible commands already emit JSON directly. Do not parse human text when an envelope or catalog JSON is available.
 
+Commands whose only stdout representation is already a JSON `ResultEnvelope`
+accept a command-local `--json` compatibility flag. On those commands the flag
+is a no-op and does not change the envelope, so either form is safe:
+
+```bash
+node scripts/paper-search.mjs context status --json
+node scripts/paper-search.mjs search-plan --type academic --json
+node scripts/paper-search.mjs citation plan --doi <doi> --depth 1 --json
+node scripts/paper-search.mjs assess plan --snapshot ./observations.json --sha256 <digest> --json
+```
+
+This is not a global format flag. Commands with human, file, catalog, or
+multi-format stdout accept `--json` only when their own `--help` advertises it;
+for example, `help` emits catalog JSON directly and `batch` uses
+`--output-format` instead.
+
 ## Canonical tools and durable invocation
 
 The human `run <tool>` command is the durable projection of canonical
@@ -158,6 +174,9 @@ Before write or network actions, prefer the plan path:
 ```bash
 node scripts/paper-search.mjs providers install <id> --json
 node scripts/paper-search.mjs providers update [id...] --json
+node scripts/paper-search.mjs providers install-zip <zip> --kind material --json
+node scripts/paper-search.mjs providers uninstall <id> --kind material --json
+node scripts/paper-search.mjs providers rollback <id> --kind material --revision <sha256> --json
 node scripts/paper-search.mjs self mode self-update --json
 node scripts/paper-search.mjs self update --json
 node scripts/paper-search.mjs providers plan-registry <source> --kind search --json
@@ -166,6 +185,7 @@ node scripts/paper-search.mjs providers sync-registry <source> --kind material -
 node scripts/paper-search.mjs artifact download <url-or-itemKey-or-doi> --dry-run --json
 node scripts/paper-search.mjs extract <input> --dry-run --json
 node scripts/paper-search.mjs material ingest <input> --dry-run --json
+node scripts/paper-search.mjs material setup-local-pymupdf4llm --python <absolute-python-3.11-path> --json
 node scripts/paper-search.mjs citation plan --doi <doi> --depth 1
 node scripts/paper-search.mjs assess plan --snapshot ./observations.json --sha256 <digest>
 node scripts/paper-search.mjs runs prune
@@ -175,11 +195,21 @@ node scripts/paper-search.mjs batch ./rows.jsonl --dry-run --out ./planned.jsonl
 
 `planned: true` means the command selected policy/provider/paths and did not
 perform the write or network action. `self mode <mode>`, `self update`,
-`providers install`, `providers update`, and `providers sync-registry` are plans
-unless `--apply` is present. Execute a change only after reviewing its blockers,
-pinned source, digest, preconditions, and actions. The production self-update
+`providers install`, `providers update`, `providers sync-registry`,
+`providers install-zip`, `providers uninstall`, and `providers rollback` are
+plans unless `--apply` is present. Execute a change only after reviewing its
+blockers, pinned source, digest, preconditions, actions, and any emitted rollback
+revision. Replacing a subscription-bound provider from a local ZIP additionally
+requires explicit `--replace-bound`; the default remains source-preserving. The production self-update
 policy is source-sealed to the official HTTPS `main` origin; config,
 environment, and CLI values cannot add or override repository authority.
+
+`material setup-local-pymupdf4llm` is also plan-first. First-time `--apply`
+requires an absolute Python 3.11 executable and creates the exact locked runtime
+below `PAPER_SEARCH_HOME`; later calls verify the installed versions. Use
+`extract <artifactId-or-path> --provider local-pymupdf4llm` to select it.
+Installing this explicit-only provider does not change automatic extractor
+selection.
 
 For DOI inputs, `artifact download` accepts `--resolver <id>` and the canonical tool accepts `resolverId`/`resolver_id`. DOI dry-run plans list resolver loading and invocation before the download steps, and resolver failures are typed as `no_resolver`, `no_candidates`, or `resolver_error` in envelope diagnostics.
 

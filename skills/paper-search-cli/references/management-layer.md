@@ -318,12 +318,22 @@ node scripts/paper-search.mjs providers sync-registry ./registry.json --kind mat
 node scripts/paper-search.mjs providers sync-registry ./registry.json --kind material --apply --json
 node scripts/paper-search.mjs providers install-zip ./provider.zip --kind material --json
 node scripts/paper-search.mjs providers install-zip ./provider.zip --kind material --apply --json
+node scripts/paper-search.mjs providers install-zip ./provider.zip --kind material --replace-bound --json
+node scripts/paper-search.mjs providers uninstall <id> --kind material --json
+node scripts/paper-search.mjs providers rollback <id> --kind material --revision <sha256> --json
 ```
 
 `providers sync-registry` without `--apply` is a dry-run plan. Use `--apply` only
 after reviewing the planned install/update/skip/blocked actions. `sync-registry`
 and `install-zip` write unbound compatibility receipts, so later
 subscription-bound updates do not treat them as registry-owned installations.
+Default `install-zip` refuses a subscription-bound target. `--replace-bound`
+explicitly pins the existing bound receipt/source and target revision, retains
+that provider directory as a rollback revision, and still requires `--apply`.
+`providers uninstall` likewise retains the selected provider and receipt instead
+of deleting its authority. Use only the emitted `providers rollback` revision;
+rollback rechecks both the retained source and current target and retains a
+displaced current revision for redo.
 
 Material packages are distributed from the separate `material-providers`
 repository, not from `resource-search-providers`. Its generated registry entries

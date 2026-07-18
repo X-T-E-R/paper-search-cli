@@ -42,6 +42,7 @@ import type { Io } from "../runtime/io.js";
 import { sanitizeUrlForDisplay } from "../runtime/sanitizeUrl.js";
 import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import { planConfigLocationMigration } from "../config/locationMigration.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 interface RawOption {
   raw?: boolean;
@@ -194,9 +195,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
     .command("config")
     .description("Manage strict split configuration with secret-safe JSON envelopes.");
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("path")
-    .description("Return the user config path, or every conventional config-bundle path.")
+    .description("Return the user config path, or every conventional config-bundle path."))
     .option("--all", "include the config root and all conventional files")
     .action(async (options: PathOption) =>
       runConfigAction(io, "config_path", async () => {
@@ -220,9 +221,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("validate")
-    .description("Validate conventional, project, and explicit config files against their owning schemas.")
+    .description("Validate conventional, project, and explicit config files against their owning schemas."))
     .action(async () =>
       runConfigAction(io, "config_validate", async () => {
         const files = await validateConfigFiles({ explicitConfigPath: explicitConfigPath(program) });
@@ -234,9 +235,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("explain <key>")
-    .description("Explain the resolved value and winning origin for one supported key.")
+    .description("Explain the resolved value and winning origin for one supported key."))
     .action(async (key: string) =>
       runConfigAction(io, "config_explain", async () => {
         const pathSegments = assertSupportedConfigKey(key);
@@ -260,9 +261,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("keys")
-    .description("List supported user-config keys and dynamic key patterns.")
+    .description("List supported user-config keys and dynamic key patterns."))
     .action(async () =>
       runConfigAction(io, "config_keys", () => {
         const configPath = resolveConfigBundlePaths().config;
@@ -277,9 +278,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("list")
-    .description("List values stored in config.toml. Legacy secret-like keys are masked by default.")
+    .description("List values stored in config.toml. Legacy secret-like keys are masked by default."))
     .option("--raw", "include unmasked legacy secret-like values")
     .action(async (options: RawOption) =>
       runConfigAction(io, "config_list", async () => {
@@ -301,9 +302,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("get <key>")
-    .description("Read one config.toml key. Legacy secret-like keys are masked by default.")
+    .description("Read one config.toml key. Legacy secret-like keys are masked by default."))
     .option("--raw", "include an unmasked legacy secret-like value")
     .action(async (key: string, options: RawOption) =>
       runConfigAction(io, "config_get", async () => {
@@ -326,9 +327,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("set <key> <value>")
-    .description("Set one known non-secret key in config.toml.")
+    .description("Set one known non-secret key in config.toml."))
     .action(async (key: string, value: string) =>
       runConfigAction(io, "config_set", async () => {
         const { resolved, metadata } = await installedConfigContext(program);
@@ -350,9 +351,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("unset <key>")
-    .description("Remove one known non-secret key from config.toml.")
+    .description("Remove one known non-secret key from config.toml."))
     .action(async (key: string) =>
       runConfigAction(io, "config_unset", async () => {
         const metadata = await installedConfigMetadata(program);
@@ -373,9 +374,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
     .command("credentials")
     .description("Manage ACL-restricted plaintext credentials in credentials.toml.");
 
-  credentials
+  acceptAlwaysJsonFlag(credentials
     .command("set <key>")
-    .description("Set a credential from a hidden TTY prompt, stdin, or a named environment variable.")
+    .description("Set a credential from a hidden TTY prompt, stdin, or a named environment variable."))
     .option("--stdin", "read the credential from stdin")
     .option("--from-env <name>", "read the credential from the named environment variable")
     .action(async (key: string, options: CredentialSetOption) =>
@@ -395,9 +396,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  credentials
+  acceptAlwaysJsonFlag(credentials
     .command("get <key>")
-    .description("Read a credential masked by default.")
+    .description("Read a credential masked by default."))
     .action(async (key: string) =>
       runConfigAction(io, "config_credentials_get", async () => {
         const metadata = await installedConfigMetadata(program);
@@ -419,9 +420,9 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  credentials
+  acceptAlwaysJsonFlag(credentials
     .command("unset <key>")
-    .description("Remove a credential from credentials.toml.")
+    .description("Remove a credential from credentials.toml."))
     .action(async (key: string) =>
       runConfigAction(io, "config_credentials_unset", async () => {
         const metadata = await installedConfigMetadata(program);
@@ -438,10 +439,10 @@ export function registerConfigCommands(program: Command, io: Io): void {
       }),
     );
 
-  config
+  acceptAlwaysJsonFlag(config
     .command("import-env <env-path>")
     .alias("import")
-    .description("Plan importing PAPER_SEARCH_* entries; --apply writes each value to its owning file.")
+    .description("Plan importing PAPER_SEARCH_* entries; --apply writes each value to its owning file."))
     .option("--apply", "apply the displayed import plan")
     .action(async (envPath: string, options: ApplyOption) =>
       runConfigAction(io, "config_import_env", async () => {

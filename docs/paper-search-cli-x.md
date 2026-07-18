@@ -376,6 +376,17 @@ is disabled. When a new item must be created before its attachment can be
 previewed, the digest binds the attachment template; apply resolves the new item
 key and runs the attachment dry-run immediately before its write.
 
+`previewDigest` binds the endpoint, stable plan, required Zotero readiness and
+capabilities, targeted collection identity/availability, and stable per-action
+dry-run outcomes/codes. It deliberately excludes aggregate library counts,
+collection result contents, and incidental version/config/preview metadata, so
+unrelated Zotero library activity does not invalidate an approval. Raw status,
+collection probes, and action previews are still returned for diagnostics.
+Missing, malformed, false, or mismatched required preflight authority fails
+closed before a digest can authorize writes. For a deferred attachment, apply
+validates the resolved `attach_file` dry-run after item creation; failure records
+the created item as a partial outcome and does not issue the attachment write.
+
 Multi-step Zotero writes are not atomic. Partial completion reports the created
 item/attachment key and failed phase; Paper Search does not roll it back. A
 later sync uses the durable mapping and receipts to resume without discarding

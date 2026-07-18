@@ -21,6 +21,7 @@ import {
   type ProviderInstallReceipt,
 } from "../../providers/install/manualZip.js";
 import type { InstallPathReplacementOperations } from "../../providers/install/replace.js";
+import type { InstallPathSelectionOptions } from "../../providers/install/replace.js";
 import { getSystemVersion, semverGte } from "../../runtime/version.js";
 
 export class MaterialProviderInstallError extends Error {
@@ -267,6 +268,7 @@ async function materializePayload(
   receipt?: ProviderInstallReceipt,
   replacementPrecondition?: MaterialProviderZipInstallPlan["replacementPrecondition"],
   replacementOperations?: InstallPathReplacementOperations,
+  selection?: InstallPathSelectionOptions,
 ): Promise<InstallMaterialProviderResult> {
   const resolvedInstallDir = path.resolve(installDir);
   await mkdir(resolvedInstallDir, { recursive: true });
@@ -302,6 +304,7 @@ async function materializePayload(
       targetPath,
       providerId: payload.manifest.id,
       ...(replacementOperations ? { operations: replacementOperations } : {}),
+      ...selection,
     });
     return {
       id: payload.manifest.id,
@@ -475,7 +478,10 @@ function assertValidatedMaterialZipMatchesPlan(
 
 export async function applyMaterialProviderZipInstallPlan(
   plan: MaterialProviderZipInstallPlan,
-  options: { replacementOperations?: InstallPathReplacementOperations } = {},
+  options: {
+    replacementOperations?: InstallPathReplacementOperations;
+    selection?: InstallPathSelectionOptions;
+  } = {},
 ): Promise<AppliedMaterialProviderZipInstall> {
   const archiveBytes = new Uint8Array(await readFile(plan.archivePath));
   const validated = await validateMaterialProviderZipBytes(archiveBytes, {
@@ -494,6 +500,7 @@ export async function applyMaterialProviderZipInstallPlan(
     receipt,
     plan.replacementPrecondition,
     options.replacementOperations,
+    options.selection,
   );
   return { ...result, plan, receipt };
 }

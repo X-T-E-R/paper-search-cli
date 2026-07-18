@@ -227,7 +227,7 @@ describe("doctor command", () => {
       checked: false,
       reachable: null,
     });
-    expect(parsed.data.registry.source).toContain("token=%3Cmasked%3E");
+    expect(parsed.data.registry.source).toContain("token=%3Credacted%3E");
   });
 
   it("warns with onboarding steps when no search or material providers are installed", async () => {

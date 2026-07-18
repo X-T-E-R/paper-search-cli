@@ -11,6 +11,7 @@ import {
 import type { Io } from "../runtime/io.js";
 import { runCanonicalTool } from "../surface/toolRunner.js";
 import { cliHistoryOptions, compactCanonicalArguments } from "./history.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 function parseIntegerOption(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -31,11 +32,11 @@ function parseFreshness(value: unknown): ExternalSearchFreshness | undefined {
 }
 
 export function registerWebCommands(program: Command, io: Io): void {
-  program
+  acceptAlwaysJsonFlag(program
     .command("web <query>")
     .alias("web-search")
     .alias("web_search")
-    .description("Run generic web_search through the configured External Search v1 process.")
+    .description("Run generic web_search through the configured External Search v1 process."))
     .option("--mode <mode>", "auto, fast, deep, or answer")
     .option("--intent <intent>", "factual, status, comparison, tutorial, exploratory, news, or resource")
     .option("--freshness <freshness>", "pd, pw, pm, or py")

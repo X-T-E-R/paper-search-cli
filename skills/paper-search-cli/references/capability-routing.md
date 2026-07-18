@@ -104,6 +104,21 @@ For `artifact download`, `extract`, or `material ingest`, always route through d
    ```
 4. Execute only after the plan reports the expected provider, policy, source, and target paths.
 
+For an explicitly selected local PDF, use `local-pymupdf4llm`; it is never an
+implicit fallback or default:
+
+```bash
+node scripts/paper-search.mjs material setup-local-pymupdf4llm --python <absolute-python-3.11-path> --json
+node scripts/paper-search.mjs material setup-local-pymupdf4llm --python <absolute-python-3.11-path> --apply --json
+node scripts/paper-search.mjs extract <artifactId-or-pdfPath> --provider local-pymupdf4llm --policy local-offline-pdf --json
+```
+
+The provider is `network: false`, accepts only managed artifacts or explicit
+local PDF files, emits no image links/assets, and records parser/page/warning
+metadata. Treat `OCR_UNAVAILABLE` as a request for a separately provisioned OCR
+path; do not retry through another parser unless the user explicitly selects
+one.
+
 ### DOI Resolver Funnel
 
 `artifact download` and `material ingest` accept a bare DOI as input. A DOI is resolved to ordered candidate URLs through an installed resolver provider (manifest `kind` `artifact_resolver`), then the existing download path tries each candidate in order:
@@ -116,6 +131,10 @@ For `artifact download`, `extract`, or `material ingest`, always route through d
 Resolvers return candidate locations only; byte download stays in downloader providers.
 
 No networked material resolver, downloader, or extractor is built into the core CLI. Installed material providers must be discovered and validated at runtime; do not infer that MinerU or any other network extractor exists just because `extract` is available.
+The official material registry publishes `direct-url-downloader` for bounded,
+provider-mediated acquisition from explicit HTTPS URLs. Its manifest requires
+CLI `>= 0.5.0`, and dry-run must show it as the selected acquire provider before
+execution.
 
 ## Local Workspace and Records
 

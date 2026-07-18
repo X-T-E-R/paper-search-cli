@@ -33,6 +33,10 @@ import type { ResourceItem } from "../providers/sdk/types.js";
 import { writeLocalStorageBytes } from "../storage/local.js";
 import type { LocalStorageRefV1 } from "../storage/types.js";
 import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
+import {
+  sanitizeUrlForPersistence,
+  sanitizeUrlsForPersistenceInText,
+} from "../runtime/sanitizeUrl.js";
 
 export interface ArtifactDownloadOptions {
   config: ResolvedConfig;
@@ -129,7 +133,7 @@ function selectedItemForDownload(
   return {
     itemType: "document",
     title: selectedItemTitle(input, filename),
-    url: sourceUrl,
+    url: sanitizeUrlForPersistence(sourceUrl),
     source: "artifact-download",
   };
 }
@@ -313,7 +317,7 @@ async function resolveDownloadInput(
       attachedItemId,
       summary: {
         kind: "identifier",
-        value: trimmed,
+        value: sanitizeUrlForPersistence(trimmed),
         identifier: doiIdentifier,
         ...(attachedItemId ? { attachedItemId } : {}),
       },
@@ -329,7 +333,7 @@ async function resolveDownloadInput(
       summary: {
         kind: "url",
         value: trimmed,
-        url: trimmed,
+        url: sanitizeUrlForPersistence(trimmed),
         ...(attachedItemId ? { attachedItemId } : {}),
       },
     };
@@ -744,7 +748,7 @@ async function downloadWithResolverFunnel(options: {
       };
     } catch (error) {
       const message = formatError(error);
-      candidateErrors.push(`${candidate.url}: ${message}`);
+      candidateErrors.push(`${sanitizeUrlForPersistence(candidate.url)}: ${message}`);
       attempts.push({
         tier: "artifact-download-candidate",
         source: candidate.url,
@@ -1104,6 +1108,6 @@ export async function runArtifactDownload(
 }
 
 function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  if (error instanceof Error) return sanitizeUrlsForPersistenceInText(error.message);
+  return sanitizeUrlsForPersistenceInText(String(error));
 }

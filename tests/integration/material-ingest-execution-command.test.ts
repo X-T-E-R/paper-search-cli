@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/index.js";
 import { readArtifactRecord, resolveArtifactRecordPath } from "../../src/material/artifactStore.js";
 import { readExtractionRecord } from "../../src/material/extractionStore.js";
@@ -12,6 +12,7 @@ import type {
   MaterialIngestResultEnvelope,
 } from "../../src/material/ingest.js";
 import { isResultEnvelope, type ResultEnvelope } from "../../src/surface/resultEnvelope.js";
+import { setSafeExternalHttpsTestHooksForTests } from "../../src/runtime/safeExternalHttps.js";
 
 const tempDirs: string[] = [];
 const downloaderFixture = path.resolve(
@@ -33,8 +34,17 @@ const mineruFixture = path.resolve(
   "mineru-extractor",
 );
 
+beforeEach(() => {
+  setSafeExternalHttpsTestHooksForTests({
+    resolve: async () => [{ address: "8.8.8.8", family: 4 }],
+    requestPinned: async (url, init) => fetch(url, init),
+  });
+});
+
 afterEach(async () => {
+  setSafeExternalHttpsTestHooksForTests(undefined);
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   await Promise.all(
     tempDirs.map(async (dir) => {
       try {
@@ -115,11 +125,19 @@ async function enableMineruProvider(root: string): Promise<void> {
     ].join("\n"),
     "utf8",
   );
-  await writeFile(
-    path.join(root, "appdata", "paper-search", "credentials.toml"),
-    ["schemaVersion = 1", "", "[platform.mineru-extractor]", 'apiToken = "fixture-token"', ""].join("\n"),
-    "utf8",
-  );
+}
+
+async function readPersistedText(root: string): Promise<string> {
+  const chunks: string[] = [];
+  async function visit(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(target);
+      else if (entry.isFile()) chunks.push((await readFile(target)).toString("utf8"));
+    }
+  }
+  await visit(root);
+  return chunks.join("\n");
 }
 
 async function runMaterialCommand(root: string, args: string[]): Promise<{
@@ -621,7 +639,10 @@ describe("material ingest execution command", () => {
     await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("executes URL ingest with the MinerU extractor provider through offline fetch stubs", async () => {
+  it("executes MinerU with a process-only token and never persists or reports the token", async () => {
+    const sentinel = "process-only-mineru-integration-sentinel";
+    const urlSentinel = "mineru-full-zip-url-sentinel";
+    vi.stubEnv("MINERU_TOKEN", sentinel);
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-mineru-");
     await enableMineruProvider(root);
 
@@ -648,7 +669,7 @@ describe("material ingest execution command", () => {
               task_id: "task_material_ingest_mineru",
               state: "done",
               markdown: "# MinerU material ingest\n",
-              full_zip_url: "https://oss.aliyuncs.com/mineru/task_material_ingest_mineru.zip",
+              full_zip_url: `https://oss.aliyuncs.com/mineru/task_material_ingest_mineru.zip?signature=${urlSentinel}#${urlSentinel}`,
             },
           }),
           {
@@ -731,10 +752,12 @@ describe("material ingest execution command", () => {
         kind: "artifact",
         artifactId: data.artifact.artifactId,
       },
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/task_material_ingest_mineru.zip",
+      message: "MinerU extraction completed with inline Markdown.",
     });
     await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toBe("# MinerU material ingest\n");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("authorization"))
+      .toBe(`Bearer ${sentinel}`);
     expect(
       fetchMock.mock.calls.map(([input, init]) => ({
         method: init?.method ?? "GET",
@@ -744,5 +767,17 @@ describe("material ingest execution command", () => {
       { method: "POST", url: "https://mineru.net/api/v4/extract/task" },
       { method: "GET", url: "https://mineru.net/api/v4/extract/task/task_material_ingest_mineru" },
     ]);
+    expect(result.stdout).not.toContain(sentinel);
+    expect(result.stderr).not.toContain(sentinel);
+    expect(JSON.stringify(result.envelope)).not.toContain(sentinel);
+    expect(result.stdout).not.toContain(urlSentinel);
+    expect(JSON.stringify(result.envelope)).not.toContain(urlSentinel);
+    await expect(stat(path.join(root, "appdata", "paper-search", "credentials.toml")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    const persistedText = await readPersistedText(root);
+    expect(persistedText).not.toContain(sentinel);
+    expect(persistedText).not.toContain(urlSentinel);
+    expect(persistedText).toContain("full_zip_url");
+    expect(persistedText).toContain("signature");
   });
 });

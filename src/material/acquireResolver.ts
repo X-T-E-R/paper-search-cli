@@ -15,6 +15,7 @@ import type {
   MaterialResolverResult,
 } from "./types.js";
 import type { ArtifactAttempt } from "./records.js";
+import { sanitizeUrlsForPersistenceInText } from "../runtime/sanitizeUrl.js";
 
 const PROVIDER_ID_RE = /^[a-z][a-z0-9_-]{1,63}$/;
 
@@ -253,6 +254,6 @@ export async function resolveAcquireCandidates(options: {
 }
 
 function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  if (error instanceof Error) return sanitizeUrlsForPersistenceInText(error.message);
+  return sanitizeUrlsForPersistenceInText(String(error));
 }

@@ -274,7 +274,15 @@ export const CLI_ONLY_COMMANDS = [
   },
   {
     command: "providers install-zip",
-    purpose: "Plan a local provider ZIP by default; --apply installs it with an unbound receipt.",
+    purpose: "Plan a local provider ZIP by default; --replace-bound explicitly pins an ownership transition and retained rollback revision.",
+  },
+  {
+    command: "providers uninstall",
+    purpose: "Plan or apply removal of one exact installed provider while retaining its package and receipt for rollback.",
+  },
+  {
+    command: "providers rollback",
+    purpose: "Plan or apply restoration of one exact retained provider revision and retain any displaced current revision.",
   },
 ];
 

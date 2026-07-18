@@ -106,6 +106,14 @@ async function main() {
       path.join(repoRoot, "src", "external-search", "adapter-host.mjs"),
       path.join(outputRoot, "adapter-host.mjs"),
     );
+    await copyFile(
+      path.join(repoRoot, "src", "material", "pymupdf4llm", "pymupdf4llm-adapter.py"),
+      path.join(outputRoot, "pymupdf4llm-adapter.py"),
+    );
+    await copyFile(
+      path.join(repoRoot, "src", "material", "pymupdf4llm", "requirements.lock.txt"),
+      path.join(outputRoot, "requirements.lock.txt"),
+    );
 
     const digest = process.env.PAPER_SEARCH_BUILD_INPUT_DIGEST
       ? {

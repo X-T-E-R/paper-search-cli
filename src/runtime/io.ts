@@ -1,3 +1,5 @@
+import { sanitizeForPersistence, sanitizeUrlsForPersistenceInText } from "./sanitizeUrl.js";
+
 export interface IoStreams {
   stdout?: { write(chunk: string): unknown };
   stderr?: { write(chunk: string): unknown };
@@ -19,13 +21,13 @@ export function createIo(streams: IoStreams = {}): Io {
     stdout,
     stderr,
     writeLine(text: string): void {
-      stdout.write(`${text}\n`);
+      stdout.write(`${sanitizeUrlsForPersistenceInText(text)}\n`);
     },
     writeError(text: string): void {
-      stderr.write(`${text}\n`);
+      stderr.write(`${sanitizeUrlsForPersistenceInText(text)}\n`);
     },
     writeJson(value: unknown): void {
-      stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+      stdout.write(`${JSON.stringify(sanitizeForPersistence(value), null, 2)}\n`);
     },
   };
 }

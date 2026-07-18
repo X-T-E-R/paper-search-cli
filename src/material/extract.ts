@@ -18,6 +18,8 @@ import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory
 import type { MaterialInputKind } from "./types.js";
 import { writeLocalStorageBytes } from "../storage/local.js";
 import type { LocalStorageRefV1 } from "../storage/types.js";
+import { PYMUPDF4LLM_PROVIDER_ID } from "./pymupdf4llm/sidecar.js";
+import { sanitizeForPersistence } from "../runtime/sanitizeUrl.js";
 
 export interface MaterialExtractionOptions {
   config: ResolvedConfig;
@@ -49,6 +51,21 @@ export interface MaterialExtractionData {
   markdownPath: string;
   jsonPath?: string;
   provider: MaterialExtractionProviderSummary;
+}
+
+/**
+ * Provider-mediated extraction without committing workspace outputs or records.
+ * Used by bounded callers that need to inspect exact-source content before
+ * deciding whether a material record is warranted.
+ */
+export interface MaterialExtractionProviderProbeData {
+  source: ExtractionSource;
+  markdown: string;
+  metadata?: unknown;
+  cacheHit: boolean;
+  message?: string;
+  provider: MaterialExtractionProviderSummary;
+  policy: string;
 }
 
 export interface MaterialExtractionCommittedOutput {
@@ -238,6 +255,12 @@ async function selectExtractorProvider(options: {
         );
       }
       if (providerSupportsInput(providerPackage, options.inputKind)) {
+        if (!providerId && providerPackage.manifest.id === PYMUPDF4LLM_PROVIDER_ID) {
+          loadErrors.push(
+            `${providerPackage.manifest.id}: requires explicit --provider selection`,
+          );
+          continue;
+        }
         return providerPackage;
       }
       loadErrors.push(
@@ -285,9 +308,9 @@ function parseProviderExtractionResult(value: unknown): ProviderExtractionResult
   }
   return {
     markdown,
-    ...(value.metadata !== undefined ? { metadata: value.metadata } : {}),
+    ...(value.metadata !== undefined ? { metadata: sanitizeForPersistence(value.metadata) } : {}),
     cacheHit: cacheHit === true,
-    ...(message !== undefined ? { message } : {}),
+    ...(message !== undefined ? { message: sanitizeForPersistence(message) } : {}),
   };
 }
 
@@ -362,6 +385,58 @@ function providerInput(options: {
     ...(options.attachTo ? { attachTo: options.attachTo } : {}),
     policy: options.policy,
   };
+}
+
+export async function runMaterialExtractionProviderProbe(
+  options: MaterialExtractionOptions,
+): Promise<MaterialExtractionProviderProbeData> {
+  const policy = normalizePolicy(options.policy);
+  const resolvedInput = await resolveExtractionInput(options.config, options.input);
+  const providerPackage = await selectExtractorProvider({
+    installDir: options.config.providers.installDir,
+    inputKind: resolvedInput.materialInputKind,
+    providerId: options.providerId,
+  });
+  const provider = providerSummary(providerPackage);
+  const runtimeContext = createMaterialRuntimeContext({
+    manifest: providerPackage.manifest,
+    providerConfig: (options.config.platform[provider.id] ?? {}) as Record<string, unknown>,
+    policy: {
+      name: policy,
+      capability: "extract",
+      attachTo: null,
+    },
+    cacheRoot: resolveMaterialProviderCacheRoot(options.config),
+    workspaceRoot: options.config.workspace.root,
+    authorizedPdfPath: authorizedPdfPath(resolvedInput),
+  });
+  const loadedProvider = await invokeMaterialProviderFactoryInNode(
+    providerPackage.bundleCode,
+    providerPackage.manifest,
+    runtimeContext,
+  );
+  const extractMethod = loadedProvider.provider.extract;
+  if (!extractMethod) {
+    fail(`Material provider ${provider.id} does not implement extract()`);
+  }
+  const input = providerInput({ resolvedInput, policy });
+  input.options = { cache: false };
+  const result = parseProviderExtractionResult(await extractMethod(input));
+  return {
+    source: resolvedInput.source,
+    markdown: result.markdown,
+    ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+    cacheHit: result.cacheHit,
+    ...(result.message !== undefined ? { message: result.message } : {}),
+    provider,
+    policy,
+  };
+}
+
+function authorizedPdfPath(resolvedInput: ResolvedExtractionInput): string | undefined {
+  if (resolvedInput.source.kind === "path") return resolvedInput.source.path;
+  if (resolvedInput.source.kind === "artifact") return resolvedInput.artifact?.path;
+  return undefined;
 }
 
 export async function planMaterialExtractionForInputKind(
@@ -477,6 +552,7 @@ export async function runMaterialExtraction(
     },
     cacheRoot: resolveMaterialProviderCacheRoot(options.config),
     workspaceRoot: options.config.workspace.root,
+    authorizedPdfPath: authorizedPdfPath(resolvedInput),
   });
   const loadedProvider = await invokeMaterialProviderFactoryInNode(
     providerPackage.bundleCode,

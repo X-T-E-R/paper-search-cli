@@ -14,6 +14,7 @@ import {
   readRunFromConfiguredOrLocatedStore,
   type ConfiguredRunStoreResolver,
 } from "../runs/config.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 export interface RegisterRunsCommandOptions {
   resolveStore?: ConfiguredRunStoreResolver;
@@ -74,9 +75,9 @@ export function registerRunsCommand(
     return resolveStore(config);
   }
 
-  runs
+  acceptAlwaysJsonFlag(runs
     .command("list")
-    .description("List validated durable-run headers without following symlinks.")
+    .description("List validated durable-run headers without following symlinks."))
     .option("--kind <kind>", `filter by kind: ${RUN_KINDS.join(", ")}`)
     .option("--status <status>", `filter by status: ${[...RUN_STATUSES, "corrupt"].join(", ")}`)
     .action(async (options: { kind?: string; status?: string }, command: Command) => {
@@ -96,9 +97,9 @@ export function registerRunsCommand(
       }
     });
 
-  runs
+  acceptAlwaysJsonFlag(runs
     .command("show <run-id>")
-    .description("Show one validated durable run record.")
+    .description("Show one validated durable run record."))
     .action(async (runId: string, _options: unknown, command: Command) => {
       try {
         const globalOptions = command.optsWithGlobals<{ config?: string }>();
@@ -114,9 +115,9 @@ export function registerRunsCommand(
       }
     });
 
-  runs
+  acceptAlwaysJsonFlag(runs
     .command("export <run-id>")
-    .description("Export one sanitized run record to an explicit path without overwriting.")
+    .description("Export one sanitized run record to an explicit path without overwriting."))
     .requiredOption("--out <path>", "explicit export path; relative paths use the caller's working directory")
     .action(async (runId: string, options: { out: string }, command: Command) => {
       try {
@@ -133,9 +134,9 @@ export function registerRunsCommand(
 
   for (const pinned of [true, false] as const) {
     const commandName = pinned ? "pin" : "unpin";
-    runs
+    acceptAlwaysJsonFlag(runs
       .command(`${commandName} <run-id>`)
-      .description(`${pinned ? "Pin" : "Unpin"} one run for age-based retention.`)
+      .description(`${pinned ? "Pin" : "Unpin"} one run for age-based retention.`))
       .action(async (runId: string, _options: unknown, command: Command) => {
         const tool = pinned ? "run_pin" : "run_unpin";
         try {
@@ -152,9 +153,9 @@ export function registerRunsCommand(
       });
   }
 
-  runs
+  acceptAlwaysJsonFlag(runs
     .command("prune")
-    .description("Plan age pruning; pass --apply to quarantine and delete eligible run records only.")
+    .description("Plan age pruning; pass --apply to quarantine and delete eligible run records only."))
     .option("--max-age-days <days>", "override configured retention with -1 or a positive integer")
     .option("--apply", "apply the exact eligibility rules after re-reading each candidate under lock")
     .action(async (options: { maxAgeDays?: string; apply?: boolean }, command: Command) => {

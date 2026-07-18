@@ -5,6 +5,7 @@ import { okEnvelope } from "../surface/resultEnvelope.js";
 import { runCanonicalTool } from "../surface/toolRunner.js";
 import { createProviderSelectionPlan } from "../search/runtime.js";
 import type { ProviderSelectionRequest } from "../search/selection.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 import { cliHistoryOptions, compactCanonicalArguments } from "./history.js";
 
 function parseIntegerOption(value: string): number {
@@ -80,11 +81,11 @@ function addSelectionOptions(command: Command): Command {
 }
 
 export function registerSearchCommands(program: Command, io: Io): void {
-  addSelectionOptions(program
+  addSelectionOptions(acceptAlwaysJsonFlag(program
     .command("academic <query>")
     .alias("academic-search")
     .alias("academic_search")
-    .description("Search installed academic providers through the local provider-compatible runtime."))
+    .description("Search installed academic providers through the local provider-compatible runtime.")))
     .option("--max-results <n>", "results per provider; 0 uses config, -1 uses the provider limit", parseIntegerOption)
     .option("--page <n>", "provider page number (default: 1)", parseIntegerOption)
     .option("--year <value>", "year or year range, e.g. 2020-2024")
@@ -117,11 +118,11 @@ export function registerSearchCommands(program: Command, io: Io): void {
       ));
     });
 
-  addSelectionOptions(program
+  addSelectionOptions(acceptAlwaysJsonFlag(program
     .command("patent <query>")
     .alias("patent-search")
     .alias("patent_search")
-    .description("Search installed patent providers through the local provider-compatible runtime."))
+    .description("Search installed patent providers through the local provider-compatible runtime.")))
     .option("--max-results <n>", "results per provider; 0 uses config, -1 uses the provider limit", parseIntegerOption)
     .option("--page <n>", "provider page number (default: 1)", parseIntegerOption)
     .option("--sort-by <value>", "relevance or date (date is descending)", parsePatentSort)
@@ -164,10 +165,10 @@ export function registerSearchCommands(program: Command, io: Io): void {
       ));
     });
 
-  addSelectionOptions(program
+  addSelectionOptions(acceptAlwaysJsonFlag(program
     .command("search-plan")
     .alias("search-selection-plan")
-    .description("Explain source preset expansion, exclusions, and runtime readiness without searching."))
+    .description("Explain source preset expansion, exclusions, and runtime readiness without searching.")))
     .option("--type <type>", "academic or patent", "academic")
     .action(async (options: Record<string, unknown>, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
@@ -193,10 +194,10 @@ export function registerSearchCommands(program: Command, io: Io): void {
       }));
     });
 
-  program
+  acceptAlwaysJsonFlag(program
     .command("patent-detail <platform> <source-id>")
     .alias("patent_detail")
-    .description("Fetch detailed patent data by provider-native patent id.")
+    .description("Fetch detailed patent data by provider-native patent id."))
     .option(
       "--include <csv>",
       "detail sections to include: core, legalStatus, claims, description, pdf, images",

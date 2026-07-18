@@ -598,6 +598,9 @@ paper-search providers inspect-package ./tests/fixtures/material-extractors/fixt
 paper-search providers validate-manifest ./tests/fixtures/material-extractors/fixture-markdown-extractor/manifest.json --kind material --json
 paper-search providers plan-registry ./tests/fixtures/material-provider-registries/local/registry.json --kind material --json
 paper-search providers sync-registry ./tests/fixtures/material-provider-registries/local/registry.json --kind material --json
+paper-search providers install-zip ./provider.zip --kind material --json
+paper-search providers uninstall <id> --kind material --json
+paper-search providers rollback <id> --kind material --revision <sha256> --json
 ```
 
 `material-providers` remains as a compatibility alias for
@@ -612,6 +615,16 @@ Registry sync is plan-first. `providers sync-registry` reports a planned
 envelope by default; pass `--apply` only when you want to write provider changes.
 `sync-registry` and `install-zip` are unbound compatibility workflows: their
 receipts do not authorize subscription-bound updates.
+
+`install-zip` refuses to replace a subscription-bound provider by default. For
+an intentional local-source ownership transition, preview the exact ZIP with
+`--replace-bound`; apply the same command with `--apply` only after reviewing
+the pinned bound receipt/source, installed revision, and emitted rollback
+command. `providers uninstall` is also plan-first and retains the exact provider
+directory and receipt. Restore a retained revision only with the emitted
+`providers rollback <id> --kind <kind> --revision <sha256>` selector. These
+provider operations do not change credentials, configuration, run history, or
+other providers.
 
 Search-provider bundles are trusted extensions executed in the CLI process. The
 compatibility `vm` wrapper is not a hostile-code sandbox; install search
@@ -699,6 +712,44 @@ candidate feeds the normal download path in order. Dry-run plans list the
 `load-resolver` and `run-resolver` steps, resolver failures are typed as
 `no_resolver`, `no_candidates`, or `resolver_error`, and resolved acquisitions
 record `resolverProviderId` and `resolverSource` in artifact provenance.
+
+The official material-provider registry includes `direct-url-downloader` for
+explicit HTTPS artifact URLs. It uses the injected material HTTP runtime's
+bounded Base64 response mode, so downloaded bytes retain provider provenance
+without granting provider bundles raw `fetch` access.
+
+The registry's `mineru-extractor` uses MinerU's document-model heuristic,
+including extensionless `arxiv.org/pdf/...` URLs, and follows the official
+language/OCR/optional-feature defaults. It then downloads the completed result
+ZIP through the same bounded transport and returns its primary Markdown entry.
+URL inputs and artifacts with a remote URL run live; artifact PDF metadata also
+selects the document pipeline when the remote URL has no extension. Local-only
+inputs remain an explicit unsupported path until the host implements MinerU's
+signed batch-upload flow.
+
+The registry also includes `local-pymupdf4llm` for explicit, offline extraction
+of a managed PDF artifact or a directly selected local PDF. It is never chosen
+implicitly, so installing it does not change MinerU or other default extractor
+routing. Install its provider package, then create the isolated Python 3.11
+runtime and name the provider on each extraction:
+
+```powershell
+paper-search material setup-local-pymupdf4llm --python C:\Path\To\python.exe
+paper-search material setup-local-pymupdf4llm --python C:\Path\To\python.exe --apply
+paper-search extract <artifactId-or-pdfPath> --provider local-pymupdf4llm --policy local-offline-pdf --json
+```
+
+The runtime is fixed to `pymupdf4llm 0.3.4`, `PyMuPDF 1.27.2.3`, and
+`tabulate 0.10.0` under the Paper Search home. PyMuPDF4LLM and PyMuPDF are dual
+licensed under GNU AGPL 3.0 or an Artifex commercial license; review that
+license choice for the deployment. The separately licensed optional
+`pymupdf-layout` extension is not installed. The provider declares
+`network: false`; the host starts only its fixed Python and packaged adapter,
+passes the authorized PDF through JSON stdin, and returns Markdown plus
+parser/page/warning metadata. Images and image links are disabled until managed
+asset commits exist. OCR is also absent initially, so an OCR request or a PDF
+whose text cannot be decoded without OCR fails as `OCR_UNAVAILABLE` instead of
+returning silently degraded text.
 
 For `material ingest <local-file>`, Paper Search preserves the source file and
 copies its bytes into `storage.artifactRoot` before committing the artifact

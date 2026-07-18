@@ -11,6 +11,7 @@ import { inspectExternalSearchStatic } from "../external-search/config.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import { runCanonicalTool } from "../surface/toolRunner.js";
 import { cliHistoryOptions, compactCanonicalArguments } from "./history.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 function splitCsv(value?: string): string[] {
   if (!value) return [];
@@ -44,11 +45,11 @@ function platformStatusEnvelope(data: PlatformStatusSnapshot): ResultEnvelope<Pl
 }
 
 export function registerDiscoveryCommands(program: Command, io: Io): void {
-  program
+  acceptAlwaysJsonFlag(program
     .command("lookup <identifierOrUrl>")
     .alias("resource-lookup")
     .alias("resource_lookup")
-    .description("Resolve an identifier or URL into normalized resource metadata.")
+    .description("Resolve an identifier or URL into normalized resource metadata."))
     .option("--type <value>", "identifier type: doi, pmid, arxiv, or isbn")
     .option("--formats <csv>", "URL metadata format hints, comma-separated")
     .option("--provider <value>", "URL metadata provider hint; direct HTTP metadata capture is used by default")

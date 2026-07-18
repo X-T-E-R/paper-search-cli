@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/
 import path from "node:path";
 import type { ArtifactAttempt, ArtifactProvenance, ArtifactRecord } from "./records.js";
 import { parseLocalStorageRef, resolveLegacyWorkspacePath, resolveLocalStorageRef } from "../storage/local.js";
+import { sanitizeForPersistence } from "../runtime/sanitizeUrl.js";
 
 export type { ArtifactRecord } from "./records.js";
 
@@ -151,11 +152,11 @@ export async function createArtifactRecord(
   input: CreateArtifactRecordInput,
 ): Promise<ArtifactRecord> {
   await ensureArtifactRecordDir(workspaceRoot);
-  const record = parseArtifactRecord({
+  const record = parseArtifactRecord(sanitizeForPersistence({
     ...input,
     id: input.id ?? randomUUID(),
     createdAt: input.createdAt ?? new Date().toISOString(),
-  });
+  }));
   const target = artifactRecordPath(workspaceRoot, record.id);
   const temporary = `${target}.${randomUUID()}.tmp`;
   try {
