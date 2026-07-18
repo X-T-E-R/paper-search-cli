@@ -118,7 +118,13 @@ export async function acquireLock(scope: string, options: LockOptions = {}): Pro
         },
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      // Windows can report a sharing violation as EPERM while another owner
+      // is creating or replacing the lock file. Treat it like contention and
+      // let the ownership read/deadline path below decide whether to retry.
+      if (code !== "EEXIST" && !(process.platform === "win32" && code === "EPERM")) {
+        throw error;
+      }
     }
 
     try {
