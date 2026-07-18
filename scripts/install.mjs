@@ -33,6 +33,7 @@ import {
   acquireOwnedFileLock,
   assertOwnedFileLock,
 } from "./lib/owned-file-lock.mjs";
+import { stageMaterialProviderVerificationArtifacts } from "./lib/material-provider-verification.mjs";
 
 const repoRoot = path.dirname(path.dirname(await realpath(fileURLToPath(import.meta.url))));
 const skillSource = path.join(repoRoot, "skills", "paper-search-cli");
@@ -633,9 +634,26 @@ async function buildInIsolation({
       [...npmInvocation.argsPrefix, "run", "build"],
       { cwd: sourcePath, env: buildEnv, capture: quiet },
     );
-    // The retained checkout must prove its own source in isolation. Two
-    // cross-repository distribution tests remain in the release gate because
-    // they intentionally require the sibling material-providers checkout.
+    await stageMaterialProviderVerificationArtifacts({
+      cliRepoRoot: repoRoot,
+      stagedSourcePath: sourcePath,
+      env: buildEnv,
+      buildDistributions: async (providerRoot) => {
+        commandResult(
+          npmInvocation.command,
+          [...npmInvocation.argsPrefix, "ci", "--no-audit", "--no-fund"],
+          { cwd: providerRoot, env: buildEnv, capture: quiet },
+        );
+        commandResult(
+          npmInvocation.command,
+          [...npmInvocation.argsPrefix, "run", "build"],
+          { cwd: providerRoot, env: buildEnv, capture: quiet },
+        );
+      },
+    });
+    // The retained checkout proves its own source in isolation against the
+    // freshly built provider artifacts. Heavier cross-repository distribution
+    // suites remain in the release gate.
     commandResult(
       npmInvocation.command,
       [...npmInvocation.argsPrefix, "run", "test:self-update-target"],
