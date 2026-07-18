@@ -9,6 +9,7 @@ import type { ResolvedConfig } from "../config/schema.js";
 import { createPlanEnvelope, type PlannedOperationData } from "../surface/plan.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import { readArtifactRecord, resolveArtifactRecordPath } from "./artifactStore.js";
+import { detectUnusableMaterialContent } from "./contentValidation.js";
 import { EXTRACTION_RECORDS_DIR, createExtractionRecord } from "./extractionStore.js";
 import { loadMaterialProviderPackage, type LoadedMaterialProviderPackage } from "./package/load.js";
 import type { ArtifactRecord, ExtractionRecord, ExtractionSource } from "./records.js";
@@ -297,6 +298,10 @@ function parseProviderExtractionResult(value: unknown): ProviderExtractionResult
   const markdown = value.markdown;
   if (typeof markdown !== "string" || markdown.trim().length === 0) {
     fail("extract() must return non-empty markdown");
+  }
+  const unusable = detectUnusableMaterialContent(markdown);
+  if (unusable) {
+    fail(`extract() returned unusable ${unusable.kind} content (${unusable.marker})`);
   }
   const cacheHit = value.cacheHit;
   if (cacheHit !== undefined && typeof cacheHit !== "boolean") {

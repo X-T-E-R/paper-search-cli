@@ -333,6 +333,59 @@ describe("material ingest execution command", () => {
     );
   });
 
+  it("retains committed artifact evidence but fails closed on challenge extraction output", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-challenge-");
+    await writeFile(
+      path.join(root, "providers", "fixture-markdown-extractor", "provider.js"),
+      [
+        "globalThis.__material_provider_exports = {",
+        "  createProvider() {",
+        "    return {",
+        "      async extract() {",
+        "        return { markdown: 'Checking your browser before accessing pmc.ncbi.nlm.nih.gov', cacheHit: false };",
+        "      }",
+        "    };",
+        "  }",
+        "};",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await runMaterialCommand(root, [
+      "material",
+      "ingest",
+      "https://example.test/files/challenged.pdf",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "orchestrate",
+      tool: "material_ingest",
+      data: null,
+      diagnostics: {
+        partial: true,
+        commitStage: "extraction",
+        artifactId: expect.any(String),
+        artifactPath: expect.any(String),
+      },
+      errors: [expect.stringContaining("checking your browser before accessing")],
+    });
+    const diagnostics = result.envelope.diagnostics as {
+      artifactId: string;
+      artifactPath: string;
+    };
+    await expect(readArtifactRecord(workspaceRoot, diagnostics.artifactId)).resolves.toMatchObject({
+      id: diagnostics.artifactId,
+      status: "downloaded",
+    });
+    await expect(readFile(diagnostics.artifactPath, "utf8")).resolves.toBe("fixture downloader bytes\n");
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(workspaceRoot, "material", "extractions"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("copies a local file into managed artifact storage and extracts by durable artifact id", async () => {
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-path-");
     await writeFile(

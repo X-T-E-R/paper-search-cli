@@ -1,14 +1,9 @@
 import type { MaterialExtractionProviderProbeData } from "../material/extract.js";
+import { detectUnusableMaterialContent } from "../material/contentValidation.js";
 import { safeExternalHttpsRequest } from "../runtime/safeExternalHttps.js";
 
 const JINA_READER_ORIGIN = "https://r.jina.ai";
 const JINA_READER_TIMEOUT_MS = 60_000;
-const CHALLENGE_MARKERS = [
-  "title: just a moment",
-  "checking if the site connection is secure",
-  "attention required! | cloudflare",
-  "enable javascript and cookies to continue",
-];
 
 function assertJinaReaderEndpoint(value: string): void {
   const candidate = new URL(value);
@@ -20,8 +15,10 @@ function assertJinaReaderEndpoint(value: string): void {
 function assertUsefulMarkdown(markdown: string): void {
   const normalized = markdown.trim().toLowerCase();
   if (!normalized) throw new Error("Jina Reader returned empty content");
-  const marker = CHALLENGE_MARKERS.find((candidate) => normalized.includes(candidate));
-  if (marker) throw new Error(`Jina Reader returned a challenge page (${marker})`);
+  const unusable = detectUnusableMaterialContent(normalized);
+  if (unusable) {
+    throw new Error(`Jina Reader returned a ${unusable.kind} page (${unusable.marker})`);
+  }
 }
 
 function assertExactReportedSource(markdown: string, requestedUrl: string): void {

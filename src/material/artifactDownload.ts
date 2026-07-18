@@ -24,6 +24,7 @@ import type { MaterialIdentifierInput, MaterialResolverCandidateLocation } from 
 import type { ArtifactAttempt, ArtifactKind, ArtifactRecord } from "./records.js";
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
 import { resolveMaterialProviderCacheRoot } from "./cache.js";
+import { detectUnusableMaterialContent } from "./contentValidation.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
 import {
   ensureResourceSelectedInWorkspace,
@@ -172,6 +173,13 @@ interface ProviderDownloadResult {
   remoteUrl: string;
   status?: number;
   message?: string;
+}
+
+class UnusableArtifactContentError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message);
+    this.name = "UnusableArtifactContentError";
+  }
 }
 
 export { AcquireResolverError } from "./acquireResolver.js";
@@ -533,11 +541,21 @@ function parseProviderDownloadResult(value: unknown, sourceUrl: string): Provide
   const kind = artifactKindFromValue(value.kind, inferArtifactKind(contentType, filename));
   const status = optionalNumber(value.status, "status");
   const message = optionalString(value.message, "message");
+  const bytes = decodeProviderBytes(value);
+  if (kind === "html" || contentType?.toLowerCase().includes("text/html")) {
+    const unusable = detectUnusableMaterialContent(bytes.toString("utf8"));
+    if (unusable) {
+      throw new UnusableArtifactContentError(
+        `download() returned unusable ${unusable.kind} HTML${status !== undefined ? ` after HTTP ${status}` : ""} (${unusable.marker})`,
+        status,
+      );
+    }
+  }
   return {
     kind,
     filename,
     ...(contentType ? { contentType } : {}),
-    bytes: decodeProviderBytes(value),
+    bytes,
     remoteUrl,
     ...(status !== undefined ? { status } : {}),
     ...(message ? { message } : {}),
