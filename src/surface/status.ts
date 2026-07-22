@@ -30,6 +30,11 @@ export interface PlatformStatusEntry {
   contentKinds: string[];
   access: string[];
   missingConfigKeys: string[];
+  citationGraph?: {
+    directions: string[];
+    targetIdentifierKinds: string[];
+    maxPageSize: number;
+  };
   summary?: string;
 }
 
@@ -41,6 +46,7 @@ export interface PlatformStatusSnapshot {
     installed: number;
     available: number;
     invalid: number;
+    citationCapable: number;
     externalSearchConfigured: boolean;
   };
   academic: PlatformStatusEntry[];
@@ -98,6 +104,9 @@ function toStatusEntry(
     contentKinds: inventory?.contentKinds ?? [],
     access: inventory?.access ?? [],
     missingConfigKeys: availability.missingConfigKeys,
+    ...(manifest.capabilities?.citationGraph
+      ? { citationGraph: manifest.capabilities.citationGraph }
+      : {}),
     summary: summarizeManifest(manifest),
   };
 }
@@ -162,6 +171,7 @@ export async function createPlatformStatusSnapshot(
         ...statusEntries.filter((entry) => entry.available),
       ].length,
       invalid: invalidProviders.length,
+      citationCapable: statusEntries.filter((entry) => entry.citationGraph && entry.available).length,
       externalSearchConfigured: externalSearch.state === "configured",
     },
     academic: groupBySourceType(statusEntries, "academic"),

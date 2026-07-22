@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, readlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { sanitizeForPersistence } from "../../runtime/sanitizeUrl.js";
 
 export const PROVIDER_RECEIPT_FILENAME = ".paper-search-receipt.json";
 
@@ -236,7 +237,7 @@ export async function stageProviderReceipt(
 ): Promise<void> {
   await writeFile(
     path.join(stagingPath, PROVIDER_RECEIPT_FILENAME),
-    `${JSON.stringify(receipt, null, 2)}\n`,
+    `${JSON.stringify(sanitizeForPersistence(receipt), null, 2)}\n`,
     "utf8",
   );
 }

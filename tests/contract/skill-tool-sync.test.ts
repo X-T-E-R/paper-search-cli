@@ -63,7 +63,7 @@ const APPROVED_NON_TOOL_COMMAND_HEADS = [
 ] as const;
 
 const TOOLISH_IDENTIFIER_PATTERN =
-  /\b(?:(?:mcp|academic|resource|patent|web|collection|workspace|artifact|material|platform)_[a-z0-9]+(?:_[a-z0-9]+)*|(?:paper-search|academic|resource|patent|web|collection|workspace|artifact|material|platform|mcp)-[a-z0-9]+(?:-[a-z0-9]+)*)\b/g;
+  /\b(?:(?:mcp|academic|resource|patent|web|collection|workspace|artifact|material|platform|research|run|citation|assessment)_[a-z0-9]+(?:_[a-z0-9]+)*|(?:paper-search|academic|resource|patent|web|collection|workspace|artifact|material|platform|mcp|research|run|citation|assessment)-[a-z0-9]+(?:-[a-z0-9]+)*)\b/g;
 
 function readSkillDocs(): Record<string, string> {
   return Object.fromEntries(
@@ -149,7 +149,18 @@ function parseCliInvocation(line: string): { commandHead: string; runTool?: stri
   }
 
   if (
-    ["artifact", "config", "material", "material-providers", "mcp", "providers"].includes(first)
+    [
+      "artifact",
+      "assess",
+      "citation",
+      "config",
+      "material",
+      "material-providers",
+      "mcp",
+      "providers",
+      "runs",
+      "zotero",
+    ].includes(first)
   ) {
     const second = tokens[1];
     if (second && !second.startsWith("--") && !second.startsWith("<") && !second.startsWith("./")) {

@@ -20,6 +20,14 @@ type RawToolSchema = Omit<ToolSchema, "capability" | "annotations"> & {
   annotations?: Omit<NonNullable<ToolSchema["annotations"]>, "capabilityGroup" | "capabilityLayer">;
 };
 
+export const DURABLE_DISCOVERY_TOOL_NAMES = Object.freeze([
+  "academic_search",
+  "patent_search",
+  "resource_lookup",
+  "patent_detail",
+  "web_search",
+] as const);
+
 const SEARCH_SELECTION_PROPERTIES: Record<string, unknown> = {
   platform: {
     type: "string",
@@ -53,6 +61,14 @@ const SEARCH_SELECTION_PROPERTIES: Record<string, unknown> = {
     type: "array",
     items: { type: "string" },
     description: "Classification selectors removed before exact source inclusion.",
+  },
+};
+
+const HISTORY_CONTROL_PROPERTIES: Record<string, unknown> = {
+  recordHistory: {
+    type: "boolean",
+    description:
+      "Persist this discovery invocation. Defaults to runs.recordByDefault; false is an explicit per-call opt-out.",
   },
 };
 
@@ -93,10 +109,12 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Search query string" },
+        ...HISTORY_CONTROL_PROPERTIES,
         ...SEARCH_SELECTION_PROPERTIES,
         maxResults: {
           type: "number",
-          description: "Maximum results per provider. 0 uses the global default.",
+          description:
+            "Maximum results per provider. 0 uses provider/global config; -1 uses the provider-declared limit.",
         },
         page: { type: "number", description: "Page number (default: 1)" },
         year: {
@@ -107,7 +125,8 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
         sortBy: {
           type: "string",
           enum: ["relevance", "date", "citations"],
-          description: "Sort criteria (per-provider defaults apply when omitted)",
+          description:
+            "Per-provider result ordering. date and citations are descending; explicit input overrides platform.<id>.defaultSort and search.defaultAcademicSort.",
         },
         extra: {
           type: "object",
@@ -124,6 +143,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
     inputSchema: {
       type: "object",
       properties: {
+        ...HISTORY_CONTROL_PROPERTIES,
         identifier: {
           type: "string",
           description: "Academic identifier (DOI, PMID, arXiv ID, ISBN)",
@@ -160,6 +180,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Patent search query string" },
+        ...HISTORY_CONTROL_PROPERTIES,
         ...SEARCH_SELECTION_PROPERTIES,
         maxResults: {
           type: "number",
@@ -169,7 +190,8 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
         sortBy: {
           type: "string",
           enum: ["relevance", "date"],
-          description: "Patent search sort criteria",
+          description:
+            "Per-provider patent result ordering. date is descending; explicit input overrides platform.<id>.defaultSort and search.defaultPatentSort.",
         },
         patentType: {
           type: "string",
@@ -220,6 +242,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
     inputSchema: {
       type: "object",
       properties: {
+        ...HISTORY_CONTROL_PROPERTIES,
         platform: {
           type: "string",
           description: "Patent provider id",
@@ -248,6 +271,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Search query string" },
+        ...HISTORY_CONTROL_PROPERTIES,
         mode: {
           type: "string",
           enum: ["auto", "fast", "deep", "answer"],
@@ -325,7 +349,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "workspace_export",
     description:
-      "Export local workspace items as JSON, JSONL, CSV, or BibTeX. This is a portable local export sink.",
+      "Export local workspace items as JSON, JSONL, CSV, or BibTeX. The CLI may explicitly write through the managed export root.",
     inputSchema: {
       type: "object",
       properties: {
@@ -352,7 +376,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "resource_pdf",
     description:
-      "Fetch or record a PDF attachment for an existing local workspace item. Uses the workspace item id as itemKey and stores files under the local attachment sink.",
+      "Compatibility alias that acquires a PDF through installed material providers and projects the resulting artifact onto an existing local workspace item.",
     inputSchema: {
       type: "object",
       properties: {
@@ -370,7 +394,23 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
         },
         download: {
           type: "boolean",
-          description: "Download the PDF into the local attachment sink. Set false to record a request only.",
+          description: "Download through the selected material provider. Set false to record a request only.",
+        },
+        providerId: {
+          type: "string",
+          description: "Optional material artifact downloader provider id.",
+        },
+        resolverProviderId: {
+          type: "string",
+          description: "Optional material artifact resolver provider id used for DOI inputs.",
+        },
+        policy: {
+          type: "string",
+          description: "Policy label recorded on the provider-mediated acquisition run.",
+        },
+        dryRun: {
+          type: "boolean",
+          description: "Return the provider-mediated acquisition plan without writing files or records.",
         },
       },
       required: ["itemKey"],
@@ -432,8 +472,32 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
           type: "boolean",
           description: "Snake-case alias for dryRun.",
         },
+        institutional: {
+          type: "boolean",
+          description: "After ordinary DOI acquisition fails, create a local institutional continuation job. Never launches a browser from canonical/MCP execution.",
+        },
+        institutionProfile: {
+          type: "string",
+          description: "Named local institutional session profile id stored with the continuation job.",
+        },
+        institution_profile: {
+          type: "string",
+          description: "Snake-case alias for institutionProfile.",
+        },
       },
       required: ["input"],
+    },
+  },
+  {
+    name: "institutional_job_show",
+    description: "Inspect sanitized state for one institutional continuation job. This surface cannot launch the browser.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        jobId: { type: "string", description: "Institutional continuation job id." },
+        job_id: { type: "string", description: "Snake-case alias for jobId." },
+        id: { type: "string", description: "Alias for jobId." },
+      },
     },
   },
   {
@@ -533,7 +597,7 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
   {
     name: "material_ingest",
     description:
-      "Run or plan the material workflow from a file, URL, or workspace item through artifact and extraction primitives.",
+      "Run or plan byte-first material acquisition and extraction; an eligible exact HTTPS denial may retain URL extraction with no artifact.",
     inputSchema: {
       type: "object",
       properties: {
@@ -643,6 +707,157 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
     },
   },
   {
+    name: "research_run",
+    description:
+      "Durably invoke one allowlisted, non-destructive discovery tool and persist its sanitized request, selection, diagnostics, provenance, and terminal result.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tool: {
+          type: "string",
+          enum: [...DURABLE_DISCOVERY_TOOL_NAMES],
+          description: "Allowlisted canonical discovery tool to invoke.",
+        },
+        arguments: {
+          type: "object",
+          description: "Canonical arguments for the selected discovery tool.",
+        },
+      },
+      required: ["tool", "arguments"],
+    },
+  },
+  {
+    name: "run_list",
+    description: "List private local durable-run headers, optionally filtered by kind or status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["tool", "citation", "assessment"],
+          description: "Optional durable-run kind.",
+        },
+        status: {
+          type: "string",
+          enum: ["running", "completed", "partial", "failed", "interrupted", "corrupt"],
+          description: "Optional durable-run status.",
+        },
+      },
+    },
+  },
+  {
+    name: "run_show",
+    description: "Read one validated private local durable-run record by its portable run id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Portable durable-run id." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "run_prune_plan",
+    description:
+      "Plan age-based durable-run pruning without deleting anything. Applying pruning remains an explicit CLI-only operation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        maxAgeDays: {
+          type: "number",
+          description: "Optional retention override: -1 disables age pruning; positive integers set age in days.",
+        },
+      },
+    },
+  },
+  {
+    name: "citation_expand",
+    description:
+      "Plan, start, or resume bounded backward/forward citation expansion through installed graph-capable academic providers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["plan", "run", "resume"],
+          description: "Plan is write-free; run and resume use the common durable-run store.",
+        },
+        runId: {
+          type: "string",
+          description: "Optional id for run; required for resume. A run id is generated when run omits it.",
+        },
+        seeds: {
+          type: "array",
+          items: { type: "object" },
+          description: "One or more seeds with exact identifiers and optional normalized item metadata.",
+        },
+        directions: {
+          type: "array",
+          items: { type: "string", enum: ["backward", "forward"] },
+          description: "Directions to union. Defaults to both supported directions.",
+        },
+        providers: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional installed citation-provider ids to union.",
+        },
+        excludeIdentifiers: {
+          type: "array",
+          items: { type: "object" },
+          description: "Exact identifiers to exclude from traversal results.",
+        },
+        limits: {
+          type: "object",
+          description: "Bounded traversal limits: depth, perNode, nodes, edges, providerPages, and concurrency.",
+        },
+      },
+    },
+  },
+  {
+    name: "citation_run_status",
+    description: "Read one durable citation-expansion checkpoint and result without provider calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Citation durable-run id." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "assessment_run",
+    description:
+      "Plan or persist a transparent assessment from an immutable checksum-bound local observation snapshot and optional explicit policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["plan", "run"], description: "Plan is write-free; run persists one durable record." },
+        snapshotPath: { type: "string", description: "Local immutable assessment snapshot JSON path." },
+        snapshotSha256: { type: "string", description: "Exact SHA-256 digest of the snapshot bytes." },
+        policy: { type: "object", description: "Optional transparent assessment policy object." },
+      },
+      required: ["snapshotPath", "snapshotSha256"],
+    },
+  },
+  {
+    name: "assessment_show",
+    description:
+      "Replay a completed assessment entirely from the durable record, optionally applying a replacement explicit policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Completed assessment durable-run id." },
+        policy: { type: "object", description: "Optional replacement transparent policy object." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    name: "assessment_list",
+    description: "List private local durable assessment-run headers.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "platform_status",
     description:
       "Show installed provider health, config readiness, and current tool availability by source type.",
@@ -665,12 +880,22 @@ const TOOL_CAPABILITIES: Record<string, CapabilityGroup> = {
   workspace_export: "organize",
   resource_pdf: "acquire",
   artifact_download: "acquire",
+  institutional_job_show: "acquire",
   artifact_list: "acquire",
   artifact_show: "acquire",
   extract: "extract",
   material_ingest: "orchestrate",
   material_status: "orchestrate",
   material_provider_list_installed: "operate",
+  research_run: "orchestrate",
+  run_list: "operate",
+  run_show: "operate",
+  run_prune_plan: "operate",
+  citation_expand: "orchestrate",
+  citation_run_status: "orchestrate",
+  assessment_run: "assess",
+  assessment_show: "assess",
+  assessment_list: "assess",
   platform_status: "operate",
 };
 

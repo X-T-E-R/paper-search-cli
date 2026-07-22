@@ -7,6 +7,7 @@ import {
 import { loadMaterialProviderPackage, type LoadedMaterialProviderPackage } from "./package/load.js";
 import { parseMaterialResolverResult } from "./resolverResult.js";
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "./cache.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
 import type {
   MaterialIdentifierInput,
@@ -14,16 +15,21 @@ import type {
   MaterialResolverResult,
 } from "./types.js";
 import type { ArtifactAttempt } from "./records.js";
+import { sanitizeUrlsForPersistenceInText } from "../runtime/sanitizeUrl.js";
+import { resolveMaterialProviderAvailability } from "./availability.js";
+import { providerConfigurationAction } from "../providers/runtime/availability.js";
+import type { ResultAction } from "../surface/resultEnvelope.js";
 
 const PROVIDER_ID_RE = /^[a-z][a-z0-9_-]{1,63}$/;
 
 export class AcquireResolverError extends Error {
-  readonly failureKind: "no_resolver" | "no_candidates" | "resolver_error";
+  readonly failureKind: "no_resolver" | "no_candidates" | "resolver_error" | "action_required";
 
   constructor(
     message: string,
-    failureKind: "no_resolver" | "no_candidates" | "resolver_error",
+    failureKind: "no_resolver" | "no_candidates" | "resolver_error" | "action_required",
     readonly attempts: ArtifactAttempt[] = [],
+    readonly actions: ResultAction[] = [],
   ) {
     super(message);
     this.name = "AcquireResolverError";
@@ -79,6 +85,7 @@ function resolverSummary(providerPackage: LoadedMaterialProviderPackage): Resolv
 export async function selectResolverProvider(options: {
   installDir: string;
   resolverProviderId?: string;
+  config?: ResolvedConfig;
 }): Promise<LoadedMaterialProviderPackage> {
   const installDir = path.resolve(options.installDir);
   const resolverProviderId = normalizeResolverProviderId(options.resolverProviderId);
@@ -87,6 +94,7 @@ export async function selectResolverProvider(options: {
     : await providerPackageDirectories(installDir);
 
   const loadErrors: string[] = [];
+  const actions: ResultAction[] = [];
   for (const packageDir of packageDirs) {
     try {
       const providerPackage = await loadMaterialProviderPackage(packageDir);
@@ -96,12 +104,38 @@ export async function selectResolverProvider(options: {
         );
       }
       if (providerSupportsResolver(providerPackage)) {
+        if (options.config) {
+          const availability = resolveMaterialProviderAvailability(options.config, providerPackage.manifest);
+          if (!availability.enabled) {
+            // Explicitly disabled providers are silent and never generate reminders.
+            continue;
+          }
+          if (!availability.configured) {
+            actions.push(providerConfigurationAction({
+              providerId: providerPackage.manifest.id,
+              schema: providerPackage.manifest.configSchema,
+              missingConfigKeys: availability.missingConfigKeys,
+            }));
+            continue;
+          }
+        }
         return providerPackage;
       }
       loadErrors.push(`${providerPackage.manifest.id}: does not support DOI identifier -> locations resolution`);
     } catch (error) {
       loadErrors.push(`${path.basename(packageDir)}: ${formatError(error)}`);
     }
+  }
+
+  if (actions.length > 0) {
+    throw new AcquireResolverError(
+      resolverProviderId
+        ? `Material artifact resolver requires configuration: ${resolverProviderId}`
+        : "Available material artifact resolvers require configuration",
+      "action_required",
+      [],
+      actions,
+    );
   }
 
   throw new AcquireResolverError(
@@ -118,6 +152,7 @@ export async function selectResolverProvider(options: {
 export async function planResolverProvider(options: {
   installDir: string;
   resolverProviderId?: string;
+  config?: ResolvedConfig;
 }): Promise<ResolverProviderSummary> {
   const providerPackage = await selectResolverProvider(options);
   return resolverSummary(providerPackage);
@@ -148,6 +183,26 @@ export interface ResolvedAcquireCandidates {
   candidates: MaterialResolverCandidateLocation[];
   resolverResult: MaterialResolverResult;
   attempts: ArtifactAttempt[];
+  warnings: string[];
+}
+
+async function inspectProviderWarnings(
+  provider: Record<string, (...args: unknown[]) => Promise<unknown>>,
+): Promise<string[]> {
+  if (!provider.inspect) return [];
+  try {
+    const inspection = await provider.inspect();
+    if (typeof inspection !== "object" || inspection === null || !("warnings" in inspection)) {
+      return [];
+    }
+    const warnings = (inspection as { warnings?: unknown }).warnings;
+    if (!Array.isArray(warnings)) return [];
+    return [...new Set(warnings
+      .filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
+      .map((warning) => warning.trim().slice(0, 1_024)))];
+  } catch (error) {
+    return [`Material resolver configuration inspection failed: ${formatError(error)}`];
+  }
 }
 
 export async function resolveAcquireCandidates(options: {
@@ -161,6 +216,7 @@ export async function resolveAcquireCandidates(options: {
   const providerPackage = await selectResolverProvider({
     installDir: options.config.providers.installDir,
     resolverProviderId: options.resolverProviderId,
+    config: options.config,
   });
   const resolver = resolverSummary(providerPackage);
   const runtimeContext = createMaterialRuntimeContext({
@@ -171,7 +227,7 @@ export async function resolveAcquireCandidates(options: {
       capability: "acquire",
       attachTo: options.attachTo ?? null,
     },
-    cacheRoot: path.join(options.config.workspace.root, ".material-provider-cache"),
+    cacheRoot: resolveMaterialProviderCacheRoot(options.config),
     workspaceRoot: options.config.workspace.root,
   });
   const loadedProvider = await invokeMaterialProviderFactoryInNode(
@@ -179,6 +235,7 @@ export async function resolveAcquireCandidates(options: {
     providerPackage.manifest,
     runtimeContext,
   );
+  const warnings = await inspectProviderWarnings(loadedProvider.provider);
   const resolveMethod = loadedProvider.provider.resolve;
   if (!resolveMethod) {
     throw new AcquireResolverError(
@@ -248,10 +305,11 @@ export async function resolveAcquireCandidates(options: {
     candidates: resolverResult.candidates,
     resolverResult,
     attempts,
+    warnings,
   };
 }
 
 function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  if (error instanceof Error) return sanitizeUrlsForPersistenceInText(error.message);
+  return sanitizeUrlsForPersistenceInText(String(error));
 }

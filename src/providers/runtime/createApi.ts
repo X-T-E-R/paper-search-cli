@@ -6,7 +6,7 @@ import type {
   ProviderManifest,
 } from "../sdk/types.js";
 import { DOMParser, parseHTML } from "linkedom/worker";
-import { sanitizeUrlForDisplay } from "../../runtime/sanitizeUrl.js";
+import { sanitizeUrlForPersistence } from "../../runtime/sanitizeUrl.js";
 
 interface StoredCookie {
   name: string;
@@ -82,7 +82,7 @@ function matchesUrlPermission(url: string, pattern: string): boolean {
 function assertUrlAllowed(url: string, manifest: ProviderManifest): void {
   const allowed = manifest.permissions.urls.some((pattern) => matchesUrlPermission(url, pattern));
   if (!allowed) {
-    throw new Error(`URL not allowed by provider permissions: ${url}`);
+    throw new Error(`URL not allowed by provider permissions: ${sanitizeUrlForPersistence(url)}`);
   }
 }
 
@@ -113,7 +113,7 @@ function assertSuccessfulResponse(
     [
       `Provider HTTP request failed (${manifest.id})`,
       `${response.status}${statusText ? ` ${statusText}` : ""}`,
-      sanitizeUrlForDisplay(url),
+      sanitizeUrlForPersistence(url),
       ...(body ? [body] : []),
     ].join(": "),
     manifest.id,

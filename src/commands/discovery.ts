@@ -2,14 +2,16 @@ import type { Command } from "commander";
 import { loadConfig } from "../config/load.js";
 import { listInstalledProviders } from "../providers/registry/sync.js";
 import type { Io } from "../runtime/io.js";
-import { runResourceLookup, type LookupIdentifierType } from "../lookup/resource.js";
-import type { ResourceLookupResult } from "../lookup/resource.js";
+import type { LookupIdentifierType } from "../lookup/resource.js";
 import { createHelpSnapshot } from "../surface/help.js";
 import { createPlatformStatusSnapshot } from "../surface/status.js";
 import type { PlatformStatusSnapshot } from "../surface/status.js";
 import { getTools, CLI_ONLY_COMMANDS, CLI_TOOL_MAPPINGS } from "../surface/tools.js";
 import { inspectExternalSearchStatic } from "../external-search/config.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
+import { runCanonicalTool } from "../surface/toolRunner.js";
+import { cliHistoryOptions, compactCanonicalArguments } from "./history.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 function splitCsv(value?: string): string[] {
   if (!value) return [];
@@ -23,16 +25,6 @@ function parseLookupIdentifierType(value: unknown): LookupIdentifierType | undef
   return value === "doi" || value === "pmid" || value === "arxiv" || value === "isbn"
     ? value
     : undefined;
-}
-
-function lookupEnvelope(data: ResourceLookupResult): ResultEnvelope<ResourceLookupResult> {
-  return okEnvelope({
-    capability: "identify",
-    tool: "resource_lookup",
-    data,
-    ...(data.warnings.length > 0 ? { warnings: data.warnings } : {}),
-    provenance: { providerIds: [data.resolvedBy] },
-  });
 }
 
 function platformStatusEnvelope(data: PlatformStatusSnapshot): ResultEnvelope<PlatformStatusSnapshot> {
@@ -53,26 +45,26 @@ function platformStatusEnvelope(data: PlatformStatusSnapshot): ResultEnvelope<Pl
 }
 
 export function registerDiscoveryCommands(program: Command, io: Io): void {
-  program
+  acceptAlwaysJsonFlag(program
     .command("lookup <identifierOrUrl>")
     .alias("resource-lookup")
     .alias("resource_lookup")
-    .description("Resolve an identifier or URL into normalized resource metadata.")
+    .description("Resolve an identifier or URL into normalized resource metadata."))
     .option("--type <value>", "identifier type: doi, pmid, arxiv, or isbn")
     .option("--formats <csv>", "URL metadata format hints, comma-separated")
     .option("--provider <value>", "URL metadata provider hint; direct HTTP metadata capture is used by default")
+    .option("--no-history", "resolve without writing a durable history record")
     .action(async (identifierOrUrl: string, options: Record<string, unknown>, command: Command) => {
       const globalOptions = command.optsWithGlobals<{ config?: string }>();
       const config = await loadConfig({ explicitConfigPath: globalOptions.config });
       const isUrl = /^https?:\/\//i.test(identifierOrUrl);
-      const result = await runResourceLookup(config, {
+      io.writeJson(await runCanonicalTool(config, "resource_lookup", compactCanonicalArguments({
         identifier: isUrl ? undefined : identifierOrUrl,
         identifierType: parseLookupIdentifierType(options.type),
         url: isUrl ? identifierOrUrl : undefined,
         formats: splitCsv(typeof options.formats === "string" ? options.formats : undefined),
         provider: typeof options.provider === "string" ? options.provider : undefined,
-      });
-      io.writeJson(lookupEnvelope(result));
+      }), cliHistoryOptions(options)));
     });
 
   program

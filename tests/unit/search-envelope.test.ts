@@ -26,6 +26,23 @@ describe("search result envelope", () => {
     });
   });
 
+  it("omits internal relevance-ordering metadata from compact output", () => {
+    const envelope = buildSearchEnvelope("academic_search", result("alpha", {
+      ordering: {
+        requested: "relevance",
+        origin: "builtin",
+        scope: "provider",
+        mode: "provider",
+        applied: true,
+        valueCount: 0,
+        missingCount: 0,
+        reordered: false,
+      },
+    }));
+    expect(envelope.data).not.toHaveProperty("ordering");
+    expect(envelope.diagnostics).not.toHaveProperty("ordering");
+  });
+
   it("fails when every provider result contains an error", () => {
     const envelope = buildSearchEnvelope("academic_search", [
       result("alpha", { error: "HTTP 429" }),
@@ -52,5 +69,66 @@ describe("search result envelope", () => {
     expect(envelope.warnings).toEqual(["beta: timed out"]);
     expect(envelope.diagnostics?.failedSources).toEqual(["beta"]);
     expect(Array.isArray(envelope.data)).toBe(true);
+  });
+
+  it("adds configuration actions for skipped sources while preserving partial success", () => {
+    const action = {
+      id: "configure-provider:beta",
+      kind: "configure_provider" as const,
+      target: { kind: "provider" as const, id: "beta" },
+      command: "paper-search configure beta",
+    };
+    const envelope = buildSearchEnvelope("academic_search", [
+      result("alpha", { items: [{ itemType: "journalArticle", title: "Found" }] }),
+      result("beta", { skipped: true, error: "missing required config: email", action }),
+    ]);
+    expect(envelope).toMatchObject({ ok: true, actions: [action] });
+    expect((envelope.data as SearchResult[])[1]).not.toHaveProperty("action");
+  });
+
+  it("returns action_required when an exact-only skipped source cannot run", () => {
+    const action = {
+      id: "configure-provider:beta",
+      kind: "configure_provider" as const,
+      target: { kind: "provider" as const, id: "beta" },
+      command: "paper-search configure beta",
+    };
+    expect(buildSearchEnvelope("academic_search", result("beta", {
+      skipped: true,
+      error: "missing required config: email",
+      action,
+    }))).toMatchObject({ ok: false, state: "action_required", actions: [action] });
+  });
+
+  it("omits state and actions from ordinary envelopes", () => {
+    const envelope = buildSearchEnvelope("academic_search", result("alpha"));
+    expect(envelope).not.toHaveProperty("state");
+    expect(envelope).not.toHaveProperty("actions");
+  });
+
+  it("projects per-source ordering diagnostics and warns on unverified ordering", () => {
+    const envelope = buildSearchEnvelope("academic_search", [
+      result("alpha", {
+        totalResults: 1,
+        items: [{ itemType: "journalArticle", title: "No count" }],
+        ordering: {
+          requested: "citations",
+          origin: "search_config",
+          scope: "returned_page",
+          mode: "unsupported",
+          applied: false,
+          direction: "desc",
+          valueCount: 0,
+          missingCount: 1,
+          reordered: false,
+        },
+      }),
+    ]);
+
+    expect(envelope.diagnostics?.ordering).toEqual({ alpha: "citations:unsupported" });
+    expect(envelope.data).not.toHaveProperty("ordering");
+    expect(envelope.warnings).toEqual([
+      "alpha: citations ordering could not be verified because returned items expose no usable citationCount; provider order was preserved",
+    ]);
   });
 });

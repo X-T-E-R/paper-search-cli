@@ -5,8 +5,9 @@ import {
   type ArtifactRecord,
 } from "../material/artifactStore.js";
 import {
+  AcquireResolverError,
   planArtifactDownload,
-  runArtifactDownload,
+  runArtifactDownloadWithInstitutionalFallback,
 } from "../material/artifactDownload.js";
 import {
   planMaterialExtraction,
@@ -17,6 +18,10 @@ import {
   runMaterialIngest,
 } from "../material/ingest.js";
 import { listInstalledMaterialProviders } from "../material/registry/plan.js";
+import {
+  planResourcePdfCompatibility,
+  runResourcePdfCompatibility,
+} from "../material/resourcePdf.js";
 import { runMaterialStatus } from "../material/status.js";
 import { runResourceLookup, type LookupIdentifierType } from "../lookup/resource.js";
 import type { ResourceLookupRequest } from "../lookup/resource.js";
@@ -48,17 +53,48 @@ import {
 import { runExternalWebSearchEnvelope } from "../external-search/service.js";
 import type { ExternalWebSearchRequest } from "../external-search/types.js";
 import {
-  addResourceToWorkspace,
   exportWorkspaceItems,
-  fetchPdfForWorkspaceItem,
   listWorkspaceCollections,
   type WorkspaceDetailPayload,
 } from "../workspace/store.js";
+import { selectResourceIntoWorkspace } from "../workspace/selection.js";
 import type { ResourceItem } from "../providers/sdk/types.js";
 import type { PatentDetailResult } from "../providers/sdk/types.js";
 import type { PlatformStatusSnapshot } from "./status.js";
 import type { ResourceLookupResult } from "../lookup/resource.js";
 import { buildSearchEnvelope } from "./searchEnvelope.js";
+import {
+  durableToolRejection,
+  isDurableDiscoveryTool,
+  persistenceFailureEnvelope,
+  runDurableCanonicalTool,
+  stripHistoryControl,
+} from "../runs/durable.js";
+import {
+  openRunStoreFromResolvedConfig,
+  readRunFromConfiguredOrLocatedStore,
+} from "../runs/config.js";
+import {
+  generateResearchRunId,
+  type ResearchRunKind,
+  type ResearchRunStatus,
+} from "../runs/index.js";
+import {
+  CitationServiceError,
+  createCitationService,
+  createInstalledCitationProviderRuntimes,
+  type CitationExpandRequest,
+  type CitationPlan,
+  type CitationRunResult,
+} from "../citation/index.js";
+import {
+  createCommonAssessmentRunStoreAdapter,
+  planAssessment,
+  replayAssessment,
+  runAssessment,
+} from "../assessment/index.js";
+import { getSystemVersion } from "../runtime/version.js";
+import { showInstitutionalJob } from "../institutional/service.js";
 
 export type { ToolArguments } from "./toolArguments.js";
 
@@ -220,27 +256,6 @@ function workspaceEnvelope<T>(
   });
 }
 
-function resourcePdfEnvelope(
-  data: Awaited<ReturnType<typeof fetchPdfForWorkspaceItem>>,
-  workspaceRoot: string,
-): ResultEnvelope<typeof data> | ResultEnvelope<null> {
-  if (!data.ok) {
-    return failEnvelope({
-      capability: "acquire",
-      tool: "resource_pdf",
-      errors: [data.message ?? "PDF attachment failed"],
-      diagnostics: { workspaceRoot, rawPayload: data },
-    });
-  }
-  return okEnvelope({
-    capability: "acquire",
-    tool: "resource_pdf",
-    data,
-    diagnostics: { workspaceRoot },
-    provenance: { providerIds: data.sourceUrl ? [data.sourceUrl] : undefined },
-  });
-}
-
 function artifactListEnvelope(
   data: ArtifactListData,
   workspaceRoot: string,
@@ -326,14 +341,18 @@ async function captureFailure(
       capability,
       tool,
       errors: [errorMessage(error)],
+      ...(error instanceof AcquireResolverError && error.actions.length > 0
+        ? { state: "action_required", actions: error.actions }
+        : {}),
     });
   }
 }
 
 export interface RunCanonicalToolOptions {
-  /** MCP keeps its existing handler-level validation and aliases. */
-  validateArguments?: boolean;
+  /** MCP accepts the legacy name but executes the canonical academic schema. */
   allowLegacyAliases?: boolean;
+  /** Overrides runs.recordByDefault for one direct discovery invocation. */
+  recordHistory?: boolean;
 }
 
 export async function runCanonicalTool(
@@ -343,25 +362,68 @@ export async function runCanonicalTool(
   options: RunCanonicalToolOptions = {},
 ): Promise<ResultEnvelope> {
   const tools = await loadCanonicalToolSchemas(config);
-  const schema = tools.find((tool) => tool.name === name);
   const allowLegacyAlias = options.allowLegacyAliases === true && name === "resource_search";
-  if (!schema && !allowLegacyAlias) {
+  const canonicalName = allowLegacyAlias ? "academic_search" : name;
+  const schema = tools.find((tool) => tool.name === canonicalName);
+  if (!schema) {
     return unknownToolEnvelope(name, tools.map((tool) => tool.name));
   }
 
-  if (schema && options.validateArguments !== false) {
-    try {
-      assertToolArgumentsMatchSchema(schema, args);
-    } catch (error) {
-      return invalidArgs(toolCapability(name), name, errorMessage(error));
+  try {
+    assertToolArgumentsMatchSchema(schema, args);
+  } catch (error) {
+    return invalidArgs(toolCapability(canonicalName), canonicalName, errorMessage(error));
+  }
+
+  const toolArgs = isDurableDiscoveryTool(canonicalName) ? stripHistoryControl(args) : args;
+  if (isDurableDiscoveryTool(canonicalName)) {
+    const argumentOverride = typeof args.recordHistory === "boolean"
+      ? args.recordHistory
+      : undefined;
+    const recordHistory = options.recordHistory ?? argumentOverride ?? config.runs.recordByDefault;
+    if (recordHistory) {
+      const rejection = durableToolRejection(canonicalName, args);
+      if (rejection) return rejection;
+      let store;
+      try {
+        store = await openRunStoreFromResolvedConfig(config);
+      } catch (error) {
+        return persistenceFailureEnvelope(canonicalName, undefined, error);
+      }
+      return runDurableCanonicalTool(
+        config,
+        store,
+        canonicalName,
+        toolArgs,
+        (tool, input) => executeCanonicalToolWithinDurableRun(config, tool, input),
+      );
     }
   }
 
-  const result = await dispatchToolCall(config, name, args);
-  if (isResultEnvelope(result)) {
-    return result;
-  }
+  const result = await executeCanonicalToolWithinDurableRun(config, canonicalName, toolArgs);
+  if (!isDurableDiscoveryTool(canonicalName)) return result;
 
+  return {
+    ...result,
+    diagnostics: {
+      ...(result.diagnostics ?? {}),
+      historyRecorded: false,
+      historyOptOut: options.recordHistory === false || args.recordHistory === false
+        ? "request"
+        : "config",
+      context: config.context,
+    },
+  };
+}
+
+/** Execute an already-validated canonical call owned by an outer durable run. */
+export async function executeCanonicalToolWithinDurableRun(
+  config: ResolvedConfig,
+  name: string,
+  args: ToolArguments,
+): Promise<ResultEnvelope> {
+  const result = await dispatchToolCall(config, name, args);
+  if (isResultEnvelope(result)) return result;
   return failEnvelope({
     capability: toolCapability(name),
     tool: name,
@@ -450,6 +512,9 @@ async function dispatchToolCall(
     case "artifact_show":
       return handleArtifactShow(config, args);
 
+    case "institutional_job_show":
+      return handleInstitutionalJobShow(config, args);
+
     case "extract":
       return handleExtract(config, args);
 
@@ -461,6 +526,33 @@ async function dispatchToolCall(
 
     case "material_provider_list_installed":
       return handleMaterialProviderListInstalled(config, args);
+
+    case "research_run":
+      return handleResearchRun(config, args);
+
+    case "run_list":
+      return handleRunList(config, args);
+
+    case "run_show":
+      return handleRunShow(config, args);
+
+    case "run_prune_plan":
+      return handleRunPrunePlan(config, args);
+
+    case "citation_expand":
+      return handleCitationExpand(config, args);
+
+    case "citation_run_status":
+      return handleCitationRunStatus(config, args);
+
+    case "assessment_run":
+      return handleAssessmentRun(config, args);
+
+    case "assessment_show":
+      return handleAssessmentShow(config, args);
+
+    case "assessment_list":
+      return handleAssessmentList(config);
 
     case "platform_status":
       return captureFailure("operate", "platform_status", async () =>
@@ -683,10 +775,8 @@ async function handleResourceAdd(config: ResolvedConfig, args: ToolArguments): P
   if (!item && !url) {
     return invalidArgs("organize", "resource_add", "Either item or url must be provided");
   }
-  return captureFailure("organize", "resource_add", async () =>
-    workspaceEnvelope(
-      "resource_add",
-      await addResourceToWorkspace(config.workspace.root, {
+  return captureFailure("organize", "resource_add", async () => {
+    const selected = await selectResourceIntoWorkspace(config, {
         item,
         detail: isRecord(args.detail) ? args.detail as WorkspaceDetailPayload : undefined,
         url,
@@ -695,9 +785,18 @@ async function handleResourceAdd(config: ResolvedConfig, args: ToolArguments): P
         tags: asStringArray(args.tags),
         fetchPdf: asBoolean(args.fetchPDF) ?? asBoolean(args.fetchPdf) ?? asBoolean(args.fetch_pdf),
         defaultCollectionPath: config.workspace.defaultCollection,
-      }),
-      { workspaceRoot: config.workspace.root },
-    ));
+      });
+    return workspaceEnvelope(
+      "resource_add",
+      selected.workspace,
+      {
+        workspaceRoot: config.workspace.root,
+        ...(selected.zoteroSync.status !== "not_requested"
+          ? { zoteroSync: selected.zoteroSync.status }
+          : {}),
+      },
+    );
+  });
 }
 
 async function handleCollectionList(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {
@@ -758,16 +857,20 @@ async function handleResourcePdf(config: ResolvedConfig, args: ToolArguments): P
   if (!itemKey) {
     return invalidArgs("acquire", "resource_pdf", "itemKey is required and must be a string");
   }
+  const options = {
+    config,
+    itemKey,
+    url: asString(args.url),
+    filename: asString(args.filename),
+    download: asBoolean(args.download),
+    providerId: asString(args.providerId),
+    resolverProviderId: asString(args.resolverProviderId),
+    policy: asString(args.policy),
+  };
   return captureFailure("acquire", "resource_pdf", async () =>
-    resourcePdfEnvelope(
-      await fetchPdfForWorkspaceItem(config.workspace.root, {
-        itemKey,
-        url: asString(args.url),
-        filename: asString(args.filename),
-        download: asBoolean(args.download),
-      }),
-      config.workspace.root,
-    ));
+    asBoolean(args.dryRun) === true
+      ? await planResourcePdfCompatibility(options)
+      : await runResourcePdfCompatibility(options));
 }
 
 async function handleArtifactDownload(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {
@@ -783,10 +886,23 @@ async function handleArtifactDownload(config: ResolvedConfig, args: ToolArgument
     resolverProviderId: asString(args.resolverId) ?? asString(args.resolver_id),
     policy: asString(args.policy),
     download: asBoolean(args.download),
+    institutional: asBoolean(args.institutional),
+    institutionProfile: asString(args.institutionProfile) ?? asString(args.institution_profile),
   };
   const dryRun = asBoolean(args.dryRun) ?? asBoolean(args.dry_run) ?? false;
   return captureFailure("acquire", "artifact_download", async () =>
-    dryRun ? await planArtifactDownload(materialOptions) : await runArtifactDownload(materialOptions));
+    dryRun ? await planArtifactDownload(materialOptions) : await runArtifactDownloadWithInstitutionalFallback(materialOptions));
+}
+
+async function handleInstitutionalJobShow(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {
+  const jobId = asString(args.jobId) ?? asString(args.job_id) ?? asString(args.id);
+  if (!jobId) return invalidArgs("acquire", "institutional_job_show", "jobId is required and must be a string");
+  return captureFailure("acquire", "institutional_job_show", async () => {
+    const job = await showInstitutionalJob(config, jobId);
+    return job
+      ? okEnvelope({ capability: "acquire", tool: "institutional_job_show", data: { job } })
+      : failEnvelope({ capability: "acquire", tool: "institutional_job_show", errors: [`Institutional job not found: ${jobId}`] });
+  });
 }
 
 async function handleArtifactList(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {
@@ -896,4 +1012,268 @@ async function handleMaterialProviderListInstalled(
   }
   return captureFailure("operate", "material_provider_list_installed", async () =>
     materialProviderListInstalledEnvelope(config));
+}
+
+async function handleResearchRun(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  const tool = asString(args.tool);
+  if (!tool) return invalidArgs("orchestrate", "research_run", "tool is required and must be a string");
+  if (!isRecord(args.arguments)) {
+    return invalidArgs("orchestrate", "research_run", "arguments is required and must be an object");
+  }
+  const toolArgs = args.arguments as Record<string, unknown>;
+  const rejection = durableToolRejection(tool, toolArgs);
+  if (rejection) {
+    return {
+      ...rejection,
+      tool: "research_run",
+      diagnostics: {
+        ...(rejection.diagnostics ?? {}),
+        wrappedTool: tool,
+      },
+    };
+  }
+  return captureFailure("orchestrate", "research_run", async () => {
+    const store = await openRunStoreFromResolvedConfig(config);
+    const envelope = await runDurableCanonicalTool(
+      config,
+      store,
+      tool,
+      toolArgs,
+      (name, input) => executeCanonicalToolWithinDurableRun(config, name, input),
+    );
+    return {
+      ...envelope,
+      tool: "research_run",
+      diagnostics: {
+        ...(envelope.diagnostics ?? {}),
+        wrappedTool: tool,
+      },
+    };
+  });
+}
+
+async function handleRunList(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  return captureFailure("operate", "run_list", async () => {
+    const store = await openRunStoreFromResolvedConfig(config);
+    const kind = asString(args.kind) as ResearchRunKind | undefined;
+    const status = asString(args.status) as ResearchRunStatus | "corrupt" | undefined;
+    const runs = await store.list({ kind, status });
+    return okEnvelope({
+      capability: "operate",
+      tool: "run_list",
+      data: { runs, count: runs.length },
+      diagnostics: { runRoot: store.root },
+    });
+  });
+}
+
+async function handleRunShow(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  const runId = asString(args.runId);
+  if (!runId) return invalidArgs("operate", "run_show", "runId is required and must be a string");
+  return captureFailure("operate", "run_show", async () => {
+    const located = await readRunFromConfiguredOrLocatedStore(config, runId);
+    return okEnvelope({
+      capability: "operate",
+      tool: "run_show",
+      data: { run: located.record },
+    });
+  });
+}
+
+async function handleRunPrunePlan(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  const maxAgeDays = asNumber(args.maxAgeDays);
+  if (
+    args.maxAgeDays !== undefined &&
+    (maxAgeDays === undefined || !Number.isSafeInteger(maxAgeDays) || maxAgeDays === 0 || maxAgeDays < -1)
+  ) {
+    return invalidArgs(
+      "operate",
+      "run_prune_plan",
+      "maxAgeDays must be -1 or a positive integer",
+    );
+  }
+  return captureFailure("operate", "run_prune_plan", async () => {
+    const store = await openRunStoreFromResolvedConfig(config);
+    const plan = await store.prune({ apply: false, maxAgeDays });
+    return okEnvelope({
+      capability: "operate",
+      tool: "run_prune_plan",
+      planned: true,
+      data: plan,
+      diagnostics: { runRoot: store.root },
+    });
+  });
+}
+
+function citationFailure(tool: string, error: unknown): ResultEnvelope<null> {
+  return failEnvelope({
+    capability: "orchestrate",
+    tool,
+    errors: [errorMessage(error)],
+    diagnostics: {
+      reason: error instanceof CitationServiceError ? error.code : "citation_execution_failed",
+    },
+  });
+}
+
+function citationEnvelope(
+  tool: "citation_expand" | "citation_run_status",
+  result: CitationPlan | CitationRunResult,
+): ResultEnvelope {
+  const providerIds = result.mode === "plan"
+    ? result.selectedProviders.map((entry) => entry.providerId)
+    : [...new Set(result.attempts.map((entry) => entry.providerId))];
+  if (result.mode !== "plan" && result.status === "failed") {
+    return failEnvelope({
+      capability: "orchestrate",
+      tool,
+      errors: [`Citation run failed: ${result.runId}`],
+      diagnostics: { runId: result.runId, status: result.status },
+      provenance: { providerIds },
+    });
+  }
+  const warnings = result.mode === "plan"
+    ? result.warnings
+    : result.status === "partial"
+      ? [`Citation run is partial and can be resumed: ${result.runId}`]
+      : [];
+  return okEnvelope({
+    capability: "orchestrate",
+    tool,
+    planned: result.mode === "plan",
+    data: result,
+    diagnostics: result.mode === "plan"
+      ? { plannedWorkUnits: result.plannedWorkUnits }
+      : { runId: result.runId, status: result.status, pendingWorkUnits: result.pendingWorkUnits },
+    warnings,
+    provenance: { providerIds },
+  });
+}
+
+async function handleCitationExpand(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  try {
+    const providers = await createInstalledCitationProviderRuntimes(config);
+    const store = await openRunStoreFromResolvedConfig(config);
+    const mode = asString(args.mode) as CitationExpandRequest["mode"] | undefined;
+    const request: CitationExpandRequest = {
+      mode,
+      runId: asString(args.runId) ?? (mode === "run" ? generateResearchRunId() : undefined),
+      seeds: Array.isArray(args.seeds) ? args.seeds as CitationExpandRequest["seeds"] : undefined,
+      directions: Array.isArray(args.directions) ? args.directions as CitationExpandRequest["directions"] : undefined,
+      providers: asStringArray(args.providers),
+      excludeIdentifiers: Array.isArray(args.excludeIdentifiers)
+        ? args.excludeIdentifiers as CitationExpandRequest["excludeIdentifiers"]
+        : undefined,
+      limits: isRecord(args.limits) ? args.limits as CitationExpandRequest["limits"] : undefined,
+    };
+    const service = createCitationService({
+      providers,
+      runs: store,
+      build: { cliVersion: getSystemVersion() },
+    });
+    return citationEnvelope("citation_expand", await service.expand(request));
+  } catch (error) {
+    return citationFailure("citation_expand", error);
+  }
+}
+
+async function handleCitationRunStatus(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  const runId = asString(args.runId);
+  if (!runId) {
+    return invalidArgs("orchestrate", "citation_run_status", "runId is required and must be a string");
+  }
+  try {
+    const providers = await createInstalledCitationProviderRuntimes(config);
+    const store = await openRunStoreFromResolvedConfig(config);
+    const service = createCitationService({
+      providers,
+      runs: store,
+      build: { cliVersion: getSystemVersion() },
+    });
+    return citationEnvelope("citation_run_status", await service.status(runId));
+  } catch (error) {
+    return citationFailure("citation_run_status", error);
+  }
+}
+
+async function handleAssessmentRun(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  const snapshotPath = asString(args.snapshotPath);
+  const snapshotSha256 = asString(args.snapshotSha256);
+  if (!snapshotPath || !snapshotSha256) {
+    return invalidArgs(
+      "assess",
+      "assessment_run",
+      "snapshotPath and snapshotSha256 are required and must be strings",
+    );
+  }
+  const mode = asString(args.mode) ?? "plan";
+  const request = {
+    snapshot: { path: snapshotPath, sha256: snapshotSha256 },
+    ...(isRecord(args.policy) ? { policy: args.policy } : {}),
+  };
+  try {
+    if (mode === "plan") {
+      return okEnvelope({
+        capability: "assess",
+        tool: "assessment_run",
+        planned: true,
+        data: await planAssessment(request),
+      });
+    }
+    if (mode !== "run") {
+      return invalidArgs("assess", "assessment_run", "mode must be plan or run");
+    }
+    const store = await openRunStoreFromResolvedConfig(config);
+    const adapter = createCommonAssessmentRunStoreAdapter(store, { cliVersion: getSystemVersion() });
+    const result = await runAssessment(request, adapter);
+    return okEnvelope({
+      capability: "assess",
+      tool: "assessment_run",
+      planned: false,
+      data: result,
+      diagnostics: { runId: result.runId, resultDigest: result.report.resultDigest },
+      provenance: { providerIds: [result.report.snapshot.source.providerId] },
+    });
+  } catch (error) {
+    return failEnvelope({
+      capability: "assess",
+      tool: "assessment_run",
+      errors: [errorMessage(error)],
+      diagnostics: { reason: "assessment_execution_failed" },
+    });
+  }
+}
+
+async function handleAssessmentShow(config: ResolvedConfig, args: ToolArguments): Promise<ResultEnvelope> {
+  const runId = asString(args.runId);
+  if (!runId) return invalidArgs("assess", "assessment_show", "runId is required and must be a string");
+  return captureFailure("assess", "assessment_show", async () => {
+    const store = await openRunStoreFromResolvedConfig(config);
+    const adapter = createCommonAssessmentRunStoreAdapter(store, { cliVersion: getSystemVersion() });
+    const report = await replayAssessment(
+      runId,
+      adapter,
+      isRecord(args.policy) ? { policy: args.policy } : {},
+    );
+    return okEnvelope({
+      capability: "assess",
+      tool: "assessment_show",
+      data: { runId, report },
+      diagnostics: { runId, resultDigest: report.resultDigest },
+      provenance: { providerIds: [report.snapshot.source.providerId] },
+    });
+  });
+}
+
+async function handleAssessmentList(config: ResolvedConfig): Promise<ResultEnvelope> {
+  return captureFailure("assess", "assessment_list", async () => {
+    const store = await openRunStoreFromResolvedConfig(config);
+    const runs = await store.list({ kind: "assessment" });
+    return okEnvelope({
+      capability: "assess",
+      tool: "assessment_list",
+      data: { runs, count: runs.length },
+      diagnostics: { runRoot: store.root },
+    });
+  });
 }

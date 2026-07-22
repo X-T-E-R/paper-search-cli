@@ -11,6 +11,7 @@ import {
   parseCredentialsConfigDocument,
   parseUserConfigDocument,
 } from "../../src/config/userConfig.js";
+import { resolveZoteroSelectionBinding } from "../../src/zotero/binding.js";
 
 describe("strict split-config schemas", () => {
   it("accepts only v1 stable-id subscription records", () => {
@@ -110,6 +111,63 @@ describe("strict split-config schemas", () => {
         search: { selection: { excludeDomains: ["not-a-domain"] } },
       }),
     ).toThrow();
+  });
+
+  it("defaults downloads to selected and accepts the standalone materialized override", () => {
+    expect(DEFAULT_CONFIG.material.downloadDisposition).toBe("selected");
+    expect(
+      parseUserConfigDocument({
+        schemaVersion: 1,
+        material: { downloadDisposition: "materialized" },
+      }).data,
+    ).toEqual({ material: { downloadDisposition: "materialized" } });
+    expect(classifyConfigKey("material.downloadDisposition")).toBe("non-secret");
+    expect(() =>
+      parseUserConfigDocument({
+        schemaVersion: 1,
+        material: { downloadDisposition: "maybe" },
+      }),
+    ).toThrow();
+  });
+
+  it("separates global Zotero defaults from workspace binding policy", () => {
+    expect(resolveZoteroSelectionBinding({
+      ...DEFAULT_CONFIG,
+      zotero: {
+        ...DEFAULT_CONFIG.zotero,
+        syncOnSelected: true,
+        collectionKeys: ["GLOBAL1"],
+        attachmentMode: "link",
+      },
+      meta: null as never,
+    })).toMatchObject({
+      requested: true,
+      origin: "global",
+      collectionKeys: ["GLOBAL1"],
+      attachmentMode: "link",
+    });
+
+    expect(resolveZoteroSelectionBinding({
+      ...DEFAULT_CONFIG,
+      zoteroBinding: {
+        mode: "bound",
+        collectionKeys: ["WORK1", "SHARED2"],
+        attachmentMode: "import",
+        markdownMode: "none",
+      },
+      meta: null as never,
+    })).toEqual({
+      requested: true,
+      origin: "workspace",
+      collectionKeys: ["WORK1", "SHARED2"],
+      attachmentMode: "import",
+      markdownMode: "none",
+    });
+
+    expect(parseUserConfigDocument({
+      schemaVersion: 1,
+      zoteroBinding: { mode: "off" },
+    }).data).toEqual({ zoteroBinding: { mode: "off" } });
   });
 
   it("accepts user tags and presets while validating selector and definition names", () => {

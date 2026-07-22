@@ -1,4 +1,4 @@
-import { cp, mkdtemp } from "node:fs/promises";
+import { cp, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -113,6 +113,7 @@ describe("artifact resolver acquire funnel", () => {
       "artifact",
       "download",
       doi,
+      "--institutional",
       "--policy",
       "resolver-funnel",
       "--json",
@@ -120,6 +121,7 @@ describe("artifact resolver acquire funnel", () => {
 
     expect(result.stderr).toBe("");
     expect(result.envelope.ok).toBe(true);
+    expect(result.envelope.actions).toBeUndefined();
     const data = result.envelope.data as ArtifactDownloadData;
     expect(data.input).toMatchObject({ kind: "identifier", value: doi });
     expect(data.record.provenance).toMatchObject({
@@ -135,6 +137,71 @@ describe("artifact resolver acquire funnel", () => {
     );
     expect(data.record.remoteUrl).toContain("10-1234-resolver-funnel-primary.pdf");
     await expect(readArtifactRecord(workspaceRoot, data.record.id)).resolves.toBeDefined();
+  });
+
+  it("rejects HTTP-200 challenge HTML and continues to the next resolver candidate", async () => {
+    const installDir = await prepareInstallDir();
+    await writeFile(
+      path.join(installDir, "fixture-artifact-downloader", "provider.js"),
+      [
+        "globalThis.__material_provider_exports = {",
+        "  createProvider() {",
+        "    return {",
+        "      async download(input) {",
+        "        if (input.url.includes('-primary.pdf')) {",
+        "          return {",
+        "            kind: 'html',",
+        "            filename: 'challenge.html',",
+        "            contentType: 'text/html; charset=utf-8',",
+        "            remoteUrl: input.url,",
+        "            status: 200,",
+        "            text: '<head><title>Radware Bot Manager Captcha</title></head><body>Human verification</body>'",
+        "          };",
+        "        }",
+        "        return {",
+        "          kind: 'pdf',",
+        "          filename: 'paper.pdf',",
+        "          contentType: 'application/pdf',",
+        "          remoteUrl: input.url,",
+        "          status: 200,",
+        "          text: '%PDF-1.7 valid fallback'",
+        "        };",
+        "      }",
+        "    };",
+        "  }",
+        "};",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const { root, workspaceRoot } = await createWorkspace("paper-search-resolver-challenge-", installDir);
+
+    const result = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      "10.1234/challenge-fallback",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope.ok).toBe(true);
+    const data = result.envelope.data as ArtifactDownloadData;
+    expect(data.record.remoteUrl).toContain("10-1234-challenge-fallback-fallback.pdf");
+    expect(data.record.kind).toBe("pdf");
+    expect(data.record.attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tier: "artifact-download-candidate",
+        ok: false,
+        status: 200,
+        message: expect.stringContaining("radware bot manager captcha"),
+      }),
+      expect.objectContaining({ tier: "artifact-download-candidate", ok: true, status: 200 }),
+    ]));
+    await expect(readArtifactRecord(workspaceRoot, data.record.id)).resolves.toMatchObject({
+      id: data.record.id,
+      kind: "pdf",
+      remoteUrl: data.record.remoteUrl,
+    });
   });
 
   it("returns a typed failure envelope when the resolver yields no candidates", async () => {

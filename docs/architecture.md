@@ -1,8 +1,10 @@
-# Architecture
+# Paper Search CLI X architecture
 
-`paper-search-cli` is organized around one rule: the CLI, MCP server, batch
+Paper Search CLI X is organized around one rule: the CLI, MCP server, batch
 runner, provider runtimes, and companion skill share the same capability and
 result contracts. Human-facing commands are adapters over those contracts.
+The X describes extensibility and open possibilities; existing machine-facing
+names remain compatible.
 
 ## Main Layers
 
@@ -24,16 +26,108 @@ result contracts. Human-facing commands are adapters over those contracts.
 3. **Entry surfaces**
    - CLI commands for humans
    - canonical tool catalog for deterministic tool calls
-   - `run <canonical_tool>` for schema-validated single-tool execution
+   - `run <tool>` as the durable CLI projection of canonical `research_run`
    - MCP JSON-RPC server for AI clients
    - companion skill for capability routing and workflow discipline
    - batch runner over the same canonical tools and result envelope
 4. **Storage and sinks**
-   - local workspace records under the configured workspace root
-   - artifact and extraction records for material workflows
-   - attachment sink for `resource-pdf` compatibility
-   - workspace export sink for JSON, JSONL, CSV, and BibTeX
-   - no host-application bridge or profile writer in this system
+   - one conventional user home at `~/.paper-search/`
+   - independently configurable workspace, artifact, extraction, export, and
+     durable-run roots
+   - provider-mediated artifact acquisition for `resource-pdf` compatibility
+   - portable workspace export sink for JSON, JSONL, CSV, and BibTeX
+   - no general host-application bridge or profile writer; the bounded Zotero
+     MCP Neo selected-item projection is the exception defined by
+     [ADR-0005](./decisions/ADR-0005-selected-resource-zotero-projection.md)
+
+## Product boundary
+
+Paper Search owns discovery, identifier resolution, citation traversal,
+transparent assessment, normalized machine output, provider provenance, and
+search history. It does not own a research project's schema or long-lived
+catalog. Paperflow owns workspace creation, semantic path roles, and
+research-runtime invariants. A project-side bibliography/catalog workflow owns
+selected literature.
+
+Integration uses a generated config and shared path-role contract. Paper Search selects the
+nearest ancestor `paper-search.toml` and writes one run to its configured
+`runs.root`; it never imports Paperflow modules or reads `paperflow.yaml`.
+Paperflow generates that TOML so run, selected-workspace, artifact, extraction,
+and export roots match its roles, then reads the validated run files directly.
+Global state keeps only a run locator, not a duplicate payload. Mounted history
+is not automatic catalog/evidence promotion. A successful download selects by
+default, while Paperflow evidence verification remains a later state.
+
+## Conventional home and storage classes
+
+`PAPER_SEARCH_HOME` may select an explicit absolute home. Otherwise all
+conventional config, credentials, subscriptions, adapters, provider packages,
+registry snapshots, caches, state, runs, workspace records, material outputs,
+exports, and managed shims derive from `~/.paper-search/`. Platform config roots
+are inspected only as copy-migration sources.
+
+The default path classes are distinct:
+
+- `workspace/` owns local bibliographic and material metadata records;
+- `storage/artifacts/` owns acquired bytes such as PDFs;
+- `storage/extractions/` owns Markdown, structured output, and assets;
+- `exports/` owns explicit managed portable exports written with
+  `workspace-export --store`; and
+- `runs/` owns global execution history and checkpoints when no context exists.
+
+A standalone or Paperflow project context may choose all five roots.
+Nearest-ancestor discovery affects the project configuration layer, while the
+conventional user home remains the authority for credentials, providers, state,
+and locators.
+
+`workspace.root`, `storage.artifactRoot`, `storage.extractionRoot`,
+`storage.exportRoot`, and `runs.root` can be configured independently. Changing
+a root affects future writes. Versioned local storage references capture the
+resolved root and contained key; legacy workspace-relative `path` fields keep
+their existing meaning.
+
+## Durable runs
+
+Real discovery through friendly CLI, canonical/MCP, and batch surfaces is
+durable by default. `runs.recordByDefault = false`, a direct CLI/batch
+`--no-history`, or canonical/MCP `recordHistory: false` is the explicit opt-out.
+`run <tool>` and canonical/MCP `research_run` remain the always-durable wrapper
+over the fixed non-destructive discovery allowlist:
+`academic_search`, `patent_search`, `resource_lookup`, `patent_detail`, and the
+optional `web_search`. Citation and assessment workflows are intrinsically
+durable when run rather than planned.
+
+The common run store persists sanitized request, resolved selection,
+timestamps, diagnostics, provenance, failures, and terminal results or
+references. A context run exists only in its selected root; the user-level state
+stores a bounded run-id locator so `run_show` can find it from another context.
+Citation runs also persist checkpoints. `runs.maxAgeDays = -1`
+means age alone never selects a run for pruning. Pruning is explicit and
+plan-first; active, interrupted-resumable, corrupt, and pinned records are not
+age-prune candidates.
+
+Canonical/MCP exposes `run_list`, `run_show`, and plan-only `run_prune_plan`.
+Run export, pin/unpin, and applied pruning remain CLI-only. Durable history is
+private local plaintext and may be retained indefinitely with the default.
+Plans and dry-runs do not create history. An already-durable wrapper invokes the
+canonical executor through an internal bypass so one search creates one record.
+
+## Optional Zotero boundary
+
+Paper Search local workspace and material records remain authoritative. The
+Zotero projection separates user-owned connection settings from project binding
+policy. A project may inherit global selected-item defaults, disable projection,
+or bind to multiple exact existing collections. Search hits do not write to
+Zotero. Explicit workspace selection and successful downloads may project when
+durably configured; host failure leaves a pending receipt without reversing the
+local operation.
+
+The adapter creates or updates a mapped bibliographic item, can render one
+selected extraction as a note, and may link/import durable artifact or Markdown
+files through Zotero MCP Neo. It never creates collections. The explicit
+`zotero sink` plan/preview/digest-acknowledged apply flow remains available.
+Mappings and complete/partial/pending receipts live under the Paper Search
+workspace root. Partial remote completion is not automatically rolled back.
 
 ## Capability Contract
 
@@ -44,16 +138,43 @@ are projections of these eight groups:
 | --- | --- | --- |
 | `discover` | work | Search academic, patent, and web sources. |
 | `identify` | work | Resolve known identifiers, URLs, or provider-native ids to normalized metadata. |
-| `assess` | work | **Reserved** — rank, dedupe, and report source/journal metrics (no canonical tools; see [ADR-0003](./decisions/ADR-0003-assess-capability-group-disposition.md)). |
+| `assess` | work | Evaluate checksum-bound observations, preserve conflicts/provenance, and optionally apply an explicit traceable user policy. |
 | `acquire` | work | Fetch or record artifacts with provenance and attempt history. |
 | `extract` | work | Turn artifacts, URLs, or files into Markdown, JSON, or assets. |
-| `organize` | work | Store, tag, collect, and export workspace records. |
-| `orchestrate` | work | Run multi-step workflows over primitives. |
-| `operate` | management | Inspect readiness/config, manage providers, and run server surfaces. |
+| `organize` | work | Compatibility storage/export surfaces; project records belong to external bibliography/catalog tools that may resolve Paperflow roles. |
+| `orchestrate` | work | Run durable discovery, citation expansion, and multi-step workflows over primitives. |
+| `operate` | management | Inspect readiness/config/runs, manage providers, and run server surfaces. |
 
 `operate` is the only management-layer group. This keeps commands such as
 `doctor`, `config`, `providers`, `tools`, `help`, and `mcp serve` out of the
 research/material workflow path.
+
+### Citation expansion
+
+`citation_expand` plans, starts, or resumes bounded backward/forward traversal
+from exact identifiers. Repeated graph-capable providers use union semantics.
+Core normalizes identities, deduplicates nodes and edges, retains per-edge
+provider provenance, detects cycles, and applies depth, breadth, node, edge,
+page, and concurrency bounds. A plan performs no provider calls or writes; a run
+checkpoints each valid provider page in the common run store; resume continues
+remaining work after checkpoint and provider-drift validation.
+
+`citation_run_status` reads a stored checkpoint without calling providers.
+`citation_expand` is also a supported batch row tool. Citation results are not
+automatically added to the workspace.
+
+### Transparent assessment
+
+`assessment_run` evaluates an immutable local observation snapshot bound to its
+exact SHA-256. It preserves source/version/time, coverage outcomes, raw-evidence
+digests, conflicts, missing signals, and an optional user-policy trace. Without
+a policy there is no disposition. A policy can return `include`, `exclude`, or
+`review`, but cannot be presented as a universal quality score or automatic
+acceptance decision.
+
+`assessment_show` replays a completed assessment from stored evidence, and
+`assessment_list` lists assessment-run headers. Assessment does not rerank or
+deduplicate discovery results. See [ADR-0003](./decisions/ADR-0003-assess-capability-group-disposition.md).
 
 ## Result Envelope Contract
 
@@ -105,11 +226,20 @@ providers validate-manifest <path> --kind material
 providers plan-registry <source> --kind material
 providers sync-registry <source> --kind material
 providers install-zip <zip> --kind material
+providers uninstall <id> --kind material
+providers rollback <id> --kind material --revision <sha256>
 ```
 
 The default provider kind is `search` for `providers`. The
 `material-providers` command is a compatibility alias with default kind
 `material`.
+
+Manual ZIP ownership transitions are explicit. A subscription-bound target is
+rejected unless `--replace-bound` is present; the plan pins its receipt/source
+and installed revision. Successful replacement or uninstall retains the exact
+prior provider directory below the kind-specific hidden rollback store. The
+emitted revision is the only selector accepted by `providers rollback`, which
+uses compare-and-swap preconditions and retains any displaced current revision.
 
 ### Search Providers
 
@@ -168,12 +298,18 @@ The material runtime gives providers controlled access to:
 
 - redacted config reads
 - permission-checked HTTP transport
+- bounded ZIP-to-Markdown reading for extractor result archives
 - provider-scoped cache
 - policy metadata
 - controlled workspace writes when the manifest permits them
 
 Core owns orchestration, records, validation, and workspace storage. Networked
 acquisition/extraction logic belongs in provider packages.
+
+Binary HTTP responses must declare a decoded-byte limit. Result-archive readers
+also enforce archive and Markdown limits, safe entry paths, entry-count bounds,
+and a deterministic preferred Markdown entry before returning text to a
+provider.
 
 ### Material Provider Distribution
 
@@ -267,8 +403,57 @@ Important fields:
   and timestamp, including `artifact-resolver` tier attempts and per-candidate
   download attempts for resolved acquisitions
 
-Artifact bytes, when stored, live under `material/files/<artifact-id>/`.
-Artifact records live under `material/artifacts/<artifact-id>.json`.
+Artifact records live under the workspace root at
+`material/artifacts/<artifact-id>.json`. New artifact bytes use the configured
+`storage.artifactRoot` and a versioned local storage reference that captures its
+root, contained key, and digest/size when available. Legacy record paths retain
+their original workspace-relative meaning.
+
+When `material ingest` receives a local file, it preserves the caller's file,
+copies the bytes into the configured artifact root, commits the versioned
+storage reference, and then addresses the managed artifact by id for extraction.
+Direct `extract <path>` remains path-based and does not create an artifact.
+
+For a direct HTTPS URL, ingest is still byte-first. A `direct-url-downloader` failure is
+eligible for exact-URL extraction recovery only when every observed upstream
+status is 401, 403, or 429 and the dry-run plan declared the fallback. Core then
+tries the selected URL-capable material extractor (for example MinerU), followed
+by the existing verified Jina Reader exact-URL adapter. The terminal adapter
+rejects missing/mismatched `URL Source` identity and challenge content. Recovery
+commits an `ExtractionRecord` whose source is the requested URL, but commits no
+artifact bytes or `ArtifactRecord`; its execution envelope exposes
+`executionMode: "exact_url_extraction"`, `artifact: null`, and the unavailable
+acquisition attempts/statuses. Any partial extraction commit stops the provider
+chain so a second provider cannot hide an orphan. Non-eligible status codes and
+non-HTTPS, DOI, workspace-item, other downloader-provider, or direct artifact
+workflows are unchanged.
+
+### Local PyMuPDF4LLM Sidecar
+
+`local-pymupdf4llm` is an explicit-only material extractor for `local_file` and
+managed `artifact` PDF inputs. The provider VM receives no process primitive.
+Instead, the host runtime authorizes the one resolved input path and exposes a
+single `sidecar.pymupdf4llm.toMarkdown({ ocr, timeoutMs })` operation only to
+that exact provider id and manifest permission shape. The provider cannot send
+a path, executable, script, argument list, working directory, or environment.
+
+The host resolves a versioned Python 3.11 executable below the Paper Search
+home and a packaged adapter next to the CLI bundle. It starts those two fixed
+paths with `shell: false`, sends one bounded JSON request on stdin, accepts one
+bounded JSON response on stdout, applies a deadline, and empties inherited
+environment values before adding only Python encoding, runtime temp, disabled
+proxy, and Windows loader variables. The adapter calls the official
+`pymupdf4llm.to_markdown()` API with image output disabled and the
+`lines_strict` table strategy. It reports parser versions, page count, elapsed
+time, output mode, and sanitized warnings; it never emits image assets or links.
+
+The dependency lock contains `pymupdf4llm 0.3.4`, `PyMuPDF 1.27.2.3`, and
+`tabulate 0.10.0`. The first two packages are dual licensed under GNU AGPL 3.0
+or an Artifex commercial license. The optional `pymupdf-layout` extension has a
+different license and is not part of this runtime. OCR is not installed; an
+explicit OCR request or unreadable embedded text produces `OCR_UNAVAILABLE`.
+The provider declares `network: false` and is excluded from implicit extractor
+selection, preserving existing online provider routing.
 
 ### Extraction Records
 
@@ -285,9 +470,11 @@ Important fields:
 - optional `itemId` workspace link
 - optional provider message
 
-Extraction records live under `material/extractions/<extraction-id>.json`.
-Generated Markdown and structured provider output live under
-`material/extractions/<extraction-id>/`.
+Extraction records live under the workspace root at
+`material/extractions/<extraction-id>.json`. New Markdown, structured provider
+output, and assets use `storage.extractionRoot` and versioned local storage
+references. Legacy record paths retain their original workspace-relative
+meaning.
 
 ## Command Semantics
 
@@ -304,10 +491,14 @@ Generated Markdown and structured provider output live under
 ### Workspace and Export
 
 - `resource-add` writes normalized item records into `items/*.json`.
-- `resource-pdf` downloads or records PDF attachments for existing workspace
-  item ids and remains available as `pdf`.
+- `resource-pdf` acquires or records a PDF for an existing workspace item id
+  through the installed material-provider path and remains available as `pdf`.
 - `collection-list` reads the local collection tree from `collections.json`.
-- `workspace-export` writes portable JSON, JSONL, CSV, or BibTeX.
+- `workspace-export` writes portable JSON, JSONL, CSV, or BibTeX. With no file
+  option it writes to stdout; `--out` keeps its explicit caller-relative
+  semantics; `--store <safe-relative-key>` writes atomically below
+  `storage.exportRoot`, and `--store ... --dry-run` validates and reports the
+  target without writing.
 - Workspace mutations are serialized per root so concurrent batch adds do not
   corrupt collection state.
 - `collections.json` is read fail-closed: malformed data or read errors are
@@ -322,7 +513,9 @@ Generated Markdown and structured provider output live under
 - `artifact list` and `artifact show` inspect artifact records.
 - `extract <artifactId|path|url>` produces extraction records and output files.
 - `material ingest <path|url|itemKey|doi>` plans or runs acquisition plus
-  extraction.
+  extraction. A local path is copied into managed artifact storage before the
+  extractor receives it as an artifact. An exact HTTPS URL may use the declared
+  extraction-only recovery above after a 401/403/429 byte-acquisition denial.
 - `material status <itemKey|artifactId|extractionId>` reports related artifacts
   and extracted outputs.
 - `batch` can run `artifact_download`, `extract`, and `material_ingest` rows and

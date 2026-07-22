@@ -1,21 +1,28 @@
+import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedConfig } from "../config/schema.js";
+import { planLocalStorageWrite, writeLocalStorageBytes } from "../storage/local.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
 import {
   ARTIFACT_RECORDS_DIR,
   createArtifactRecord,
 } from "./artifactStore.js";
 import {
+  ArtifactDownloadError,
   planArtifactDownload,
   runArtifactDownload,
+  sanitizeArtifactFilename,
   type ArtifactDownloadInputSummary,
 } from "./artifactDownload.js";
 import {
   EXTRACTION_RECORDS_DIR,
 } from "./extractionStore.js";
 import {
+  commitMaterialExtractionProviderProbe,
   planMaterialExtractionForInputKind,
   runMaterialExtraction,
+  type MaterialExtractionOrphanOutcome,
 } from "./extract.js";
 import {
   createPlanEnvelope,
@@ -23,11 +30,22 @@ import {
   type PlannedOperationStep,
   type PlannedProviderSelection,
 } from "../surface/plan.js";
-import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
-import type { WorkspaceItemRecord } from "../workspace/store.js";
-import type { ArtifactKind, ArtifactRecord, ExtractionRecord, ExtractionSource } from "./records.js";
+import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
+import {
+  ensureResourceSelectedInWorkspace,
+  type WorkspaceItemRecord,
+} from "../workspace/store.js";
+import type {
+  ArtifactAttempt,
+  ArtifactKind,
+  ArtifactRecord,
+  ExtractionRecord,
+  ExtractionSource,
+} from "./records.js";
 import type { MaterialInputKind } from "./types.js";
 import { tryParseDoiIdentifier } from "./resolverResult.js";
+import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
+import { runJinaReaderUrlProbe } from "../lookup/jinaReader.js";
 
 export interface MaterialIngestPlanOptions {
   config: ResolvedConfig;
@@ -107,6 +125,16 @@ export interface MaterialIngestProvidersPlan {
   selected: MaterialIngestProviderPlan[];
 }
 
+export interface MaterialIngestExactUrlFallbackPlan {
+  mode: "exact_url_extraction";
+  source: { kind: "url"; url: string };
+  eligibleHttpStatuses: readonly [401, 403, 429];
+  artifactOnSuccess: false;
+  managedProvider: MaterialIngestProviderPlan | null;
+  terminalProvider: MaterialIngestProviderPlan;
+  targetPaths: string[];
+}
+
 export interface MaterialIngestPlanData extends PlannedOperationData {
   resource: MaterialIngestResourcePlan;
   artifact: MaterialIngestArtifactPlan;
@@ -114,6 +142,7 @@ export interface MaterialIngestPlanData extends PlannedOperationData {
   policy: MaterialIngestPolicyPlan;
   providers: MaterialIngestProvidersPlan;
   outputs: MaterialIngestOutputPlan;
+  exactUrlFallback: MaterialIngestExactUrlFallbackPlan | null;
 }
 
 export interface MaterialIngestExecutedStep extends PlannedOperationStep {
@@ -154,6 +183,59 @@ export interface MaterialIngestExecutionData extends Omit<PlannedOperationData, 
   outputs: MaterialIngestOutputPlan;
 }
 
+export interface MaterialIngestUnavailableArtifact {
+  mode: "unavailable";
+  status: "not_materialized";
+  source: { kind: "url"; url: string };
+  provider: MaterialIngestProviderPlan;
+  httpStatusCodes: number[];
+  attempts: ArtifactAttempt[];
+  error: string;
+}
+
+export interface MaterialIngestExtractionOnlyOutputPlan {
+  extractionRecordPath: string;
+  extractionOutputPath: string;
+  markdownPath: string;
+  jsonPath: string;
+}
+
+export interface MaterialIngestExactUrlExecutionData extends Omit<PlannedOperationData, "intendedSteps"> {
+  executionMode: "exact_url_extraction";
+  executedSteps: MaterialIngestExecutedStep[];
+  resource: MaterialIngestResourcePlan;
+  artifact: null;
+  acquisition: MaterialIngestUnavailableArtifact;
+  extraction: MaterialIngestExtractionExecution;
+  policy: MaterialIngestPolicyPlan;
+  providers: MaterialIngestProvidersPlan;
+  outputs: MaterialIngestExtractionOnlyOutputPlan;
+}
+
+/** Managed bytes were committed, but their durable artifact record was not. */
+export interface MaterialIngestOrphanOutcome {
+  outcome: "orphaned";
+  commitStage: "selection" | "metadata";
+  artifactId: string;
+  artifactPath: string;
+  storage: LocalStorageRefV1;
+  sha256: string;
+  sizeBytes: number;
+  metadataPath: string;
+  error: string;
+}
+
+export type MaterialIngestExecutionOutcomeData =
+  | MaterialIngestExecutionData
+  | MaterialIngestExactUrlExecutionData;
+
+export type MaterialIngestResultEnvelope = ResultEnvelope<MaterialIngestExecutionOutcomeData> & {
+  /** Present only when managed local bytes committed but record metadata did not. */
+  orphan?: MaterialIngestOrphanOutcome;
+  /** Present when extraction committed outputs but its record could not be committed. */
+  extractionOrphan?: MaterialExtractionOrphanOutcome;
+};
+
 interface ResolvedMaterialIngestInput {
   resource: MaterialIngestResourcePlan;
   attachTo: string | null;
@@ -169,6 +251,13 @@ export class MaterialIngestPlanError extends Error {
   }
 }
 
+class LocalArtifactMetadataCommitError extends Error {
+  constructor(readonly orphan: MaterialIngestOrphanOutcome) {
+    super(orphan.error);
+    this.name = "LocalArtifactMetadataCommitError";
+  }
+}
+
 const WORKSPACE_ITEM_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const WORKSPACE_ITEMS_DIR = "items";
 const PLANNED_ARTIFACT_ID = "<new-artifact-id>";
@@ -178,6 +267,13 @@ const LOCAL_ARTIFACT_PROVIDER: MaterialIngestProviderPlan = {
   kind: "builtin",
   capabilities: ["acquire"],
 };
+const JINA_READER_PROVIDER: MaterialIngestProviderPlan = {
+  id: "jina-reader",
+  kind: "builtin",
+  capabilities: ["extract"],
+  packagePath: "builtin:lookup/jina-reader",
+};
+const EXACT_URL_FALLBACK_HTTP_STATUSES = [401, 403, 429] as const;
 
 function fail(message: string): never {
   throw new MaterialIngestPlanError(message);
@@ -403,11 +499,8 @@ function pathInsideWorkspace(workspaceRoot: string, relativePath: string): strin
   return path.join(path.resolve(workspaceRoot), relativePath);
 }
 
-function plannedExtractionOutputPath(workspaceRoot: string): string {
-  return pathInsideWorkspace(
-    workspaceRoot,
-    path.join(EXTRACTION_RECORDS_DIR, PLANNED_EXTRACTION_ID),
-  );
+function plannedExtractionOutputPath(extractionRoot: string): string {
+  return path.join(path.resolve(extractionRoot), PLANNED_EXTRACTION_ID);
 }
 
 function plannedArtifactRecordPath(workspaceRoot: string): string {
@@ -424,12 +517,31 @@ function plannedExtractionRecordPath(workspaceRoot: string): string {
   );
 }
 
-function plannedMarkdownPath(workspaceRoot: string): string {
-  return path.join(plannedExtractionOutputPath(workspaceRoot), "content.md");
+function plannedMarkdownPath(extractionRoot: string): string {
+  return path.join(plannedExtractionOutputPath(extractionRoot), "content.md");
 }
 
-function plannedJsonPath(workspaceRoot: string): string {
-  return path.join(plannedExtractionOutputPath(workspaceRoot), "result.json");
+function plannedJsonPath(extractionRoot: string): string {
+  return path.join(plannedExtractionOutputPath(extractionRoot), "result.json");
+}
+
+function localArtifactFilename(localPath: string): string {
+  return sanitizeArtifactFilename(path.basename(localPath));
+}
+
+function localArtifactStorageKey(artifactId: string, filename: string): string {
+  return `${artifactId}/${filename}`;
+}
+
+async function plannedLocalArtifactFilePath(artifactRoot: string, localPath: string): Promise<string> {
+  const filename = localArtifactFilename(localPath);
+  // Validate the eventual portable UUID-shaped key, not the display-only angle-bracket placeholder.
+  await planLocalStorageWrite({
+    root: artifactRoot,
+    key: localArtifactStorageKey(randomUUID(), filename),
+    area: "artifact",
+  });
+  return path.join(path.resolve(artifactRoot), PLANNED_ARTIFACT_ID, filename);
 }
 
 function providerPackagePath(
@@ -560,6 +672,8 @@ function resourceStep(resource: MaterialIngestResourcePlan): PlannedOperationSte
 function localArtifactSteps(options: {
   resource: MaterialIngestResourcePlan;
   recordTargetPath: string;
+  fileTargetPath: string;
+  selectionTargetPaths: string[];
   policy: string;
 }): PlannedOperationStep[] {
   return [
@@ -572,9 +686,27 @@ function localArtifactSteps(options: {
       policy: options.policy,
     },
     {
+      id: "artifact.write-local-artifact",
+      action: "write",
+      description: "Copy the local file into managed artifact storage using atomic placement.",
+      targetPaths: [options.fileTargetPath],
+      providerId: LOCAL_ARTIFACT_PROVIDER.id,
+      policy: options.policy,
+    },
+    ...(options.selectionTargetPaths.length > 0
+      ? [{
+          id: "artifact.select-local-resource",
+          action: "record" as const,
+          description: "Create or reuse the selected workspace item for the copied local resource.",
+          targetPaths: options.selectionTargetPaths,
+          providerId: LOCAL_ARTIFACT_PROVIDER.id,
+          policy: options.policy,
+        }]
+      : []),
+    {
       id: "artifact.record-local-artifact",
       action: "record",
-      description: "Record the local file as a workspace artifact without copying bytes during the plan.",
+      description: "Record the managed local artifact in the workspace.",
       targetPaths: [options.recordTargetPath],
       providerId: LOCAL_ARTIFACT_PROVIDER.id,
       policy: options.policy,
@@ -585,6 +717,7 @@ function localArtifactSteps(options: {
 function artifactPlanFromLocalResource(options: {
   resource: MaterialIngestResourcePlan;
   recordTargetPath: string;
+  fileTargetPath: string;
 }): MaterialIngestArtifactPlan {
   return {
     mode: "record_local",
@@ -595,6 +728,7 @@ function artifactPlanFromLocalResource(options: {
     },
     provider: LOCAL_ARTIFACT_PROVIDER,
     recordTargetPath: options.recordTargetPath,
+    fileTargetPath: options.fileTargetPath,
   };
 }
 
@@ -630,7 +764,9 @@ function artifactPlanFromDownload(options: {
 }
 
 function plannedExtractionInputKind(resolved: ResolvedMaterialIngestInput): MaterialInputKind {
-  return resolved.artifactInput ? "artifact" : resolved.extractionInputKind;
+  return resolved.artifactInput || resolved.resource.kind === "path"
+    ? "artifact"
+    : resolved.extractionInputKind;
 }
 
 function extractionPlanFromSubplan(options: {
@@ -639,9 +775,9 @@ function extractionPlanFromSubplan(options: {
   materialInputKind: MaterialInputKind;
   recordTargetPath: string;
   outputTargetPath: string;
-  workspaceRoot: string;
+  extractionRoot: string;
 }): MaterialIngestExtractionPlan {
-  const source = options.resource.kind === "path"
+  const source = options.materialInputKind !== "artifact" && options.resource.kind === "path"
     ? {
         kind: "path" as const,
         path: options.resource.path,
@@ -659,8 +795,8 @@ function extractionPlanFromSubplan(options: {
     provider: options.extractionProvider,
     recordTargetPath: options.recordTargetPath,
     outputTargetPath: options.outputTargetPath,
-    markdownPath: plannedMarkdownPath(options.workspaceRoot),
-    jsonPath: plannedJsonPath(options.workspaceRoot),
+    markdownPath: plannedMarkdownPath(options.extractionRoot),
+    jsonPath: plannedJsonPath(options.extractionRoot),
   };
 }
 
@@ -684,9 +820,10 @@ function providerFromExtractionExecution(
     packagePath: string;
   },
 ): MaterialIngestProviderPlan {
+  const builtin = provider.packagePath.startsWith("builtin:");
   return {
     id: provider.id,
-    kind: "material",
+    kind: builtin ? "builtin" : "material",
     capabilities: ["extract"],
     packagePath: provider.packagePath,
   };
@@ -708,10 +845,6 @@ function artifactRecordFilePath(workspaceRoot: string, artifactId: string): stri
 
 function extractionRecordFilePath(workspaceRoot: string, extractionId: string): string {
   return pathInsideWorkspace(workspaceRoot, path.join(EXTRACTION_RECORDS_DIR, `${extractionId}.json`));
-}
-
-function extractionOutputDirectoryPath(workspaceRoot: string, extractionId: string): string {
-  return pathInsideWorkspace(workspaceRoot, path.join(EXTRACTION_RECORDS_DIR, extractionId));
 }
 
 function inferLocalArtifactKind(filePath: string): ArtifactKind {
@@ -737,43 +870,83 @@ function contentTypeFromLocalPath(filePath: string): string | undefined {
 }
 
 async function createLocalArtifactRecord(options: {
-  workspaceRoot: string;
+  config: ResolvedConfig;
   localPath: string;
   attachTo: string | null;
   policy: string;
-}): Promise<ArtifactRecord> {
+}): Promise<{ record: ArtifactRecord; artifactPath: string }> {
   const localStat = await stat(options.localPath);
   if (!localStat.isFile()) {
     fail(`Path input must be a file: ${options.localPath}`);
   }
+  const artifactId = randomUUID();
   const createdAt = new Date().toISOString();
-  const filename = path.basename(options.localPath) || "artifact.bin";
+  const filename = localArtifactFilename(options.localPath);
   const contentType = contentTypeFromLocalPath(options.localPath);
-  return createArtifactRecord(options.workspaceRoot, {
-    kind: inferLocalArtifactKind(options.localPath),
-    status: "recorded",
-    ...(options.attachTo ? { itemId: options.attachTo } : {}),
-    filename,
-    ...(contentType ? { contentType } : {}),
-    sizeBytes: localStat.size,
-    provenance: {
-      origin: "user_supplied",
-      providerId: LOCAL_ARTIFACT_PROVIDER.id,
-      policy: options.policy,
-    },
-    attempts: [
-      {
-        tier: "material-ingest-local-artifact",
-        source: options.localPath,
-        providerId: LOCAL_ARTIFACT_PROVIDER.id,
-        ok: true,
-        message: "Local file recorded as a user-supplied artifact",
-        at: createdAt,
-      },
-    ],
-    message: "Local file recorded as a user-supplied artifact",
-    createdAt,
+  const stored = await writeLocalStorageBytes({
+    root: options.config.storage.artifactRoot,
+    key: localArtifactStorageKey(artifactId, filename),
+    area: "artifact",
+    bytes: await readFile(options.localPath),
   });
+  let record: ArtifactRecord;
+  let commitStage: MaterialIngestOrphanOutcome["commitStage"] = "selection";
+  try {
+    let effectiveAttachTo = options.attachTo;
+    if (!effectiveAttachTo && options.config.material.downloadDisposition === "selected") {
+      const selected = await ensureResourceSelectedInWorkspace(options.config.workspace.root, {
+        item: {
+          itemType: "document",
+          title: path.basename(options.localPath, path.extname(options.localPath)),
+          sourceId: `local:${path.resolve(options.localPath)}`,
+          source: "material-ingest-local",
+        },
+        defaultCollectionPath: options.config.workspace.defaultCollection,
+      });
+      effectiveAttachTo = selected.record.id;
+    }
+    commitStage = "metadata";
+    record = await createArtifactRecord(options.config.workspace.root, {
+      id: artifactId,
+      kind: inferLocalArtifactKind(options.localPath),
+      status: "recorded",
+      ...(effectiveAttachTo ? { itemId: effectiveAttachTo } : {}),
+      filename,
+      ...(contentType ? { contentType } : {}),
+      storage: stored.ref,
+      sizeBytes: stored.ref.sizeBytes,
+      provenance: {
+        origin: "user_supplied",
+        providerId: LOCAL_ARTIFACT_PROVIDER.id,
+        policy: options.policy,
+      },
+      attempts: [
+        {
+          tier: "material-ingest-local-artifact",
+          source: options.localPath,
+          providerId: LOCAL_ARTIFACT_PROVIDER.id,
+          ok: true,
+          message: "Local file copied into managed artifact storage",
+          at: createdAt,
+        },
+      ],
+      message: "Local file copied into managed artifact storage and recorded",
+      createdAt,
+    });
+  } catch (error) {
+    throw new LocalArtifactMetadataCommitError({
+      outcome: "orphaned",
+      commitStage,
+      artifactId,
+      artifactPath: stored.path,
+      storage: stored.ref,
+      sha256: stored.ref.sha256!,
+      sizeBytes: stored.ref.sizeBytes!,
+      metadataPath: artifactRecordFilePath(options.config.workspace.root, artifactId),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return { record, artifactPath: stored.path };
 }
 
 function requireLocalResourcePath(resource: MaterialIngestResourcePlan): string {
@@ -783,24 +956,15 @@ function requireLocalResourcePath(resource: MaterialIngestResourcePlan): string 
   return resource.path;
 }
 
-function requireExtractionOutputPath(
-  record: ExtractionRecord,
-  key: "markdownPath" | "jsonPath",
-): string {
-  const value = record.outputs[key];
-  if (!value) {
-    fail(`Material extraction record did not include outputs.${key}`);
-  }
-  return value;
-}
-
 function buildArtifactExecutionFromDownload(options: {
   plan: MaterialIngestPlanData;
   data: NonNullable<Awaited<ReturnType<typeof runArtifactDownload>>["data"]>;
   workspaceRoot: string;
 }): MaterialIngestArtifactExecution {
   const artifactFilePath = options.data.artifactPath
-    ? absoluteWorkspacePath(options.workspaceRoot, options.data.artifactPath)
+    ? (path.isAbsolute(options.data.artifactPath)
+        ? path.resolve(options.data.artifactPath)
+        : absoluteWorkspacePath(options.workspaceRoot, options.data.artifactPath))
     : undefined;
   return {
     mode: "download",
@@ -817,6 +981,7 @@ function buildArtifactExecutionFromDownload(options: {
 function buildArtifactExecutionFromLocal(options: {
   plan: MaterialIngestPlanData;
   record: ArtifactRecord;
+  artifactPath: string;
   workspaceRoot: string;
 }): MaterialIngestArtifactExecution {
   return {
@@ -825,6 +990,7 @@ function buildArtifactExecutionFromLocal(options: {
     source: options.plan.artifact.source,
     provider: LOCAL_ARTIFACT_PROVIDER,
     recordTargetPath: artifactRecordFilePath(options.workspaceRoot, options.record.id),
+    fileTargetPath: options.artifactPath,
     record: options.record,
   };
 }
@@ -834,17 +1000,15 @@ function buildExtractionExecution(options: {
   workspaceRoot: string;
   materialInputKind: MaterialInputKind;
 }): MaterialIngestExtractionExecution {
-  const markdownRelativePath = requireExtractionOutputPath(options.data.record, "markdownPath");
-  const jsonRelativePath = requireExtractionOutputPath(options.data.record, "jsonPath");
   return {
     extractionId: options.data.record.id,
     source: options.data.record.source,
     materialInputKind: options.materialInputKind,
     provider: providerFromExtractionExecution(options.data.provider),
     recordTargetPath: extractionRecordFilePath(options.workspaceRoot, options.data.record.id),
-    outputTargetPath: extractionOutputDirectoryPath(options.workspaceRoot, options.data.record.id),
-    markdownPath: absoluteWorkspacePath(options.workspaceRoot, markdownRelativePath),
-    jsonPath: absoluteWorkspacePath(options.workspaceRoot, jsonRelativePath),
+    outputTargetPath: path.dirname(options.data.markdownPath),
+    markdownPath: path.resolve(options.data.markdownPath),
+    jsonPath: path.resolve(options.data.jsonPath ?? path.join(path.dirname(options.data.markdownPath), "result.json")),
     record: options.data.record,
     markdown: options.data.markdown,
   };
@@ -864,6 +1028,64 @@ function outputPathsFromExecution(options: {
   };
 }
 
+async function extractionFailureAfterArtifact(options: {
+  config: ResolvedConfig;
+  plan: MaterialIngestPlanData;
+  artifact: MaterialIngestArtifactExecution;
+  effectiveAttachTo: string | null | undefined;
+  extractionInputKind: MaterialInputKind;
+  started: number;
+  error: string;
+  extractionOrphan?: MaterialExtractionOrphanOutcome;
+  warnings?: string[];
+}): Promise<MaterialIngestResultEnvelope> {
+  const zoteroSync = options.effectiveAttachTo
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: options.effectiveAttachTo,
+      })
+    : { status: "not_requested" as const };
+  const recoveryCommand = options.extractionOrphan
+    ? undefined
+    : [
+        "paper-search extract",
+        options.artifact.artifactId,
+        "--provider",
+        options.plan.extraction.provider.id,
+        ...(options.effectiveAttachTo ? ["--attach-to", options.effectiveAttachTo] : []),
+        "--json",
+      ].join(" ");
+
+  return {
+    ok: false,
+    capability: "orchestrate",
+    tool: "material_ingest",
+    data: null,
+    ...(options.extractionOrphan ? { extractionOrphan: options.extractionOrphan } : {}),
+    diagnostics: {
+      elapsedMs: Date.now() - options.started,
+      inputKind: options.plan.resource.kind,
+      extractionInputKind: options.extractionInputKind,
+      workspaceRoot: options.config.workspace.root,
+      attachTo: options.effectiveAttachTo ?? null,
+      partial: true,
+      commitStage: "extraction",
+      artifactId: options.artifact.artifactId,
+      artifactRecordPath: options.artifact.recordTargetPath,
+      ...(options.artifact.fileTargetPath ? { artifactPath: options.artifact.fileTargetPath } : {}),
+      ...(recoveryCommand ? { recoveryCommand } : {}),
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
+    },
+    ...(options.warnings?.length ? { warnings: options.warnings } : {}),
+    errors: [`Extraction failed after artifact ${options.artifact.artifactId} was committed: ${options.error}`],
+    provenance: {
+      configPaths: options.config.meta.loadedFiles,
+      providerIds: providerIds(options.plan.providers.selected),
+      policy: options.plan.policy.name,
+    },
+  };
+}
+
 function replacePlanPlaceholders(value: string, artifactId: string, extractionId: string): string {
   return value
     .replaceAll(PLANNED_ARTIFACT_ID, artifactId)
@@ -879,10 +1101,13 @@ function executedStepTargetPaths(options: {
 }): string[] {
   switch (options.step.id) {
     case "artifact.write-artifact":
+    case "artifact.write-local-artifact":
       return options.outputs.artifactFilePath ? [options.outputs.artifactFilePath] : [];
     case "artifact.record-artifact":
     case "artifact.record-local-artifact":
       return [options.outputs.artifactRecordPath];
+    case "extraction.load-extractor":
+      return options.extraction.provider.packagePath ? [options.extraction.provider.packagePath] : [];
     case "extraction.write-markdown":
       return [options.outputs.extractionOutputPath, options.outputs.markdownPath, options.outputs.jsonPath];
     case "extraction.record-extraction":
@@ -900,11 +1125,15 @@ function executedStepsFromPlan(options: {
   extraction: MaterialIngestExtractionExecution;
   outputs: MaterialIngestOutputPlan;
 }): MaterialIngestExecutedStep[] {
-  return options.plan.intendedSteps.map((step) => ({
-    ...step,
-    targetPaths: uniqueStrings(executedStepTargetPaths({ ...options, step })),
-    status: "completed",
-  }));
+  return options.plan.intendedSteps.map((step) => {
+    const extractionStep = step.id.startsWith("extraction.");
+    return {
+      ...step,
+      ...(extractionStep ? { providerId: options.extraction.provider.id } : {}),
+      targetPaths: uniqueStrings(executedStepTargetPaths({ ...options, step })),
+      status: "completed",
+    };
+  });
 }
 
 function targetPathsFromExecution(options: {
@@ -915,9 +1144,13 @@ function targetPathsFromExecution(options: {
   executedSteps: readonly MaterialIngestExecutedStep[];
 }): string[] {
   return uniqueStrings([
-    ...options.plan.targetPaths.map((targetPath) =>
-      replacePlanPlaceholders(targetPath, options.artifact.artifactId, options.extraction.extractionId),
-    ),
+    ...options.plan.targetPaths
+      .filter((targetPath) =>
+        options.plan.extraction.provider.id === options.extraction.provider.id ||
+        targetPath !== options.plan.extraction.provider.packagePath)
+      .map((targetPath) =>
+        replacePlanPlaceholders(targetPath, options.artifact.artifactId, options.extraction.extractionId),
+      ),
     ...options.executedSteps.flatMap((step) => step.targetPaths),
     options.outputs.artifactRecordPath,
     options.outputs.extractionRecordPath,
@@ -926,6 +1159,61 @@ function targetPathsFromExecution(options: {
     options.outputs.jsonPath,
     options.outputs.artifactFilePath,
   ]);
+}
+
+async function planExactUrlFallback(options: {
+  config: ResolvedConfig;
+  resource: MaterialIngestResourcePlan;
+  attachTo: string | null;
+  policy: string;
+  artifactProvider: MaterialIngestProviderPlan | null;
+  extractionProvider: MaterialIngestProviderPlan;
+  extractionRecordPath: string;
+  extractionOutputPath: string;
+  markdownPath: string;
+  jsonPath: string;
+}): Promise<MaterialIngestExactUrlFallbackPlan | null> {
+  if (options.artifactProvider?.id !== "direct-url-downloader") return null;
+  if (options.resource.kind !== "url" || !options.resource.url) return null;
+  const sourceUrl = new URL(options.resource.url);
+  if (sourceUrl.protocol !== "https:") return null;
+
+  let managedProvider: MaterialIngestProviderPlan | null = null;
+  try {
+    const managedPlan = await planMaterialExtractionForInputKind({
+      config: options.config,
+      inputKind: "url",
+      sourceKind: "url",
+      attachTo: options.attachTo ?? undefined,
+      providerId: options.extractionProvider.id,
+      policy: options.policy,
+    });
+    if (managedPlan.data) {
+      managedProvider = providerFromSelection(
+        managedPlan.data.selectedProvider,
+        managedPlan.data.intendedSteps,
+      );
+    }
+  } catch {
+    // The primary extractor may intentionally support managed artifacts only.
+    // Jina Reader remains a separately declared exact-URL terminal fallback.
+  }
+
+  return {
+    mode: "exact_url_extraction",
+    source: { kind: "url", url: sourceUrl.toString() },
+    eligibleHttpStatuses: EXACT_URL_FALLBACK_HTTP_STATUSES,
+    artifactOnSuccess: false,
+    managedProvider,
+    terminalProvider: JINA_READER_PROVIDER,
+    targetPaths: [
+      ...(managedProvider?.packagePath ? [managedProvider.packagePath] : []),
+      options.extractionOutputPath,
+      options.markdownPath,
+      options.jsonPath,
+      options.extractionRecordPath,
+    ],
+  };
 }
 
 export async function planMaterialIngest(
@@ -944,7 +1232,18 @@ export async function planMaterialIngest(
   const extractionRecordsDir = pathInsideWorkspace(options.config.workspace.root, EXTRACTION_RECORDS_DIR);
   const artifactRecordPath = plannedArtifactRecordPath(options.config.workspace.root);
   const extractionRecordPath = plannedExtractionRecordPath(options.config.workspace.root);
-  const extractionOutputPath = plannedExtractionOutputPath(options.config.workspace.root);
+  const extractionOutputPath = plannedExtractionOutputPath(options.config.storage.extractionRoot);
+  const localArtifactFilePath = resolved.resource.kind === "path" && resolved.resource.path
+    ? await plannedLocalArtifactFilePath(options.config.storage.artifactRoot, resolved.resource.path)
+    : undefined;
+  const localSelectionTargetPaths = resolved.resource.kind === "path" &&
+    !attachTo &&
+    options.config.material.downloadDisposition === "selected"
+    ? [
+        path.join(options.config.workspace.root, WORKSPACE_ITEMS_DIR),
+        path.join(options.config.workspace.root, "collections.json"),
+      ]
+    : [];
 
   const artifactEnvelope = resolved.artifactInput
     ? await planArtifactDownload({
@@ -960,7 +1259,7 @@ export async function planMaterialIngest(
   const extractionEnvelope = await planMaterialExtractionForInputKind({
     config: options.config,
     inputKind: extractionInputKind,
-    sourceKind: resolved.artifactInput ? "artifact" : "path",
+    sourceKind: extractionInputKind === "artifact" ? "artifact" : "path",
     attachTo: attachTo ?? undefined,
     providerId: options.extractProviderId,
     policy,
@@ -996,6 +1295,7 @@ export async function planMaterialIngest(
     : artifactPlanFromLocalResource({
         resource: resolved.resource,
         recordTargetPath: artifactRecordPath,
+        fileTargetPath: localArtifactFilePath!,
       });
   const extraction = extractionPlanFromSubplan({
     resource: resolved.resource,
@@ -1003,7 +1303,19 @@ export async function planMaterialIngest(
     materialInputKind: extractionInputKind,
     recordTargetPath: extractionRecordPath,
     outputTargetPath: extractionOutputPath,
-    workspaceRoot: options.config.workspace.root,
+    extractionRoot: options.config.storage.extractionRoot,
+  });
+  const exactUrlFallback = await planExactUrlFallback({
+    config: options.config,
+    resource: resolved.resource,
+    attachTo,
+    policy,
+    artifactProvider: artifact.provider,
+    extractionProvider,
+    extractionRecordPath,
+    extractionOutputPath,
+    markdownPath: extraction.markdownPath,
+    jsonPath: extraction.jsonPath,
   });
   const outputs: MaterialIngestOutputPlan = {
     artifactRecordPath,
@@ -1015,10 +1327,16 @@ export async function planMaterialIngest(
   };
 
   const artifactIntendedSteps = artifactData
-    ? replaceStepTargetPaths(prefixSteps("artifact", artifactData.intendedSteps), {
+      ? replaceStepTargetPaths(prefixSteps("artifact", artifactData.intendedSteps), {
         "artifact.record-artifact": [artifactRecordPath],
       })
-    : localArtifactSteps({ resource: resolved.resource, recordTargetPath: artifactRecordPath, policy });
+    : localArtifactSteps({
+        resource: resolved.resource,
+        recordTargetPath: artifactRecordPath,
+        fileTargetPath: localArtifactFilePath!,
+        selectionTargetPaths: localSelectionTargetPaths,
+        policy,
+      });
   const extractionIntendedSteps = replaceStepTargetPaths(
     prefixSteps("extraction", extractionEnvelope.data.intendedSteps),
     {
@@ -1041,6 +1359,8 @@ export async function planMaterialIngest(
     targetPaths: [
       ...resolved.resource.targetPaths,
       ...(artifactData?.targetPaths.filter((targetPath) => targetPath !== artifactRecordsDir) ?? []),
+      ...(localArtifactFilePath ? [localArtifactFilePath] : []),
+      ...localSelectionTargetPaths,
       ...extractionEnvelope.data.targetPaths.filter((targetPath) => targetPath !== extractionRecordsDir),
       artifactRecordPath,
       extractionRecordPath,
@@ -1083,13 +1403,340 @@ export async function planMaterialIngest(
         selected: selectedProviders,
       },
       outputs,
+      exactUrlFallback,
     },
   };
 }
 
+interface ExactUrlFallbackAttempt {
+  providerId: string;
+  status: "succeeded" | "failed";
+  error?: string;
+}
+
+function isEligibleExactUrlAcquisitionFailure(
+  error: unknown,
+  fallback: MaterialIngestExactUrlFallbackPlan | null,
+): error is ArtifactDownloadError {
+  if (!fallback || !(error instanceof ArtifactDownloadError)) return false;
+  const statusCodes = error.details?.statusCodes ?? [];
+  return statusCodes.length > 0 && statusCodes.every((status) =>
+    fallback.eligibleHttpStatuses.includes(status as 401 | 403 | 429));
+}
+
+function assertExactUrlExtractionSource(
+  extraction: NonNullable<Awaited<ReturnType<typeof runMaterialExtraction>>["data"]>,
+  expectedUrl: string,
+): void {
+  const source = extraction.record.source;
+  if (
+    source.kind !== "url" ||
+    !source.url ||
+    new URL(source.url).toString() !== expectedUrl
+  ) {
+    throw new Error("Exact-URL extraction provider did not preserve the requested URL identity");
+  }
+}
+
+function extractionOnlyOutputs(
+  extraction: MaterialIngestExtractionExecution,
+): MaterialIngestExtractionOnlyOutputPlan {
+  return {
+    extractionRecordPath: extraction.recordTargetPath,
+    extractionOutputPath: extraction.outputTargetPath,
+    markdownPath: extraction.markdownPath,
+    jsonPath: extraction.jsonPath,
+  };
+}
+
+function exactUrlExecutedSteps(options: {
+  extraction: MaterialIngestExtractionExecution;
+  policy: string;
+}): MaterialIngestExecutedStep[] {
+  return [
+    {
+      id: "fallback.extract-exact-url",
+      action: "network",
+      description: "Extract verified Markdown from the exact URL after byte acquisition was denied.",
+      targetPaths: [],
+      providerId: options.extraction.provider.id,
+      policy: options.policy,
+      status: "completed",
+    },
+    {
+      id: "fallback.write-markdown",
+      action: "write",
+      description: "Write exact-URL Markdown and structured provider output without an artifact record.",
+      targetPaths: [
+        options.extraction.outputTargetPath,
+        options.extraction.markdownPath,
+        options.extraction.jsonPath,
+      ],
+      providerId: options.extraction.provider.id,
+      policy: options.policy,
+      status: "completed",
+    },
+    {
+      id: "fallback.record-extraction",
+      action: "record",
+      description: "Record the URL-sourced extraction with no materialized artifact.",
+      targetPaths: [options.extraction.recordTargetPath],
+      providerId: options.extraction.provider.id,
+      policy: options.policy,
+      status: "completed",
+    },
+  ];
+}
+
+async function runExactUrlExtractionFallback(options: {
+  config: ResolvedConfig;
+  plan: MaterialIngestPlanData;
+  acquisitionError: ArtifactDownloadError;
+  started: number;
+}): Promise<MaterialIngestResultEnvelope> {
+  const fallback = options.plan.exactUrlFallback!;
+  const attempts: ExactUrlFallbackAttempt[] = [];
+  let extractionEnvelope: Awaited<ReturnType<typeof runMaterialExtraction>> | undefined;
+
+  if (fallback.managedProvider) {
+    try {
+      extractionEnvelope = await runMaterialExtraction({
+        config: options.config,
+        input: fallback.source.url,
+        attachTo: options.plan.policy.attachTo ?? undefined,
+        providerId: fallback.managedProvider.id,
+        policy: options.plan.policy.name,
+      });
+      if (extractionEnvelope.data) {
+        assertExactUrlExtractionSource(extractionEnvelope.data, fallback.source.url);
+        attempts.push({ providerId: fallback.managedProvider.id, status: "succeeded" });
+      } else {
+        attempts.push({
+          providerId: fallback.managedProvider.id,
+          status: "failed",
+          error: extractionEnvelope.errors?.join("; ") ?? "Managed extraction returned no data",
+        });
+        if (extractionEnvelope.orphan) {
+          return {
+            ...failEnvelope({
+              capability: "orchestrate",
+              tool: "material_ingest",
+              errors: [
+                "Exact-URL extraction fallback committed outputs without durable metadata; refusing another provider attempt.",
+              ],
+              diagnostics: {
+                elapsedMs: Date.now() - options.started,
+                inputKind: "url",
+                extractionInputKind: "url",
+                sourceCounts: { artifacts: 0, extractions: 0 },
+                acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+                fallbackAttempts: attempts,
+              },
+              provenance: {
+                configPaths: options.config.meta.loadedFiles,
+                providerIds: uniqueStrings([
+                  options.plan.artifact.provider?.id,
+                  fallback.managedProvider.id,
+                ]),
+                policy: options.plan.policy.name,
+              },
+            }),
+            extractionOrphan: extractionEnvelope.orphan,
+          };
+        }
+        extractionEnvelope = undefined;
+      }
+    } catch (error) {
+      attempts.push({
+        providerId: fallback.managedProvider.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      extractionEnvelope = undefined;
+    }
+  }
+
+  if (!extractionEnvelope?.data) {
+    try {
+      const probe = await runJinaReaderUrlProbe(
+        fallback.source.url,
+        options.plan.policy.name,
+      );
+      if (
+        probe.source.kind !== "url" ||
+        !probe.source.url ||
+        new URL(probe.source.url).toString() !== fallback.source.url
+      ) {
+        throw new Error("Jina Reader did not preserve the exact requested URL identity");
+      }
+      extractionEnvelope = await commitMaterialExtractionProviderProbe({
+        config: options.config,
+        probe,
+        attachTo: options.plan.policy.attachTo ?? undefined,
+      });
+      if (!extractionEnvelope.data) {
+        attempts.push({
+          providerId: fallback.terminalProvider.id,
+          status: "failed",
+          error: extractionEnvelope.errors?.join("; ") ?? "Jina Reader extraction returned no data",
+        });
+        return {
+          ...failEnvelope({
+            capability: "orchestrate",
+            tool: "material_ingest",
+            errors: [
+              "Exact-URL Jina Reader fallback could not commit a durable extraction; no artifact record was created.",
+            ],
+            diagnostics: {
+              elapsedMs: Date.now() - options.started,
+              inputKind: "url",
+              extractionInputKind: "url",
+              sourceCounts: { artifacts: 0, extractions: 0 },
+              acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+              fallbackAttempts: attempts,
+            },
+            provenance: {
+              configPaths: options.config.meta.loadedFiles,
+              providerIds: uniqueStrings([
+                options.plan.artifact.provider?.id,
+                fallback.terminalProvider.id,
+              ]),
+              policy: options.plan.policy.name,
+            },
+          }),
+          ...(extractionEnvelope.orphan ? { extractionOrphan: extractionEnvelope.orphan } : {}),
+        };
+      }
+      assertExactUrlExtractionSource(extractionEnvelope.data, fallback.source.url);
+      attempts.push({ providerId: fallback.terminalProvider.id, status: "succeeded" });
+    } catch (error) {
+      attempts.push({
+        providerId: fallback.terminalProvider.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        ...failEnvelope({
+          capability: "orchestrate",
+          tool: "material_ingest",
+          errors: [
+            "Byte acquisition and every exact-URL extraction fallback failed; no artifact or extraction record was created.",
+          ],
+          diagnostics: {
+            elapsedMs: Date.now() - options.started,
+            inputKind: "url",
+            extractionInputKind: "url",
+            sourceCounts: { artifacts: 0, extractions: 0 },
+            acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+            fallbackAttempts: attempts,
+          },
+          provenance: {
+            configPaths: options.config.meta.loadedFiles,
+            providerIds: uniqueStrings([
+              options.plan.artifact.provider?.id,
+              fallback.managedProvider?.id,
+              fallback.terminalProvider.id,
+            ]),
+            policy: options.plan.policy.name,
+          },
+        }),
+      };
+    }
+  }
+
+  const extractionData = extractionEnvelope.data!;
+  const extraction = buildExtractionExecution({
+    data: extractionData,
+    workspaceRoot: options.config.workspace.root,
+    materialInputKind: "url",
+  });
+  const acquisitionProvider = options.plan.artifact.provider;
+  if (!acquisitionProvider) fail("Exact-URL fallback requires a planned artifact provider");
+  const providers = {
+    artifact: acquisitionProvider,
+    extraction: extraction.provider,
+    selected: uniqueProviders([acquisitionProvider, extraction.provider]),
+  };
+  const outputs = extractionOnlyOutputs(extraction);
+  const executedSteps = exactUrlExecutedSteps({
+    extraction,
+    policy: options.plan.policy.name,
+  });
+  const targetPaths = uniqueStrings([
+    extraction.provider.kind === "material" ? extraction.provider.packagePath : undefined,
+    ...executedSteps.flatMap((step) => step.targetPaths),
+    outputs.extractionRecordPath,
+    outputs.extractionOutputPath,
+    outputs.markdownPath,
+    outputs.jsonPath,
+  ]);
+  const zoteroSync = options.plan.policy.attachTo
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: options.plan.policy.attachTo,
+        extractionId: extraction.extractionId,
+      })
+    : { status: "not_requested" as const };
+
+  return okEnvelope({
+    capability: "orchestrate",
+    tool: "material_ingest",
+    data: {
+      executionMode: "exact_url_extraction",
+      executedSteps,
+      selectedPolicy: options.plan.policy.name,
+      selectedProvider: {
+        id: extraction.provider.id,
+        kind: extraction.provider.kind,
+        capabilities: ["extract"],
+      },
+      targetPaths,
+      resource: options.plan.resource,
+      artifact: null,
+      acquisition: {
+        mode: "unavailable",
+        status: "not_materialized",
+        source: fallback.source,
+        provider: acquisitionProvider,
+        httpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+        attempts: options.acquisitionError.details?.attempts ?? [],
+        error: options.acquisitionError.message,
+      },
+      extraction,
+      policy: options.plan.policy,
+      providers,
+      outputs,
+    },
+    warnings: [
+      "Original bytes were not materialized after the exact URL returned an eligible HTTP denial.",
+      "The retained extraction is URL-sourced; no artifact record or artifact bytes were created.",
+    ],
+    diagnostics: {
+      elapsedMs: Date.now() - options.started,
+      inputKind: "url",
+      extractionInputKind: "url",
+      workspaceRoot: options.config.workspace.root,
+      attachTo: options.plan.policy.attachTo,
+      acquisitionHttpStatusCodes: options.acquisitionError.details?.statusCodes ?? [],
+      fallbackAttempts: attempts,
+      extractionId: extraction.extractionId,
+      sourceCounts: { artifacts: 0, extractions: 1 },
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
+    },
+    provenance: {
+      configPaths: options.config.meta.loadedFiles,
+      providerIds: uniqueStrings([
+        acquisitionProvider.id,
+        extraction.provider.id,
+      ]),
+      policy: options.plan.policy.name,
+    },
+  });
+}
+
 export async function runMaterialIngest(
   options: MaterialIngestPlanOptions,
-): Promise<ResultEnvelope<MaterialIngestExecutionData>> {
+): Promise<MaterialIngestResultEnvelope> {
   const started = Date.now();
   const planEnvelope = await planMaterialIngest(options);
   if (!planEnvelope.data) {
@@ -1103,21 +1750,35 @@ export async function runMaterialIngest(
   let artifact: MaterialIngestArtifactExecution;
   let extractionInput: string;
   let extractionInputKind: MaterialInputKind;
+  const warnings: string[] = [];
 
   if (plan.artifact.mode === "download") {
-    const artifactEnvelope = await runArtifactDownload({
-      config: options.config,
-      input: plan.resource.kind === "workspace_item"
-        ? plan.resource.input
-        : plan.resource.url ?? options.input,
-      attachTo: attachTo ?? undefined,
-      providerId: options.artifactProviderId,
-      policy,
-      download: true,
-    });
+    let artifactEnvelope: Awaited<ReturnType<typeof runArtifactDownload>>;
+    try {
+      artifactEnvelope = await runArtifactDownload({
+        config: options.config,
+        input: plan.resource.kind === "workspace_item"
+          ? plan.resource.input
+          : plan.resource.url ?? options.input,
+        attachTo: attachTo ?? undefined,
+        providerId: options.artifactProviderId,
+        policy,
+        download: true,
+        deferZoteroSync: true,
+      });
+    } catch (error) {
+      if (!isEligibleExactUrlAcquisitionFailure(error, plan.exactUrlFallback)) throw error;
+      return runExactUrlExtractionFallback({
+        config: options.config,
+        plan,
+        acquisitionError: error,
+        started,
+      });
+    }
     if (!artifactEnvelope.data) {
       fail("Artifact download did not return execution data");
     }
+    warnings.push(...(artifactEnvelope.warnings ?? []));
     artifact = buildArtifactExecutionFromDownload({
       plan,
       data: artifactEnvelope.data,
@@ -1127,30 +1788,88 @@ export async function runMaterialIngest(
     extractionInputKind = "artifact";
   } else {
     const localPath = requireLocalResourcePath(plan.resource);
-    const record = await createLocalArtifactRecord({
-      workspaceRoot,
-      localPath,
-      attachTo,
-      policy,
-    });
+    let stored: Awaited<ReturnType<typeof createLocalArtifactRecord>>;
+    try {
+      stored = await createLocalArtifactRecord({
+        config: options.config,
+        localPath,
+        attachTo,
+        policy,
+      });
+    } catch (error) {
+      if (!(error instanceof LocalArtifactMetadataCommitError)) throw error;
+      return {
+        ok: false,
+        capability: "orchestrate",
+        tool: "material_ingest",
+        data: null,
+        orphan: error.orphan,
+        diagnostics: {
+          elapsedMs: Date.now() - started,
+          inputKind: plan.resource.kind,
+          extractionInputKind: "artifact",
+          workspaceRoot,
+          attachTo,
+          partial: true,
+          orphanedBytes: true,
+          commitStage: error.orphan.commitStage,
+        },
+        errors: [
+          error.orphan.commitStage === "selection"
+            ? `Workspace selection failed after local artifact bytes were committed: ${error.orphan.error}`
+            : `Local artifact metadata commit failed after bytes were committed: ${error.orphan.error}`,
+        ],
+        provenance: {
+          configPaths: options.config.meta.loadedFiles,
+          providerIds: [LOCAL_ARTIFACT_PROVIDER.id],
+          policy,
+        },
+      };
+    }
     artifact = buildArtifactExecutionFromLocal({
       plan,
-      record,
+      record: stored.record,
+      artifactPath: stored.artifactPath,
       workspaceRoot,
     });
-    extractionInput = localPath;
-    extractionInputKind = "local_file";
+    extractionInput = stored.record.id;
+    extractionInputKind = "artifact";
   }
 
-  const extractionEnvelope = await runMaterialExtraction({
-    config: options.config,
-    input: extractionInput,
-    attachTo: attachTo ?? undefined,
-    providerId: options.extractProviderId,
-    policy,
-  });
+  const effectiveAttachTo = artifact.record.itemId ?? attachTo;
+  let extractionEnvelope: Awaited<ReturnType<typeof runMaterialExtraction>>;
+  try {
+    extractionEnvelope = await runMaterialExtraction({
+      config: options.config,
+      input: extractionInput,
+      attachTo: effectiveAttachTo ?? undefined,
+      providerId: options.extractProviderId,
+      policy,
+    });
+  } catch (error) {
+    return extractionFailureAfterArtifact({
+      config: options.config,
+      plan,
+      artifact,
+      effectiveAttachTo,
+      extractionInputKind,
+      started,
+      error: error instanceof Error ? error.message : String(error),
+      warnings,
+    });
+  }
   if (!extractionEnvelope.data) {
-    fail("Material extraction did not return execution data");
+    return extractionFailureAfterArtifact({
+      config: options.config,
+      plan,
+      artifact,
+      effectiveAttachTo,
+      extractionInputKind,
+      started,
+      error: extractionEnvelope.errors?.join("; ") ?? "Material extraction did not return execution data",
+      extractionOrphan: extractionEnvelope.orphan,
+      warnings: [...new Set([...warnings, ...(extractionEnvelope.warnings ?? [])])],
+    });
   }
   const extraction = buildExtractionExecution({
     data: extractionEnvelope.data,
@@ -1176,6 +1895,13 @@ export async function runMaterialIngest(
     outputs,
     executedSteps,
   });
+  const zoteroSync = effectiveAttachTo
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: effectiveAttachTo,
+        extractionId: extraction.extractionId,
+      })
+    : { status: "not_requested" as const };
 
   return okEnvelope({
     capability: "orchestrate",
@@ -1188,7 +1914,7 @@ export async function runMaterialIngest(
       resource: plan.resource,
       artifact,
       extraction,
-      policy: plan.policy,
+      policy: { ...plan.policy, attachTo: effectiveAttachTo },
       providers,
       outputs,
     },
@@ -1197,18 +1923,20 @@ export async function runMaterialIngest(
       inputKind: plan.resource.kind,
       extractionInputKind,
       workspaceRoot,
-      attachTo,
+      attachTo: effectiveAttachTo,
       artifactId: artifact.artifactId,
       extractionId: extraction.extractionId,
       sourceCounts: {
         artifacts: 1,
         extractions: 1,
       },
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
     },
     provenance: {
       configPaths: options.config.meta.loadedFiles,
       providerIds: providerIds(providers.selected),
       policy,
     },
+    warnings: [...new Set([...warnings, ...(extractionEnvelope.warnings ?? [])])],
   });
 }

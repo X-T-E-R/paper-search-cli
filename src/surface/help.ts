@@ -169,19 +169,25 @@ function buildQuickstart(config: ResolvedConfig, locale: HelpLocale): string[] {
       : "paper-search.toml";
   return locale === "zh"
     ? [
-        `先跑 paper-search status --json，确认安装、配置层和 workspace root（当前显式配置参考：${configHint}）。`,
+        `先跑 paper-search status --json，确认安装、配置层和 run root（当前显式配置参考：${configHint}）。`,
         "再跑 paper-search tools --json，看当前 canonical tool 与 CLI alias 映射。",
-        "做论文检索时先用 academic，再对选中的结果用 resource-add。",
-        "需要带走本地 workspace 结果时，用 workspace-export 输出 JSON、JSONL、CSV 或 BibTeX。",
+        "做论文检索时先用 academic；独立项目可先 context init，一次配置后从子目录调用也会写入同一 run root。",
+        "Paperflow 新工作区已把 run root 映射到 search_runs，可直接搜索并由 Paperflow 读取；搜索命中不会自动晋升为书目或证据。",
+        "真实检索默认记历史；只有明确不需要时才用 --no-history 或 recordHistory=false。全局回退会给一个短提示，项目上下文只保存一份 run。",
+        "评估只读取校验和绑定的观察快照；先用 assess plan 查看证据、冲突和策略轨迹，再决定是否持久化。",
+        "需要带走本地 workspace 结果时，用 workspace-export 输出 JSON、JSONL、CSV 或 BibTeX；--store 写入配置的 export root。",
         "网页检索仅在用户级 external-search.toml 启用后使用 web。",
         "已知 DOI / URL 先走 lookup，不要直接手填 metadata。",
       ]
     : [
-        `Start with paper-search status --json to confirm install/config layers and workspace root (current config hint: ${configHint}).`,
+        `Start with paper-search status --json to confirm install/config layers and run root (current config hint: ${configHint}).`,
         "Then run paper-search tools --json to inspect the canonical tools and CLI aliases.",
-        "Use academic first for paper search, then resource-add for selected results.",
+        "Use academic first for paper search. Run context init once for a standalone project; nested calls then share its run root.",
+        "Fresh Paperflow workspaces map the run root to search_runs, so direct searches are readable there without per-search import; hits are not accepted bibliography or evidence automatically.",
+        "Real discovery is recorded by default; use --no-history or recordHistory=false only for an explicit opt-out. Global fallback emits one short hint, while a project context stores one run copy.",
+        "Assessment reads checksum-bound observation snapshots; inspect assess plan before persisting a run.",
         "For patents, use patent first, then patent-detail, then resource-add.",
-        "Use workspace-export when you need portable JSON, JSONL, CSV, or BibTeX output from the local workspace.",
+        "Use workspace-export for portable JSON, JSONL, CSV, or BibTeX; --store writes below the configured export root.",
         "Use web only after enabling the user-level external-search.toml integration.",
         "Use lookup for known DOI/URL records instead of hand-authoring metadata.",
       ];
@@ -239,6 +245,12 @@ export async function createHelpSnapshot(
       ? toolSchemas.filter((tool) => tool.name === "resource_lookup")
     : topic === "web"
       ? toolSchemas.filter((tool) => tool.name === "web_search")
+    : topic === "citations"
+      ? toolSchemas.filter((tool) => tool.name === "citation_expand" || tool.name === "citation_run_status")
+    : topic === "assessment"
+      ? toolSchemas.filter((tool) => tool.name.startsWith("assessment_"))
+    : topic === "runs"
+      ? toolSchemas.filter((tool) => tool.name === "research_run" || tool.name.startsWith("run_"))
     : topic === "workspace"
         ? toolSchemas.filter((tool) =>
             tool.name === "resource_add" ||
@@ -267,18 +279,26 @@ export async function createHelpSnapshot(
         "resource_lookup 会返回规范化 metadata；通用网页检索使用可选的 External Search v1 web 命令。",
         "patent_detail 是显式只读详情拉取；后续如需保存，走 patent-detail -> resource-add。",
         "web_search 仅从用户级 external-search.toml 获取执行授权；status 不启动进程，doctor 只运行无网络 probe。",
-        "resource_add / collection_list 指向本地 workspace sink；没有宿主应用写入副作用。",
-        "workspace_export 是本地导出 sink，可输出 JSON、JSONL、CSV 或 BibTeX。",
-        "resource_pdf 使用本地 attachment sink；itemKey 是 workspace item id。",
+        "context init/status 管理独立项目 run root；Paperflow 新工作区已生成对应配置并直接读取 search_runs。",
+        "resource_add / collection_list 是兼容本地 sink；已选记录仍由项目侧书目/目录工具管理。",
+        "workspace_export 是本地导出 sink；CLI 的 --store 形式可先 dry-run，再写入配置的 export root。",
+        "resource_pdf 是兼容别名：它通过已安装 material provider 获取 PDF，再把 artifact 投影为 workspace attachment。",
+        "citation_expand 只接受精确标识符并设有深度、节点、边、分页和并发上限；plan 不联网也不写入。",
+        "assessment_run 保留来源、时间、缺失与冲突，不输出隐藏的通用质量分数，也不替用户决定取舍。",
+        "真实检索默认写入 runs（recordByDefault=true），显式 --no-history/recordHistory=false 才跳过；maxAgeDays=-1 默认永久保留。删除必须先看 run_prune_plan，再在 CLI 显式使用 runs prune --apply。",
         "昂贵烟测仍然必须单独显式启动；这里展示的是默认安全路径。",
       ]
     : [
         "resource_lookup returns normalized metadata; use optional External Search v1 web_search for general web discovery.",
         "patent_detail is an explicit read-only detail step; store the result later through patent-detail -> resource-add.",
         "web_search gets execution authority only from user-level external-search.toml; status is static and doctor runs a no-network probe.",
-        "resource_add / collection_list target the local workspace sink with no host-application write side effects.",
-        "workspace_export is a local export sink for JSON, JSONL, CSV, or BibTeX output.",
-        "resource_pdf uses the local attachment sink; itemKey is a workspace item id.",
+        "context init/status manages a standalone project run root; fresh Paperflow workspaces generate the matching config and read search_runs directly.",
+        "resource_add / collection_list are compatibility local sinks; a project-side bibliography/catalog tool still owns selected records.",
+        "workspace_export is a local export sink; the CLI-only --store path supports dry-run and managed export-root writes.",
+        "resource_pdf is a compatibility alias: it acquires through an installed material provider, then projects the artifact as a workspace attachment.",
+        "citation_expand requires exact identifiers and bounded depth, node, edge, page, and concurrency limits; plan performs no network or writes.",
+        "assessment_run preserves source, time, missing evidence, and conflicts without a hidden universal quality score or user decision.",
+        "Real discovery records runs by default (recordByDefault=true); only explicit --no-history/recordHistory=false skips them. Runs are retained indefinitely by default (maxAgeDays=-1); inspect run_prune_plan before the explicit CLI-only runs prune --apply.",
         "Expensive smoke checks remain separate and must be enabled explicitly.",
       ];
 

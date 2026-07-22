@@ -1,4 +1,4 @@
-import { cp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -62,6 +62,11 @@ async function writeProjectConfig(root: string, workspaceRoot: string): Promise<
       "[workspace]",
       `root = "${tomlPath(workspaceRoot)}"`,
       'defaultCollection = "Inbox"',
+      "",
+      "[storage]",
+      `artifactRoot = "${tomlPath(path.join(root, "artifact-storage"))}"`,
+      `extractionRoot = "${tomlPath(path.join(root, "extraction-storage"))}"`,
+      `exportRoot = "${tomlPath(path.join(root, "exports"))}"`,
       "",
       "[platform.fixture-artifact-downloader]",
       'mode = "integration"',
@@ -200,9 +205,9 @@ describe("material ingest plan command", () => {
       path.join(workspaceRoot, "material", "artifacts", "<new-artifact-id>.json"),
     ]);
     expect(data.intendedSteps.find((step) => step.id === "extraction.write-markdown")?.targetPaths).toEqual([
-      path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>"),
-      path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>", "content.md"),
-      path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>", "result.json"),
+      path.join(root, "extraction-storage", "<new-extraction-id>"),
+      path.join(root, "extraction-storage", "<new-extraction-id>", "content.md"),
+      path.join(root, "extraction-storage", "<new-extraction-id>", "result.json"),
     ]);
     expect(data.intendedSteps.find((step) => step.id === "extraction.record-extraction")?.targetPaths).toEqual([
       path.join(workspaceRoot, "material", "extractions", "<new-extraction-id>.json"),
@@ -212,6 +217,7 @@ describe("material ingest plan command", () => {
       "artifact.load-downloader",
       "artifact.run-downloader",
       "artifact.write-artifact",
+      "artifact.select-downloaded-resource",
       "artifact.record-artifact",
       "extraction.load-extractor",
       "extraction.run-extractor",
@@ -223,7 +229,7 @@ describe("material ingest plan command", () => {
     await expect(stat(workspaceRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("plans local file ingest by recording a local artifact and extracting it without workspace writes", async () => {
+  it("plans local file ingest into configured managed storage without writing anything", async () => {
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-path-");
     const inputDir = path.join(root, "inputs");
     await mkdir(inputDir, { recursive: true });
@@ -265,26 +271,72 @@ describe("material ingest plan command", () => {
     expect(data.artifact.recordTargetPath).toBe(
       path.join(workspaceRoot, "material", "artifacts", "<new-artifact-id>.json"),
     );
+    expect(data.artifact.fileTargetPath).toBe(
+      path.join(root, "artifact-storage", "<new-artifact-id>", "paper.txt"),
+    );
     expect(data.outputs.artifactRecordPath).toBe(
       path.join(workspaceRoot, "material", "artifacts", "<new-artifact-id>.json"),
     );
+    expect(data.outputs.artifactFilePath).toBe(
+      path.join(root, "artifact-storage", "<new-artifact-id>", "paper.txt"),
+    );
     expect(data.extraction).toMatchObject({
-      materialInputKind: "local_file",
+      materialInputKind: "artifact",
       provider: {
         id: "fixture-markdown-extractor",
         kind: "material",
       },
       source: {
-        kind: "path",
-        path: inputPath,
+        kind: "artifact",
+        artifactId: "<new-artifact-id>",
       },
     });
+    expect(data.intendedSteps.find((step) => step.id === "artifact.write-local-artifact")?.targetPaths).toEqual([
+      path.join(root, "artifact-storage", "<new-artifact-id>", "paper.txt"),
+    ]);
     expect(data.intendedSteps.map((step) => step.id)).toContain("artifact.record-local-artifact");
     expect(data.intendedSteps.find((step) => step.id === "artifact.record-local-artifact")?.targetPaths).toEqual([
       path.join(workspaceRoot, "material", "artifacts", "<new-artifact-id>.json"),
     ]);
     expect(data.outputs.markdownPath).toContain("<new-extraction-id>");
+    expect(data.targetPaths).toContain(
+      path.join(root, "artifact-storage", "<new-artifact-id>", "paper.txt"),
+    );
     await expect(stat(workspaceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(root, "artifact-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(inputPath, "utf8")).resolves.toBe("fixture source body\n");
+  });
+
+  it("rejects a non-directory artifact root during local ingest planning without writing", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-path-invalid-root-");
+    const inputDir = path.join(root, "inputs");
+    const inputPath = path.join(inputDir, "paper.txt");
+    const artifactRoot = path.join(root, "artifact-storage");
+    await mkdir(inputDir, { recursive: true });
+    await writeFile(inputPath, "fixture source body\n", "utf8");
+    await writeFile(artifactRoot, "not a directory\n", "utf8");
+
+    const result = await runMaterialCommand(root, [
+      "material",
+      "ingest",
+      inputPath,
+      "--dry-run",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "orchestrate",
+      tool: "material_ingest",
+      data: null,
+      errors: ["Local storage root must be a real directory"],
+    });
+    await expect(stat(workspaceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(inputPath, "utf8")).resolves.toBe("fixture source body\n");
+    await expect(readFile(artifactRoot, "utf8")).resolves.toBe("not a directory\n");
   });
 
   it("plans workspace item ingest by reading the existing item only and leaving material dirs untouched", async () => {

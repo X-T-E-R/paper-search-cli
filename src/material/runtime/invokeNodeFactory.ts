@@ -2,6 +2,7 @@ import vm from "node:vm";
 import type { LoadedMaterialProviderPackage } from "../package/load.js";
 import type { MaterialProviderManifest } from "../types.js";
 import type { MaterialRuntimeContext } from "./createContext.js";
+import { sanitizeUrlsForPersistenceInText } from "../../runtime/sanitizeUrl.js";
 
 export interface MaterialProviderInspection {
   methods: string[];
@@ -16,6 +17,19 @@ export interface LoadedMaterialNodeProvider {
 
 function sanitizeResult<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function providerErrorMessage(error: unknown): string {
+  if (error instanceof Error) return sanitizeUrlsForPersistenceInText(error.message);
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return sanitizeUrlsForPersistenceInText(error.message);
+  }
+  return sanitizeUrlsForPersistenceInText(String(error));
 }
 
 function createContext(runtimeContext: MaterialRuntimeContext): vm.Context {
@@ -73,9 +87,7 @@ function wrapProviderMethod(
       return sanitizeResult(await Reflect.apply(candidate, providerObject, args));
     } catch (error) {
       throw new Error(
-        `${method}() failed (${manifest.id}): ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `${method}() failed (${manifest.id}): ${providerErrorMessage(error)}`,
       );
     }
   };
@@ -96,7 +108,7 @@ export async function invokeMaterialProviderFactoryInNode(
   try {
     inspection = script.runInContext(context) as MaterialProviderInspection;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = providerErrorMessage(error);
     if (message.includes("Missing __material_provider_exports.createProvider")) {
       throw new Error(`Missing __material_provider_exports.createProvider in bundle: ${manifest.id}`);
     }

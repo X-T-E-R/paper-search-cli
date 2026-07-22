@@ -1,12 +1,13 @@
-import { cp, mkdtemp } from "node:fs/promises";
+import { cp, mkdtemp, copyFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/program.js";
 import { readArtifactRecord } from "../../src/material/artifactStore.js";
 import type { ArtifactDownloadData } from "../../src/material/artifactDownload.js";
 import { isResultEnvelope, type ResultEnvelope } from "../../src/surface/resultEnvelope.js";
 import { resolveDistributableMaterialPackageDir } from "../helpers/distributableMaterialProviders.js";
+import { setSafeExternalHttpsTestHooksForTests } from "../../src/runtime/safeExternalHttps.js";
 
 const tempDirs: string[] = [];
 const downloaderFixture = path.resolve("tests", "fixtures", "material-downloaders", "fixture-artifact-downloader");
@@ -17,7 +18,15 @@ beforeAll(async () => {
   unpaywallPackageDir = await resolveDistributableMaterialPackageDir("unpaywall");
 });
 
+beforeEach(() => {
+  setSafeExternalHttpsTestHooksForTests({
+    resolve: async () => [{ address: "8.8.8.8", family: 4 }],
+    requestPinned: async (url, init) => fetch(url, init),
+  });
+});
+
 afterEach(async () => {
+  setSafeExternalHttpsTestHooksForTests(undefined);
   vi.unstubAllGlobals();
   const { rm } = await import("node:fs/promises");
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
@@ -33,10 +42,21 @@ async function prepareInstallDir(): Promise<string> {
   tempDirs.push(dir);
   await cp(downloaderFixture, path.join(dir, "fixture-artifact-downloader"), { recursive: true });
   await cp(unpaywallPackageDir, path.join(dir, "unpaywall"), { recursive: true });
+  // The repository dist can be stale during focused source tests; pair its
+  // built provider.js with the authoritative source manifest under test.
+  await copyFile(
+    path.resolve("..", "material-providers", "src", "providers", "packages", "unpaywall", "manifest.json"),
+    path.join(dir, "unpaywall", "manifest.json"),
+  );
   return dir;
 }
 
-async function writeProjectConfig(root: string, workspaceRoot: string, installDir: string): Promise<void> {
+async function writeProjectConfig(
+  root: string,
+  workspaceRoot: string,
+  installDir: string,
+  options: { configureEmail?: boolean } = {},
+): Promise<void> {
   const { writeFile } = await import("node:fs/promises");
   await writeFile(
     path.join(root, "paper-search.toml"),
@@ -51,9 +71,9 @@ async function writeProjectConfig(root: string, workspaceRoot: string, installDi
       "[platform.fixture-artifact-downloader]",
       'mode = "integration"',
       "",
-      "[platform.unpaywall]",
-      'email = "offline-unpaywall@research.tools"',
-      "",
+      ...(options.configureEmail === false
+        ? []
+        : ["[platform.unpaywall]", 'email = "offline-unpaywall@research.tools"', ""]),
     ].join("\n"),
     "utf8",
   );
@@ -148,6 +168,7 @@ describe("unpaywall distributable resolver acquire funnel", () => {
 
     expect(result.stderr).toBe("");
     expect(result.envelope.ok).toBe(true);
+    expect(result.envelope.warnings).toBeUndefined();
     const data = result.envelope.data as ArtifactDownloadData;
     expect(data.input).toMatchObject({ kind: "identifier", value: doi });
     expect(data.record.provenance).toMatchObject({
@@ -163,5 +184,52 @@ describe("unpaywall distributable resolver acquire funnel", () => {
     );
     expect(data.record.remoteUrl).toBe(candidateUrl);
     await expect(readArtifactRecord(workspaceRoot, data.record.id)).resolves.toBeDefined();
+  });
+
+  it("returns action_required without network for an exact Unpaywall request with placeholder email", async () => {
+    const installDir = await prepareInstallDir();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-unpaywall-placeholder-"));
+    tempDirs.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    await writeProjectConfig(root, workspaceRoot, installDir, { configureEmail: false });
+
+    const doi = "10.1234/unpaywall-placeholder";
+    const fetchSpy = vi.fn(async () => { throw new Error("network must not run"); });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      doi,
+      "--resolver",
+      "unpaywall",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      state: "action_required",
+      actions: [{
+        kind: "configure_provider",
+        target: { kind: "provider", id: "unpaywall" },
+        command: "paper-search configure unpaywall",
+      }],
+      diagnostics: { failureKind: "action_required" },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("auto resolver selection also skips placeholder Unpaywall without network", async () => {
+    const installDir = await prepareInstallDir();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-unpaywall-auto-placeholder-"));
+    tempDirs.push(root);
+    await writeProjectConfig(root, path.join(root, "workspace"), installDir, { configureEmail: false });
+    const fetchSpy = vi.fn(async () => { throw new Error("network must not run"); });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await runArtifactCommand(root, ["artifact", "download", "10.1234/unpaywall-auto", "--json"]);
+    expect(result.envelope).toMatchObject({ ok: false, state: "action_required" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

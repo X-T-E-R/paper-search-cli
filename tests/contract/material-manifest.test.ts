@@ -115,7 +115,13 @@ function resolverManifest(overrides: Record<string, unknown> = {}): string {
       network: true,
     },
     configSchema: {
-      email: { type: "string", env: ["UNPAYWALL_EMAIL"], required: true },
+      email: {
+        type: "string",
+        default: "xxx@example.com",
+        placeholder: "xxx@example.com",
+        env: ["UNPAYWALL_EMAIL"],
+        required: false,
+      },
     },
     permissions: {
       network: ["https://api.unpaywall.org/*"],
@@ -132,6 +138,17 @@ describe("parseMaterialProviderManifest for artifact_resolver", () => {
     expect(parsed.capabilities.inputs).toContain("identifier");
     expect(parsed.capabilities.identifierSchemes).toEqual(["doi"]);
     expect(parsed.capabilities.outputs).toContain("locations");
+    expect(parsed.configSchema?.email).toMatchObject({
+      default: "xxx@example.com",
+      placeholder: "xxx@example.com",
+      required: false,
+    });
+  });
+
+  it("validates placeholder readiness markers as strings", () => {
+    expect(() => parseMaterialProviderManifest(resolverManifest({
+      configSchema: { email: { type: "string", placeholder: true } },
+    }))).toThrow(/configSchema\.email\.placeholder must be a string/);
   });
 
   it("requires identifier inputs on resolver manifests", () => {

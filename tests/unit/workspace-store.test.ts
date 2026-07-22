@@ -120,7 +120,7 @@ describe("workspace store", () => {
     expect(savedRecord.fetchPdfRequested).toBe(false);
   });
 
-  it("downloads a PDF attachment into the local workspace sink", async () => {
+  it("never downloads a PDF directly from the workspace compatibility reader", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-pdf-"));
     tempDirs.push(root);
 
@@ -156,73 +156,19 @@ describe("workspace store", () => {
       fetchImpl,
     });
 
-    expect(requestedUrl).toBe("https://example.test/files/article.pdf");
+    expect(requestedUrl).toBe("");
     expect(result).toMatchObject({
-      ok: true,
+      ok: false,
       itemKey: addResult.record.id,
       itemId: addResult.record.id,
-      filename: "downloaded.pdf",
       sourceUrl: "https://example.test/files/article.pdf",
-      message: "PDF fetched into local workspace attachments",
+      message: expect.stringContaining("installed material downloader provider"),
     });
-    expect(result.attachmentId).toEqual(expect.any(String));
-    expect(result.artifactId).toEqual(expect.any(String));
-    expect(result.artifactId).not.toBe(addResult.record.id);
-    expect(result.path).toBe(`attachments/${addResult.record.id}/downloaded.pdf`);
-    await expect(readFile(path.join(root, result.path!), "utf8")).resolves.toBe("pdf-bytes");
-
-    const artifact = await readArtifactRecord(root, result.artifactId!);
-    expect(artifact).toMatchObject({
-      id: result.artifactId,
-      kind: "pdf",
-      status: "downloaded",
-      itemId: addResult.record.id,
-      filename: "downloaded.pdf",
-      contentType: "application/octet-stream",
-      path: `attachments/${addResult.record.id}/downloaded.pdf`,
-      remoteUrl: "https://example.test/files/article.pdf",
-      sizeBytes: Buffer.byteLength("pdf-bytes"),
-      provenance: {
-        origin: "download",
-        sourceUrl: "https://example.test/files/article.pdf",
-      },
-      attempts: [
-        expect.objectContaining({
-          tier: "resource-pdf-download",
-          source: "https://example.test/files/article.pdf",
-          ok: true,
-          status: 200,
-        }),
-      ],
-      message: "PDF fetched into local workspace attachments",
-    });
-
     const savedRecord = JSON.parse(
       await readFile(path.join(root, "items", `${addResult.record.id}.json`), "utf8"),
-    ) as { attachments: Array<{ filename: string; status: string; contentType: string; artifactId: string }> };
-    expect(savedRecord.attachments).toEqual([
-      expect.objectContaining({
-        filename: "downloaded.pdf",
-        status: "attached",
-        contentType: "application/octet-stream",
-        artifactId: result.artifactId,
-      }),
-    ]);
-
-    const existing = await fetchPdfForWorkspaceItem(root, {
-      itemKey: addResult.record.id,
-      fetchImpl,
-    });
-    expect(existing).toMatchObject({
-      ok: true,
-      itemKey: addResult.record.id,
-      itemId: addResult.record.id,
-      artifactId: result.artifactId,
-      attachmentId: result.attachmentId,
-      filename: "downloaded.pdf",
-      message: "PDF already attached",
-    });
-    await expect(listArtifactRecords(root, { itemId: addResult.record.id })).resolves.toHaveLength(1);
+    ) as { attachments?: unknown[] };
+    expect(savedRecord.attachments).toBeUndefined();
+    await expect(listArtifactRecords(root, { itemId: addResult.record.id })).resolves.toHaveLength(0);
   });
 
   it("backfills artifact ids for legacy PDF attachments without refetching", async () => {
@@ -302,7 +248,7 @@ describe("workspace store", () => {
     });
   });
 
-  it("records requested PDF attachments without downloading when requested", async () => {
+  it("does not bypass the provider boundary for request-only PDF records", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-pdf-request-"));
     tempDirs.push(root);
 
@@ -328,49 +274,15 @@ describe("workspace store", () => {
 
     expect(fetchCalled).toBe(false);
     expect(result).toMatchObject({
-      ok: true,
+      ok: false,
       itemKey: addResult.record.id,
       itemId: addResult.record.id,
-      filename: "requested.pdf",
-      message: "PDF fetch recorded but download was not requested",
+      message: expect.stringContaining("installed material downloader provider"),
     });
-    expect(result.attachmentId).toEqual(expect.any(String));
-    expect(result.artifactId).toEqual(expect.any(String));
-    expect(result.artifactId).not.toBe(addResult.record.id);
-    expect(result.path).toBeUndefined();
-
-    await expect(readArtifactRecord(root, result.artifactId!)).resolves.toMatchObject({
-      id: result.artifactId,
-      kind: "pdf",
-      status: "requested",
-      itemId: addResult.record.id,
-      filename: "requested.pdf",
-      contentType: "application/pdf",
-      remoteUrl: "https://example.test/requested.pdf",
-      provenance: {
-        origin: "resolved",
-        sourceUrl: "https://example.test/requested.pdf",
-      },
-      attempts: [
-        expect.objectContaining({
-          tier: "resource-pdf-record",
-          source: "https://example.test/requested.pdf",
-          ok: true,
-        }),
-      ],
-    });
-
     const savedRecord = JSON.parse(
       await readFile(path.join(root, "items", `${addResult.record.id}.json`), "utf8"),
-    ) as { attachments: Array<{ status: string; sourceUrl: string; artifactId: string; path?: string }> };
-    expect(savedRecord.attachments).toEqual([
-      expect.objectContaining({
-        status: "requested",
-        sourceUrl: "https://example.test/requested.pdf",
-        artifactId: result.artifactId,
-      }),
-    ]);
-    expect(savedRecord.attachments[0]?.path).toBeUndefined();
+    ) as { attachments?: unknown[] };
+    expect(savedRecord.attachments).toBeUndefined();
   });
 
   it("reports missing PDF URLs without creating attachments", async () => {
@@ -391,9 +303,11 @@ describe("workspace store", () => {
       fetchImpl: (async () => new Response("unexpected")) as typeof fetch,
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
-      message: "Could not find accessible PDF URL in the local workspace item",
+      itemKey: addResult.record.id,
+      itemId: addResult.record.id,
+      message: expect.stringContaining("installed material downloader provider"),
     });
     const savedRecord = JSON.parse(
       await readFile(path.join(root, "items", `${addResult.record.id}.json`), "utf8"),
@@ -466,5 +380,71 @@ describe("workspace store", () => {
     expect(bibtex.content).toContain("@article{lovelace-2026-exported-article-with-comma");
     expect(bibtex.content).toContain("author = {Ada Lovelace}");
     expect(bibtex.content).toContain("doi = {10.1234/export}");
+  });
+
+  it("exports a missing workspace without creating any workspace state", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-missing-"));
+    tempDirs.push(parent);
+    const root = path.join(parent, "workspace");
+
+    const result = await exportWorkspaceItems(root, { format: "json" });
+
+    expect(result).toMatchObject({
+      format: "json",
+      workspaceRoot: path.resolve(root),
+      count: 0,
+      items: [],
+    });
+    await expect(readdir(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails export when a workspace item contains malformed JSON", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-corrupt-"));
+    tempDirs.push(root);
+    const itemsDir = path.join(root, "items");
+    await mkdir(itemsDir);
+    const itemPath = path.join(itemsDir, "broken.json");
+    const malformed = '{"id":"broken"';
+    await writeFile(itemPath, malformed, "utf8");
+
+    await expect(exportWorkspaceItems(root, { format: "json" })).rejects.toBeInstanceOf(SyntaxError);
+    await expect(readFile(itemPath, "utf8")).resolves.toBe(malformed);
+  });
+
+  it("tolerates an item deleted after its collection index was written", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-deleted-"));
+    tempDirs.push(root);
+    await writeFile(
+      path.join(root, "collections.json"),
+      JSON.stringify({
+        collections: [
+          {
+            key: "inbox",
+            name: "Inbox",
+            parentKey: null,
+            path: "Inbox",
+            itemIds: ["deleted-item"],
+            createdAt: "2026-07-15T00:00:00.000Z",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    await expect(
+      exportWorkspaceItems(root, { format: "json", collectionPath: "Inbox" }),
+    ).resolves.toMatchObject({ count: 0, items: [] });
+  });
+
+  it("fails export when the workspace items path is not a directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-workspace-export-not-dir-"));
+    tempDirs.push(root);
+    const itemsPath = path.join(root, "items");
+    await writeFile(itemsPath, "not a directory", "utf8");
+
+    await expect(exportWorkspaceItems(root, { format: "json" })).rejects.toMatchObject({
+      code: "ENOTDIR",
+    });
+    await expect(readFile(itemsPath, "utf8")).resolves.toBe("not a directory");
   });
 });

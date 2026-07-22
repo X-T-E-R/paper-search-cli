@@ -1,7 +1,7 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { parse } from "@iarna/toml";
-import { DEFAULT_CONFIG } from "./defaults.js";
+import { createDefaultConfig } from "./defaults.js";
 import {
   collectEnvOverrides,
   envNameToConfigPath,
@@ -29,10 +29,26 @@ import {
   type ConfigKeyMetadata,
 } from "./userConfig.js";
 import { ExternalSearchConfigFileSchema } from "../external-search/config.js";
+import {
+  ConfigLocationMigrationRequiredError,
+  isConfigLocationMigrationComplete,
+  planConfigLocationMigration,
+} from "./locationMigration.js";
 
 export interface LoadConfigOptions {
   cwd?: string;
   explicitConfigPath?: string;
+  /** Diagnostics/migration surfaces may inspect defaults while reporting a pending legacy location. */
+  allowPendingLocationMigration?: boolean;
+}
+
+async function assertConfigLocationReady(options: LoadConfigOptions): Promise<void> {
+  if (options.allowPendingLocationMigration) return;
+  if (await isConfigLocationMigrationComplete()) return;
+  const plan = await planConfigLocationMigration();
+  if (["pending", "ambiguous", "conflicted", "blocked"].includes(plan.status)) {
+    throw new ConfigLocationMigrationRequiredError(plan);
+  }
 }
 
 export interface ValidatedConfigFile {
@@ -116,6 +132,25 @@ function resolveConfigRelativePaths(config: UserConfig, filePath: string): UserC
     next.workspace.root = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
   }
 
+  for (const key of ["artifactRoot", "extractionRoot", "exportRoot"] as const) {
+    const configured = next.storage?.[key];
+    if (!configured) continue;
+    const expanded = expandHome(configured);
+    next.storage![key] = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+  }
+
+  if (next.runs?.root) {
+    const expanded = expandHome(next.runs.root);
+    next.runs.root = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+  }
+
+  for (const key of ["pythonExecutable", "checkoutRoot"] as const) {
+    const configured = next.institutional?.[key];
+    if (!configured) continue;
+    const expanded = expandHome(configured);
+    next.institutional![key] = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+  }
+
   return next;
 }
 
@@ -163,6 +198,29 @@ async function loadNonSecretTomlConfig(
   const parsed = parseUserConfigDocument(document, {
     allowLegacy: originKind !== "user" || options.allowMissingSchemaVersion,
   });
+  if (originKind === "user" && parsed.data.context !== undefined) {
+    throw new Error(
+      `forbidden_config_authority: context is allowed only in project or explicit config (${filePath})`,
+    );
+  }
+  if (originKind !== "user" && parsed.data.zotero !== undefined) {
+    throw new Error(
+      `forbidden_config_authority: Zotero host-write settings are allowed only in the conventional user config (${filePath})`,
+    );
+  }
+  if (originKind !== "user" && parsed.data.institutional !== undefined) {
+    throw new Error(
+      `forbidden_config_authority: institutional browser settings are allowed only in the conventional user config (${filePath})`,
+    );
+  }
+  if (originKind === "user" && parsed.data.institutional) {
+    for (const key of ["pythonExecutable", "checkoutRoot"] as const) {
+      const configured = parsed.data.institutional[key];
+      if (configured && !path.isAbsolute(expandHome(configured))) {
+        throw new Error(`institutional.${key} must be an absolute path in the conventional user config (${filePath})`);
+      }
+    }
+  }
   const legacy = options.inheritedLegacy ?? parsed.legacy;
   assertSafeNonSecretLayer(parsed.data, filePath, {
     allowLegacyUserSecrets: originKind === "user" && legacy,
@@ -248,6 +306,21 @@ function normalizeResolvedConfigPaths(
     ? workspaceRoot
     : path.resolve(cwd, workspaceRoot);
 
+  for (const key of ["artifactRoot", "extractionRoot", "exportRoot"] as const) {
+    const expanded = expandHome(next.storage[key]);
+    next.storage[key] = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+  }
+
+  const runsRoot = expandHome(next.runs.root);
+  next.runs.root = path.isAbsolute(runsRoot) ? runsRoot : path.resolve(cwd, runsRoot);
+
+  for (const key of ["pythonExecutable", "checkoutRoot"] as const) {
+    const configured = next.institutional[key];
+    if (!configured) continue;
+    const expanded = expandHome(configured);
+    next.institutional[key] = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+  }
+
   return next;
 }
 
@@ -280,7 +353,9 @@ function mergeLoadedConfigFiles(
 }
 
 export async function loadConfig(options: LoadConfigOptions = {}): Promise<ResolvedConfig> {
+  await assertConfigLocationReady(options);
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
+  const defaults = createDefaultConfig(process.env);
   const bundlePaths = resolveConfigBundlePaths();
   const userConfigPath = bundlePaths.config;
   const projectCandidates = resolveProjectConfigCandidates(cwd);
@@ -294,7 +369,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
 
   const provisionalConfig = normalizeResolvedConfigPaths(
     mergeLoadedConfigFiles(
-      structuredClone(DEFAULT_CONFIG) as Omit<ResolvedConfig, "meta">,
+      structuredClone(defaults),
       userLayer?.files ?? [],
     ),
     cwd,
@@ -329,9 +404,9 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
   const credentials = await loadCredentialsTomlConfig(bundlePaths.credentials, providerMetadata);
   if (credentials) loaded.push(credentials);
 
-  let merged = structuredClone(DEFAULT_CONFIG) as Omit<ResolvedConfig, "meta">;
+  let merged = structuredClone(defaults);
   const origins: Record<string, { kind: "default" | "user" | "project" | "explicit" | "credentials" | "env"; source: string }> = {};
-  recordOrigins(origins, DEFAULT_CONFIG as UserConfig, "default", "built-in defaults");
+  recordOrigins(origins, defaults as UserConfig, "default", "built-in defaults");
   for (const config of loaded) {
     merged = deepMerge(merged, config.data);
     recordOrigins(origins, config.data, config.originKind, config.path);
@@ -369,7 +444,9 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
 }
 
 export async function validateConfigFiles(options: LoadConfigOptions = {}): Promise<ValidatedConfigFile[]> {
+  await assertConfigLocationReady(options);
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
+  const defaults = createDefaultConfig(process.env);
   const bundlePaths = resolveConfigBundlePaths();
   const results: ValidatedConfigFile[] = [];
 
@@ -385,7 +462,7 @@ export async function validateConfigFiles(options: LoadConfigOptions = {}): Prom
   }
   const provisionalConfig = normalizeResolvedConfigPaths(
     mergeLoadedConfigFiles(
-      structuredClone(DEFAULT_CONFIG) as Omit<ResolvedConfig, "meta">,
+      structuredClone(defaults),
       userLayer?.files ?? [],
     ),
     cwd,
@@ -451,7 +528,7 @@ export async function validateConfigFiles(options: LoadConfigOptions = {}): Prom
   ];
   const merged = normalizeResolvedConfigPaths(
     mergeLoadedConfigFiles(
-      structuredClone(DEFAULT_CONFIG) as Omit<ResolvedConfig, "meta">,
+      structuredClone(defaults),
       effectiveFiles,
     ),
     cwd,

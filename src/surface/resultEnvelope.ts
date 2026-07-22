@@ -28,6 +28,36 @@ export interface ResultProvenance {
   [key: string]: unknown;
 }
 
+/**
+ * A compact, durable description of work that must be completed outside the
+ * current non-interactive operation. Only `configure_provider` is emitted by
+ * the MVP; the target/id shape deliberately leaves room for future
+ * browser-session start/resume actions without embedding credentials.
+ */
+export interface ConfigureProviderResultAction {
+  id: string;
+  kind: "configure_provider";
+  target: { kind: "provider"; id: string };
+  command: string;
+  fields?: Array<{
+    key: string;
+    label: string;
+    secret: boolean;
+    required: boolean;
+  }>;
+}
+
+export interface ContinueInstitutionalResultAction {
+  id: string;
+  kind: "continue_institutional";
+  target: { kind: "institutional_job"; id: string };
+  command: string;
+}
+
+export type ResultAction = ConfigureProviderResultAction | ContinueInstitutionalResultAction;
+
+export type ResultState = "action_required";
+
 export interface ResultEnvelope<T = unknown> {
   ok: boolean;
   /** Capability group this result belongs to. */
@@ -38,6 +68,10 @@ export interface ResultEnvelope<T = unknown> {
   planned?: boolean;
   /** Capability-specific payload. Null on failure. */
   data: T | null;
+  /** Omitted for normal terminal outcomes. */
+  state?: ResultState;
+  /** Omitted when there is no human/external follow-up. */
+  actions?: ResultAction[];
   diagnostics?: ResultDiagnostics;
   warnings?: string[];
   errors?: string[];
@@ -52,6 +86,8 @@ export interface EnvelopeInit<T> {
   diagnostics?: ResultDiagnostics;
   warnings?: string[];
   provenance?: ResultProvenance;
+  state?: ResultState;
+  actions?: ResultAction[];
 }
 
 export function okEnvelope<T>(init: EnvelopeInit<T>): ResultEnvelope<T> {
@@ -61,6 +97,8 @@ export function okEnvelope<T>(init: EnvelopeInit<T>): ResultEnvelope<T> {
     tool: init.tool,
     ...(init.planned !== undefined ? { planned: init.planned } : {}),
     data: init.data,
+    ...(init.state ? { state: init.state } : {}),
+    ...(init.actions && init.actions.length > 0 ? { actions: init.actions } : {}),
     ...(init.diagnostics ? { diagnostics: init.diagnostics } : {}),
     ...(init.warnings && init.warnings.length > 0 ? { warnings: init.warnings } : {}),
     ...(init.provenance ? { provenance: init.provenance } : {}),
@@ -74,12 +112,16 @@ export function failEnvelope(init: {
   warnings?: string[];
   diagnostics?: ResultDiagnostics;
   provenance?: ResultProvenance;
+  state?: ResultState;
+  actions?: ResultAction[];
 }): ResultEnvelope<null> {
   return {
     ok: false,
     capability: init.capability,
     tool: init.tool,
     data: null,
+    ...(init.state ? { state: init.state } : {}),
+    ...(init.actions && init.actions.length > 0 ? { actions: init.actions } : {}),
     ...(init.diagnostics ? { diagnostics: init.diagnostics } : {}),
     ...(init.warnings && init.warnings.length > 0 ? { warnings: init.warnings } : {}),
     errors: init.errors,

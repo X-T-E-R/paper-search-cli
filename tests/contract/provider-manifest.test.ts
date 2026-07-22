@@ -124,4 +124,67 @@ describe("parseProviderManifest", () => {
       ),
     ).toThrow(ManifestValidationError);
   });
+
+  it("validates optional citation graph capability without requiring it", () => {
+    const parsed = parseProviderManifest(
+      JSON.stringify({
+        id: "semantic",
+        name: "Semantic Scholar",
+        version: "1.2.0",
+        sourceType: "academic",
+        permissions: { urls: ["https://api.semanticscholar.org/*"] },
+        capabilities: {
+          citationGraph: {
+            directions: ["backward", "forward"],
+            targetIdentifierKinds: ["semantic", "doi", "arxiv"],
+            maxPageSize: 100,
+          },
+        },
+      }),
+    );
+
+    expect(parsed.capabilities?.citationGraph).toEqual({
+      directions: ["backward", "forward"],
+      targetIdentifierKinds: ["semantic", "doi", "arxiv"],
+      maxPageSize: 100,
+    });
+  });
+
+  it("rejects malformed citation graph promises", () => {
+    const base = {
+      id: "semantic",
+      name: "Semantic Scholar",
+      version: "1.2.0",
+      sourceType: "academic",
+      permissions: { urls: ["https://api.semanticscholar.org/*"] },
+    };
+    expect(() =>
+      parseProviderManifest(
+        JSON.stringify({
+          ...base,
+          capabilities: {
+            citationGraph: {
+              directions: ["backward", "backward"],
+              targetIdentifierKinds: ["title"],
+              maxPageSize: 0,
+            },
+          },
+        }),
+      ),
+    ).toThrow(/directions/);
+    expect(() =>
+      parseProviderManifest(
+        JSON.stringify({
+          ...base,
+          capabilities: {
+            citationGraph: {
+              directions: ["backward"],
+              targetIdentifierKinds: ["doi"],
+              maxPageSize: 1001,
+            },
+          },
+        }),
+      ),
+    ).toThrow(/1 to 1000/);
+  });
 });

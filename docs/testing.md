@@ -26,8 +26,9 @@ The layers cover:
 
 - `unit`: identifier detection, lookup normalization, external-search protocol/process/status logic,
   capability and envelope contracts, plan envelopes, tool argument parsing, MCP
-  JSON-RPC behavior, batch task shaping/serialization, workspace storage, and
-  smoke gating
+  JSON-RPC behavior, batch task shaping/serialization, workspace and local
+  storage references, durable-run retention/redaction, citation normalization,
+  assessment policy traces, and smoke gating
 - `contract`: search-provider manifest validation, material-provider manifest
   validation, package loading, registry planning/install contracts, runtime
   permission enforcement, session-aware provider behavior, and MinerU wrapper
@@ -35,9 +36,10 @@ The layers cover:
 - `integration`: CLI behavior with temporary config files, realistic command
   wiring, local registry/package fixtures, discovery/help flows, MCP HTTP server
   flows, lookup-to-add flows, patent detail-to-add flows, offline external-search
-  search/research commands, stubbed `resource-pdf` downloads, material artifact
-  and extraction workflows, batch workflows, resumable JSONL output, workspace
-  sink checks, and workspace export checks
+  search commands, provider-mediated `resource-pdf`, material artifact and
+  extraction workflows, durable discovery, citation checkpoint/resume,
+  checksum-bound assessment, home-path reporting, batch workflows, resumable
+  JSONL output, workspace sink checks, and workspace export checks
 
 ## Surface Contract Coverage
 
@@ -57,6 +59,15 @@ Provider-kind integration tests exercise both runtimes through
 compatibility alias. Artifact and extraction storage tests round-trip records
 with provenance, attempts, provider/backend ids, output paths, cache status, and
 optional workspace item links.
+
+Run-management tests must prove default-on history for friendly CLI,
+canonical/MCP, and batch discovery; every explicit opt-out; and the absence of
+double records behind `research_run`. They must also prove that `maxAgeDays = -1`
+selects nothing for age pruning and keep applied pruning, pin/unpin, export, and
+Zotero host writes at the CLI-only boundary. Citation tests cover provider
+union, bounds, cycles, partial failure, checkpoints, and resume. Assessment tests
+cover checksum mismatch, missing/conflicting observations, no-policy output, and
+deterministic policy traces without an implicit universal verdict.
 
 ## Provider Fixture Coverage
 
@@ -86,6 +97,7 @@ npx vitest run tests/integration/unpaywall-resolver-funnel.test.ts
 npx vitest run tests/integration/extract-command.test.ts
 npx vitest run tests/integration/material-ingest-plan-command.test.ts
 npx vitest run tests/integration/material-ingest-execution-command.test.ts
+npx vitest run tests/integration/material-ingest-exact-url-fallback.test.ts
 npx vitest run tests/integration/material-provider-mineru-distribution.test.ts
 npx vitest run tests/integration/material-status-command.test.ts
 npx vitest run tests/integration/provider-kind-command.test.ts
@@ -102,7 +114,15 @@ checksum and `minCliVersion` gates enforced.
 The material ingest execution test proves the runnable fixture workflow: it
 copies fixture providers into a temporary install directory, writes a temporary
 `paper-search.toml`, runs URL and local-file ingestion, asserts artifact and
-extraction records exist, and verifies extracted Markdown paths.
+extraction records exist, verifies managed local-file bytes and storage refs,
+and verifies extracted Markdown paths. The workspace command integration test
+also covers managed export planning, collision rejection, and writes below a
+configured `storage.exportRoot`.
+
+The exact-URL fallback test keeps transport offline while proving the byte-first
+success path, managed MinerU recovery from HTTP 403, honest extraction-only
+records, Jina source/challenge rejection, all-provider failure, and unchanged
+unsafe, non-eligible, and non-`direct-url-downloader` behavior.
 
 ## Offline CLI Fixture Example
 
@@ -157,8 +177,9 @@ Expected result shape:
 - every command emits a `ResultEnvelope`
 - material plans include `planned: true`, selected policy/provider, intended
   steps, and target paths
-- executed material ingest writes artifact records, extraction records, and
-  extracted Markdown/JSON under `$tmp/workspace/material/`
+- executed material ingest writes artifact/extraction records below the
+  workspace root, artifact bytes below the configured artifact root, and
+  Markdown/JSON below the configured extraction root
 - the example URL is metadata for the fixture provider; no live request is made
 
 ## Official Compatibility Probe

@@ -9,6 +9,19 @@ export interface InstallPathReplacementOperations {
   remove(targetPath: string): Promise<void>;
 }
 
+export interface InstallPathRetention {
+  stagingRoot: string;
+  finalRoot: string;
+}
+
+export interface InstallPathSelectionOptions {
+  validateSelected?: (targetPath: string) => Promise<void>;
+  /** Verify retained rollback/selection authority before the transaction commits. */
+  validateCommitted?: (targetPath: string) => Promise<void>;
+  retention?: InstallPathRetention;
+  restoreStagingOnFailure?: boolean;
+}
+
 const defaultOperations: InstallPathReplacementOperations = {
   rename,
   stat,
@@ -28,7 +41,10 @@ export async function replaceInstallPath(options: {
   targetPath: string;
   providerId: string;
   operations?: InstallPathReplacementOperations;
-}): Promise<{ replacedExisting: boolean }> {
+} & InstallPathSelectionOptions): Promise<{
+  replacedExisting: boolean;
+  retainedBackupPath?: string;
+}> {
   const operations = options.operations ?? defaultOperations;
   const stagingPath = path.resolve(options.stagingPath);
   const targetPath = path.resolve(options.targetPath);
@@ -48,25 +64,80 @@ export async function replaceInstallPath(options: {
     `.${options.providerId}.backup.${randomUUID()}`,
   );
 
+  const retention = options.retention
+    ? {
+        stagingRoot: path.resolve(options.retention.stagingRoot),
+        finalRoot: path.resolve(options.retention.finalRoot),
+      }
+    : undefined;
+  if (
+    retention &&
+    path.dirname(retention.stagingRoot) !== path.dirname(retention.finalRoot)
+  ) {
+    throw new Error("Provider rollback staging and final paths must share a parent directory");
+  }
+  if (retention && !replacedExisting) {
+    throw new Error("Provider rollback retention requires an existing install");
+  }
+
   if (replacedExisting) await operations.rename(targetPath, backupPath);
+  let selected = false;
+  let restorableBackupPath = backupPath;
   try {
     await operations.rename(stagingPath, targetPath);
+    selected = true;
+    await options.validateSelected?.(targetPath);
+
+    if (replacedExisting && retention) {
+      const stagedProviderPath = path.join(retention.stagingRoot, "provider");
+      await operations.rename(backupPath, stagedProviderPath);
+      restorableBackupPath = stagedProviderPath;
+      await operations.rename(retention.stagingRoot, retention.finalRoot);
+      restorableBackupPath = path.join(retention.finalRoot, "provider");
+      await options.validateCommitted?.(targetPath);
+      return {
+        replacedExisting: true,
+        retainedBackupPath: path.join(retention.finalRoot, "provider"),
+      };
+    }
+
+    await options.validateCommitted?.(targetPath);
+    // The selected target is authoritative. A stale backup is recoverable and
+    // must not turn a successful replacement into a reported install failure.
+    if (replacedExisting) await operations.remove(backupPath).catch(() => undefined);
+    return { replacedExisting };
   } catch (installError) {
+    const restoreErrors: unknown[] = [];
+    let backupRestored = !replacedExisting;
+    if (selected) {
+      try {
+        if (options.restoreStagingOnFailure) {
+          await operations.rename(targetPath, stagingPath);
+        } else {
+          await operations.remove(targetPath);
+        }
+      } catch (error) {
+        restoreErrors.push(error);
+      }
+    }
     if (replacedExisting) {
       try {
-        await operations.rename(backupPath, targetPath);
-      } catch (restoreError) {
-        throw new AggregateError(
-          [installError, restoreError],
-          `Failed to install ${options.providerId} and restore the previous provider`,
-        );
+        await operations.rename(restorableBackupPath, targetPath);
+        backupRestored = true;
+      } catch (error) {
+        restoreErrors.push(error);
       }
+    }
+    if (retention) {
+      await operations.remove(retention.stagingRoot).catch(() => undefined);
+      if (backupRestored) await operations.remove(retention.finalRoot).catch(() => undefined);
+    }
+    if (restoreErrors.length > 0) {
+      throw new AggregateError(
+        [installError, ...restoreErrors],
+        `Failed to install ${options.providerId} and restore the previous provider`,
+      );
     }
     throw installError;
   }
-
-  // The selected target is authoritative. A stale backup is recoverable and
-  // must not turn a successful replacement into a reported install failure.
-  if (replacedExisting) await operations.remove(backupPath).catch(() => undefined);
-  return { replacedExisting };
 }

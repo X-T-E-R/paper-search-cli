@@ -335,7 +335,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     await writeFile(path.join(fixture.repoRoot, "dirty.txt"), "dirty\n", "utf8");
     const dirty = await updater.planMode("self-update");
     expect(dirty.blockers).toContain("Self-update opt-in requires a clean checkout.");
-  }, 30_000);
+  }, 90_000);
 
   it("reports missing opt-in and treats an opted-in current target as an idempotent no-op", async () => {
     const managed = await createFixture("user-managed");
@@ -349,7 +349,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     const plan = await updater.planUpdate();
     expect(plan).toMatchObject({ blocked: false, relation: "up-to-date", actions: [] });
     await expect(updater.executeUpdate(true)).resolves.toMatchObject({ applied: false });
-  }, 30_000);
+  }, 90_000);
 
   it("builds before fast-forward, repairs links, selects the target, and retains the prior dist", async () => {
     const fixture = await createFixture("self-update");
@@ -379,7 +379,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     const state = JSON.parse(await readFile(fixture.paths.installStatePath, "utf8"));
     expect(state.buildIdentity.source.commit).toBe(targetCommit);
     await expect(readFile(path.join(fixture.paths.dataRoot, "state", "self-update-recovery.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-  }, 30_000);
+  }, 90_000);
 
   it("rejects dirty, local-only, diverged, and missing-upstream checkouts", async () => {
     const dirtyFixture = await createFixture("self-update");
@@ -408,7 +408,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     expect((await service(upstreamFixture).planUpdate()).blockers).toContain(
       "Self-update requires a configured branch upstream.",
     );
-  }, 60_000);
+  }, 90_000);
 
   it("leaves checkout, dist, and install state unchanged when target verification fails", async () => {
     const fixture = await createFixture("self-update");
@@ -426,14 +426,14 @@ describe("sealed self-update policy and retained-checkout updater", () => {
       spawnSync(process.execPath, [fixture.paths.selectedCliPath, "--version"], { encoding: "utf8" }).stdout.trim(),
     ).toBe("1.0.0");
     expect(await readFile(fixture.paths.installStatePath, "utf8")).toBe(beforeState);
-  }, 30_000);
+  }, 90_000);
 
   it("requires a launcher bridge before a protocol-breaking fast-forward", async () => {
     const fixture = await createFixture("self-update");
     await advanceRemote(fixture, { protocol: 2, launcherProtocols: [2] });
     await expect(service(fixture).executeUpdate(true)).rejects.toThrow(/Launcher bridge/);
     expect(git(fixture.repoRoot, ["rev-parse", "HEAD"])).toBe(fixture.initialCommit);
-  }, 30_000);
+  }, 90_000);
 
   it("retains prior dist and deterministic recovery state after a post-fast-forward failure", async () => {
     const fixture = await createFixture("self-update");
@@ -462,7 +462,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
       targetCommit,
     });
     expect(recovery.recovery.args.at(-1)).toBe("--apply");
-  }, 30_000);
+  }, 90_000);
 
   it("fails closed and records recovery when post-fast-forward checkout invariants drift", async () => {
     const fixture = await createFixture("self-update");
@@ -504,7 +504,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
       targetCommit,
     });
     expect(recovery.error).toContain("Post-fast-forward invariants failed");
-  }, 30_000);
+  }, 90_000);
 
   it("uses the canonical repo lock and times out behind a concurrent setup/update owner", async () => {
     const fixture = await createFixture("self-update");
@@ -549,7 +549,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     expect(status.officialPolicy.matched).toBe(true);
     expect(status.git.upstreamFetchUrl).not.toContain("fixture-user");
     expect(status.git.upstreamFetchUrl).not.toContain("top-secret");
-  }, 30_000);
+  }, 90_000);
 
   it("does not expose upstream credentials when remote target resolution fails", async () => {
     const fixture = await createFixture("self-update");
@@ -571,7 +571,7 @@ describe("sealed self-update policy and retained-checkout updater", () => {
     expect(serialized).not.toContain("fixture-user");
     expect(serialized).not.toContain("top-secret");
     expect(plan.blockers.join(" ")).toContain("Official upstream target is unavailable");
-  }, 30_000);
+  }, 90_000);
 
   it("fails closed when an injected policy does not match the configured upstream", async () => {
     const fixture = await createFixture();

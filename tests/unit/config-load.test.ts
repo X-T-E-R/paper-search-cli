@@ -20,11 +20,101 @@ afterEach(async () => {
 });
 
 describe("loadConfig", () => {
+  it("inherits the nearest ancestor context and resolves its run root from that config", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-context-discovery-"));
+    tempDirs.push(root);
+    const home = path.join(root, "home");
+    const project = path.join(root, "project");
+    const nested = path.join(project, "notes", "drafts");
+    await mkdir(home, { recursive: true });
+    await mkdir(nested, { recursive: true });
+    await writeFile(path.join(project, "paper-search.toml"), [
+      "schemaVersion = 1",
+      "[context]",
+      'id = "project-a"',
+      'kind = "standalone"',
+      "[runs]",
+      'root = "sources/search/runs"',
+      "recordByDefault = true",
+      "",
+    ].join("\n"), "utf8");
+
+    const originalHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = home;
+    try {
+      const config = await loadConfig({ cwd: nested });
+      expect(config.context).toEqual({ id: "project-a", kind: "standalone" });
+      expect(config.runs.root).toBe(path.join(project, "sources", "search", "runs"));
+      expect(config.meta.projectConfigPath).toBe(path.join(project, "paper-search.toml"));
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = originalHome;
+    }
+  });
+
+  it("fails on an invalid nearer context instead of falling back to an ancestor", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-context-invalid-"));
+    tempDirs.push(root);
+    const project = path.join(root, "project");
+    const nested = path.join(project, "nested");
+    await mkdir(nested, { recursive: true });
+    await writeFile(path.join(project, "paper-search.toml"), [
+      "schemaVersion = 1",
+      "[context]",
+      'id = "ancestor"',
+      'kind = "standalone"',
+      "",
+    ].join("\n"), "utf8");
+    await writeFile(path.join(nested, ".paper-search.toml"), [
+      "schemaVersion = 1",
+      "[context]",
+      'id = "broken"',
+      'kind = "invalid"',
+      "",
+    ].join("\n"), "utf8");
+
+    await expect(loadConfig({ cwd: nested })).rejects.toThrow();
+  });
+
+  it("reserves global for built-in fallback and rejects context in user config", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-context-authority-"));
+    tempDirs.push(root);
+    const home = path.join(root, "home");
+    const project = path.join(root, "project");
+    await mkdir(home, { recursive: true });
+    await mkdir(project, { recursive: true });
+    const originalHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = home;
+    try {
+      await writeFile(path.join(home, "config.toml"), [
+        "schemaVersion = 1",
+        "[context]",
+        'id = "user-project"',
+        'kind = "standalone"',
+        "",
+      ].join("\n"), "utf8");
+      await expect(loadConfig({ cwd: project })).rejects.toThrow(/forbidden_config_authority/);
+
+      await writeFile(path.join(home, "config.toml"), "schemaVersion = 1\n", "utf8");
+      await writeFile(path.join(project, "paper-search.toml"), [
+        "schemaVersion = 1",
+        "[context]",
+        'id = "global"',
+        'kind = "global"',
+        "",
+      ].join("\n"), "utf8");
+      await expect(loadConfig({ cwd: project })).rejects.toThrow(/built-in fallback context/);
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = originalHome;
+    }
+  });
+
   it("merges user, project, and explicit TOML in the right order", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-config-"));
     tempDirs.push(root);
 
-    const userConfigDir = path.join(root, "appdata", "paper-search");
+    const userConfigDir = path.join(root, "paper-search-home");
     const projectDir = path.join(root, "project");
     const explicitDir = path.join(root, "explicit");
     await mkdir(userConfigDir, { recursive: true });
@@ -33,24 +123,33 @@ describe("loadConfig", () => {
 
     await writeFile(
       path.join(userConfigDir, "config.toml"),
-      ["schemaVersion = 1", "", "[output]", 'locale = "en-US"', ""].join("\n"),
+      [
+        "schemaVersion = 1",
+        "",
+        "[output]",
+        'locale = "en-US"',
+        "",
+        "[search]",
+        'defaultAcademicSort = "citations"',
+        "",
+      ].join("\n"),
       "utf8",
     );
     await writeFile(
       path.join(projectDir, "paper-search.toml"),
-      ["[defaults]", "maxResults = 25", "", "[workspace]", 'defaultCollection = "drafts"', ""].join(
+      ["[defaults]", "maxResults = 25", "", "[workspace]", 'defaultCollection = "drafts"', "", "[search]", 'defaultAcademicSort = "date"', ""].join(
         "\n",
       ),
       "utf8",
     );
     await writeFile(
       path.join(explicitDir, "override.toml"),
-      ["[workspace]", 'defaultSink = "jsonl"', ""].join("\n"),
+      ["[workspace]", 'defaultSink = "jsonl"', "", "[search]", 'defaultAcademicSort = "relevance"', ""].join("\n"),
       "utf8",
     );
 
-    const originalAppData = process.env.APPDATA;
-    process.env.APPDATA = path.join(root, "appdata");
+    const originalHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = userConfigDir;
 
     try {
       const config = await loadConfig({
@@ -62,10 +161,12 @@ describe("loadConfig", () => {
       expect(config.defaults.maxResults).toBe(25);
       expect(config.workspace.defaultCollection).toBe("drafts");
       expect(config.workspace.defaultSink).toBe("jsonl");
+      expect(config.search.defaultAcademicSort).toBe("relevance");
       expect(config.meta.loadedFiles).toHaveLength(3);
       expect(config.meta.appliedEnvOverrides).toEqual([]);
     } finally {
-      process.env.APPDATA = originalAppData;
+      if (originalHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = originalHome;
     }
   });
 
@@ -134,7 +235,7 @@ describe("loadConfig", () => {
   it("loads credentials after project/explicit config and before environment overrides", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-config-credentials-"));
     tempDirs.push(root);
-    const appDir = path.join(root, "appdata", "paper-search");
+    const appDir = path.join(root, "paper-search-home");
     const projectDir = path.join(root, "project");
     const explicitDir = path.join(root, "explicit");
     await mkdir(appDir, { recursive: true });
@@ -158,10 +259,10 @@ describe("loadConfig", () => {
     );
 
     const previous = {
-      APPDATA: process.env.APPDATA,
+      PAPER_SEARCH_HOME: process.env.PAPER_SEARCH_HOME,
       API_KEY: process.env.PAPER_SEARCH_API__TAVILY__API_KEY,
     };
-    process.env.APPDATA = path.join(root, "appdata");
+    process.env.PAPER_SEARCH_HOME = appDir;
     process.env.PAPER_SEARCH_API__TAVILY__API_KEY = "environment";
     try {
       const config = await loadConfig({ cwd: projectDir, explicitConfigPath: explicitDir });
@@ -173,7 +274,8 @@ describe("loadConfig", () => {
         source: "PAPER_SEARCH_API__TAVILY__API_KEY",
       });
     } finally {
-      process.env.APPDATA = previous.APPDATA;
+      if (previous.PAPER_SEARCH_HOME === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = previous.PAPER_SEARCH_HOME;
       process.env.PAPER_SEARCH_API__TAVILY__API_KEY = previous.API_KEY;
     }
   });

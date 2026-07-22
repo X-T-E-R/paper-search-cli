@@ -1,6 +1,6 @@
 {
   "name": "paper-search-cli",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "license": "MIT",
   "repository": {
@@ -12,7 +12,7 @@
     "url": "https://github.com/X-T-E-R/paper-search-cli/issues"
   },
   "type": "module",
-  "description": "Standalone paper search CLI with provider-compatible runtime and optional MCP surface.",
+  "description": "Paper Search CLI X: extensible research discovery, citation expansion, and transparent assessment.",
   "bin": {
     "paper-search": "./dist/cli.js"
   },

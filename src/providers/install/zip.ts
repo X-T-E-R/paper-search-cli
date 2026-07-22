@@ -22,6 +22,7 @@ import {
 import {
   replaceInstallPath,
   type InstallPathReplacementOperations,
+  type InstallPathSelectionOptions,
 } from "./replace.js";
 
 interface ZipPayload {
@@ -249,7 +250,10 @@ function assertValidatedZipMatchesPlan(
 
 export async function applyProviderZipInstallPlan(
   plan: ProviderZipInstallPlan,
-  options: { replacementOperations?: InstallPathReplacementOperations } = {},
+  options: {
+    replacementOperations?: InstallPathReplacementOperations;
+    selection?: InstallPathSelectionOptions;
+  } = {},
 ): Promise<AppliedProviderZipInstall> {
   const validated = await loadValidatedProviderZip(plan.archivePath, {
     id: plan.id,
@@ -267,6 +271,7 @@ export async function applyProviderZipInstallPlan(
     receipt,
     plan.replacementPrecondition,
     options.replacementOperations,
+    options.selection,
   );
   return { ...result, plan, receipt };
 }
@@ -322,6 +327,7 @@ async function materializeProviderPayload(
   receipt?: ProviderInstallReceipt,
   replacementPrecondition?: ProviderZipInstallPlan["replacementPrecondition"],
   replacementOperations?: InstallPathReplacementOperations,
+  selection?: InstallPathSelectionOptions,
 ): Promise<InstallZipResult> {
   const resolvedInstallDir = path.resolve(installDir);
   await mkdir(resolvedInstallDir, { recursive: true });
@@ -350,6 +356,7 @@ async function materializeProviderPayload(
       targetPath,
       providerId: manifest.id,
       ...(replacementOperations ? { operations: replacementOperations } : {}),
+      ...selection,
     });
     return {
       id: manifest.id,

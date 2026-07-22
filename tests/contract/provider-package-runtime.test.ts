@@ -41,7 +41,11 @@ describe("provider package runtime", () => {
       api,
     );
 
-    expect(loaded.inspection).toEqual({ hasSearch: true, hasGetDetail: false });
+    expect(loaded.inspection).toEqual({
+      hasSearch: true,
+      hasGetDetail: false,
+      hasGetCitationPage: false,
+    });
     const result = await loaded.provider.search("retrieval augmented generation", {
       maxResults: 5,
       page: 2,

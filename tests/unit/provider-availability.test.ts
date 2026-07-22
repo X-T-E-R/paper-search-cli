@@ -32,8 +32,9 @@ const manifest: ProviderManifest = {
 };
 
 describe("provider availability", () => {
-  it("uses manifest enabled defaults and explicit config precedence", () => {
+  it("derives auto/enabled/disabled intent without a parallel account system", () => {
     expect(resolveProviderAvailability(config(), manifest)).toMatchObject({
+      intent: "auto",
       enabled: false,
       configured: false,
       available: false,
@@ -44,7 +45,11 @@ describe("provider availability", () => {
         config({ credentialed: { enabled: true, apiKey: "key" } }),
         manifest,
       ),
-    ).toMatchObject({ enabled: true, configured: true, available: true });
+    ).toMatchObject({ intent: "enabled", enabled: true, configured: true, available: true });
+    expect(resolveProviderAvailability(
+      config({ credentialed: { enabled: false, apiKey: "key" } }),
+      manifest,
+    )).toMatchObject({ intent: "disabled", enabled: false, configured: true, available: false });
   });
 
   it("does not treat an empty required default as configured", () => {
@@ -54,5 +59,32 @@ describe("provider availability", () => {
     );
     expect(result.configured).toBe(false);
     expect(result.missingConfigKeys).toEqual(["apiKey"]);
+  });
+
+  it("treats a schema placeholder default as setup-needed", () => {
+    const withPlaceholder: ProviderManifest = {
+      ...manifest,
+      configSchema: {
+        enabled: { type: "boolean", default: true },
+        email: {
+          type: "string",
+          default: "xxx@example.com",
+          placeholder: "xxx@example.com",
+        },
+      },
+    };
+    expect(resolveProviderAvailability(config(), withPlaceholder)).toMatchObject({
+      intent: "auto",
+      configured: false,
+      missingConfigKeys: ["email"],
+    });
+    expect(resolveProviderAvailability(
+      config({ credentialed: { email: "researcher@example.org" } }),
+      withPlaceholder,
+    )).toMatchObject({ configured: true, missingConfigKeys: [] });
+    expect(resolveProviderAvailability(
+      config({ credentialed: { email: "   " } }),
+      withPlaceholder,
+    )).toMatchObject({ configured: false, missingConfigKeys: ["email"] });
   });
 });

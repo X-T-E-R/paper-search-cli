@@ -127,7 +127,11 @@ describe("provider session runtime", () => {
       api,
     );
 
-    expect(loaded.inspection).toEqual({ hasSearch: true, hasGetDetail: true });
+    expect(loaded.inspection).toEqual({
+      hasSearch: true,
+      hasGetDetail: true,
+      hasGetCitationPage: false,
+    });
     const searchResult = await loaded.provider.search("graphene sensor", {
       maxResults: 5,
       page: 1,

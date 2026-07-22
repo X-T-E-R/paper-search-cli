@@ -6,13 +6,16 @@ import { createNodeCompatibilityApi } from "../providers/runtime/createApi.js";
 import { invokeProviderFactoryInNode, type LoadedNodeProvider } from "../providers/runtime/invokeNodeFactory.js";
 import type {
   ProviderManifest,
+  ResourceItem,
   SearchOptions,
   SearchResult,
+  SearchResultOrdering,
   SourceType,
 } from "../providers/sdk/types.js";
 import {
   getProviderConfig,
   resolveProviderAvailability,
+  providerConfigurationAction,
 } from "../providers/runtime/availability.js";
 import {
   resolveExplicitProvider,
@@ -67,9 +70,111 @@ function readConfiguredNumber(providerConfig: Record<string, unknown>, key: stri
 
 function readConfiguredSort(
   providerConfig: Record<string, unknown>,
+  sourceType: SourceType,
 ): SearchOptions["sortBy"] | undefined {
   const value = providerConfig.defaultSort;
-  return value === "relevance" || value === "date" || value === "citations" ? value : undefined;
+  if (value === "relevance" || value === "date") return value;
+  return sourceType === "academic" && value === "citations" ? value : undefined;
+}
+
+interface ResolvedSearchSort {
+  value: NonNullable<SearchOptions["sortBy"]>;
+  origin: SearchResultOrdering["origin"];
+}
+
+function resolveSearchSort(
+  config: ResolvedConfig,
+  manifest: ProviderManifest,
+  request: ProviderSearchRequest,
+): ResolvedSearchSort {
+  if (request.sortBy) return { value: request.sortBy, origin: "request" };
+  const configured = readConfiguredSort(getProviderConfig(config, manifest.id), manifest.sourceType);
+  if (configured) return { value: configured, origin: "provider_config" };
+  const searchDefault = manifest.sourceType === "academic"
+    ? config.search.defaultAcademicSort
+    : manifest.sourceType === "patent"
+      ? config.search.defaultPatentSort
+      : undefined;
+  if (searchDefault) return { value: searchDefault, origin: "search_config" };
+  return { value: "relevance", origin: "builtin" };
+}
+
+function citationValue(item: ResourceItem): number | undefined {
+  return typeof item.citationCount === "number" && Number.isFinite(item.citationCount) && item.citationCount >= 0
+    ? item.citationCount
+    : undefined;
+}
+
+function dateValue(item: ResourceItem): number | undefined {
+  if (typeof item.date !== "string" || item.date.trim() === "") return undefined;
+  const parsed = Date.parse(item.date);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function applyReturnedPageOrdering(
+  result: SearchResult,
+  resolved: ResolvedSearchSort,
+): SearchResult {
+  if (resolved.value === "relevance") {
+    return {
+      ...result,
+      ordering: {
+        requested: resolved.value,
+        origin: resolved.origin,
+        scope: "provider",
+        mode: "provider",
+        applied: true,
+        valueCount: result.items.length,
+        missingCount: 0,
+        reordered: false,
+      },
+    };
+  }
+
+  const readValue = resolved.value === "citations" ? citationValue : dateValue;
+  const indexed = result.items.map((item, index) => ({ item, index, value: readValue(item) }));
+  const valueCount = indexed.filter((entry) => entry.value !== undefined).length;
+  if (result.items.length > 0 && valueCount === 0) {
+    return {
+      ...result,
+      ordering: {
+        requested: resolved.value,
+        origin: resolved.origin,
+        scope: "returned_page",
+        mode: "unsupported",
+        applied: false,
+        direction: "desc",
+        valueCount: 0,
+        missingCount: result.items.length,
+        reordered: false,
+      },
+    };
+  }
+
+  const sorted = [...indexed].sort((left, right) => {
+    if (left.value !== undefined && right.value !== undefined) {
+      return right.value - left.value || left.index - right.index;
+    }
+    if (left.value !== undefined) return -1;
+    if (right.value !== undefined) return 1;
+    return left.index - right.index;
+  });
+  const reordered = sorted.some((entry, index) => entry.index !== index);
+  return {
+    ...result,
+    items: sorted.map((entry) => entry.item),
+    ordering: {
+      requested: resolved.value,
+      origin: resolved.origin,
+      scope: "returned_page",
+      mode: "post_page",
+      applied: true,
+      direction: "desc",
+      valueCount,
+      missingCount: result.items.length - valueCount,
+      reordered,
+    },
+  };
 }
 
 function clampPositive(value: number, fallback: number): number {
@@ -109,6 +214,7 @@ export function resolveSearchOptions(
 ): SearchOptions {
   const providerConfig = getProviderConfig(config, manifest.id);
   const defaultMaxResults = clampPositive(config.defaults.maxResults, 10);
+  const sort = resolveSearchSort(config, manifest, request);
   return {
     maxResults: resolveScopedMaxResults({
       requested: request.maxResults,
@@ -119,12 +225,12 @@ export function resolveSearchOptions(
     page: request.page && request.page > 0 ? Math.floor(request.page) : 1,
     year: request.year,
     author: request.author,
-    sortBy: request.sortBy ?? readConfiguredSort(providerConfig) ?? "relevance",
+    sortBy: sort.value,
     extra: request.extra,
   };
 }
 
-async function loadRuntimeProvider(
+export async function loadProviderRuntimeFromSummary(
   config: ResolvedConfig,
   provider: InstalledProviderSummary,
 ): Promise<LoadedNodeProvider> {
@@ -164,6 +270,7 @@ function toSkippedProviderResult(
   request: ProviderSearchRequest,
   providerId: string,
   reasons: readonly string[],
+  action?: SearchResult["action"],
 ): SearchResult {
   return {
     platform: providerId,
@@ -173,6 +280,7 @@ function toSkippedProviderResult(
     page: request.page ?? 1,
     skipped: true,
     error: reasons.length > 0 ? reasons.join("; ") : "provider is not runnable",
+    ...(action ? { action } : {}),
   };
 }
 
@@ -230,17 +338,30 @@ export async function runProviderSearch(
   const providersById = new Map(providers.map((provider) => [provider.id, provider]));
 
   const runSingle = async (provider: InstalledProviderSummary): Promise<SearchResult> => {
-    const runtime = await loadRuntimeProvider(config, provider);
-    return runtime.provider.search(
-      request.query,
-      resolveSearchOptions(config, provider.manifest!, request),
-    );
+    const runtime = await loadProviderRuntimeFromSummary(config, provider);
+    const manifest = provider.manifest!;
+    const options = resolveSearchOptions(config, manifest, request);
+    const result = await runtime.provider.search(request.query, options);
+    return applyReturnedPageOrdering(result, resolveSearchSort(config, manifest, request));
   };
 
   const settled = await Promise.allSettled(
     selectedEntries.map(async (entry): Promise<SearchResult> => {
       if (!entry.runnable) {
-        return toSkippedProviderResult(request, entry.id, entry.readinessReasons);
+        const manifest = providersById.get(entry.id)?.manifest;
+        const explicitlyRequested = entry.selectionReasons.some((reason) => (
+          reason.startsWith("request source:") && reason !== "request source:all"
+        ));
+        const needsMissingConfig = entry.enabled && entry.missingConfigKeys.length > 0;
+        const needsExplicitEnable = entry.intent === "auto" && !entry.enabled && explicitlyRequested;
+        const action = manifest && (needsMissingConfig || needsExplicitEnable)
+          ? providerConfigurationAction({
+              providerId: entry.id,
+              schema: manifest.configSchema,
+              missingConfigKeys: entry.missingConfigKeys,
+            })
+          : undefined;
+        return toSkippedProviderResult(request, entry.id, entry.readinessReasons, action);
       }
       const provider = providersById.get(entry.id);
       if (!provider) {
@@ -290,6 +411,6 @@ export async function loadInstalledProviderRuntime(
   }
   return {
     provider,
-    runtime: await loadRuntimeProvider(config, provider),
+    runtime: await loadProviderRuntimeFromSummary(config, provider),
   };
 }

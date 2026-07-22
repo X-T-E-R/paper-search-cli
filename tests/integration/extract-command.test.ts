@@ -41,6 +41,11 @@ async function writeProjectConfig(
       `root = "${tomlPath(workspaceRoot)}"`,
       'defaultCollection = "Inbox"',
       "",
+      "[storage]",
+      `artifactRoot = "${tomlPath(path.join(root, "artifact-storage"))}"`,
+      `extractionRoot = "${tomlPath(path.join(root, "extraction-storage"))}"`,
+      `exportRoot = "${tomlPath(path.join(root, "exports"))}"`,
+      "",
       "[platform.fixture-markdown-extractor]",
       'mode = "integration"',
       "",
@@ -128,13 +133,19 @@ describe("extract command", () => {
     expect(data.markdown).toContain("Attachment: standalone");
     expect(data.markdown).toContain("Mode: integration");
 
-    await expect(readFile(path.join(workspaceRoot, data.record.outputs.markdownPath!), "utf8")).resolves.toBe(
-      data.markdown,
-    );
+    expect(data.record.outputs.markdownPath).toBeUndefined();
+    expect(data.record.outputs.markdownStorage).toMatchObject({
+      schemaVersion: 1,
+      sink: "local",
+      area: "extraction",
+      root: path.join(root, "extraction-storage"),
+      key: `${data.record.id}/content.md`,
+    });
+    await expect(readFile(data.markdownPath, "utf8")).resolves.toBe(data.markdown);
     await expect(
       readFile(path.join(workspaceRoot, "material", "extractions", `${data.record.id}.json`), "utf8"),
     ).resolves.toContain('"backend": "fixture-markdown-extractor"');
-    await expect(readFile(path.join(workspaceRoot, data.record.outputs.jsonPath!), "utf8")).resolves.toContain(
+    await expect(readFile(data.jsonPath!, "utf8")).resolves.toContain(
       '"fixture": true',
     );
   });
@@ -202,9 +213,9 @@ describe("extract command", () => {
 
     const savedRecord = JSON.parse(
       await readFile(path.join(workspaceRoot, "material", "extractions", `${data.record.id}.json`), "utf8"),
-    ) as { itemId?: string; outputs?: { markdownPath?: string } };
+    ) as { itemId?: string; outputs?: { markdownStorage?: { root: string; key: string } } };
     expect(savedRecord.itemId).toBe("item-123");
-    await expect(readFile(path.join(workspaceRoot, savedRecord.outputs!.markdownPath!), "utf8")).resolves.toBe(
+    await expect(readFile(path.join(savedRecord.outputs!.markdownStorage!.root, savedRecord.outputs!.markdownStorage!.key), "utf8")).resolves.toBe(
       data.markdown,
     );
   });
@@ -240,6 +251,7 @@ describe("extract command", () => {
     });
     expect(JSON.stringify(result.envelope.data)).toContain("<new-extraction-id>");
     await expect(stat(path.join(workspaceRoot, "material"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects path-like --attach-to values before writing extraction outputs or records", async () => {
@@ -264,5 +276,65 @@ describe("extract command", () => {
       errors: ["Invalid workspace item id: ../bad-item"],
     });
     await expect(stat(path.join(workspaceRoot, "material"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports committed extraction outputs as orphans when record metadata cannot be written", async () => {
+    const { root, workspaceRoot, inputPath } = await createWorkspaceFixture("paper-search-extract-orphan-");
+    await mkdir(path.join(workspaceRoot, "material"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, "material", "extractions"), "block record directory", "utf8");
+
+    const result = await runExtractCommand(root, [
+      "extract",
+      inputPath,
+      "--provider",
+      "fixture-markdown-extractor",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "extract",
+      tool: "extract",
+      data: null,
+      orphan: {
+        outcome: "orphaned",
+        commitStage: "metadata",
+        extractionId: expect.any(String),
+        outputs: [
+          {
+            kind: "markdown",
+            storage: {
+              schemaVersion: 1,
+              sink: "local",
+              area: "extraction",
+              root: path.join(root, "extraction-storage"),
+              key: expect.stringMatching(/\/content\.md$/u),
+              sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+            },
+          },
+          {
+            kind: "json",
+            storage: {
+              schemaVersion: 1,
+              sink: "local",
+              area: "extraction",
+              root: path.join(root, "extraction-storage"),
+              key: expect.stringMatching(/\/result\.json$/u),
+              sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+            },
+          },
+        ],
+        metadataPath: expect.stringMatching(/[\\/]material[\\/]extractions[\\/][^\\/]+\.json$/u),
+      },
+      diagnostics: { partial: true, orphanedBytes: true, commitStage: "metadata" },
+      errors: [expect.stringContaining("metadata commit failed after bytes were committed")],
+    });
+    const orphan = (result.envelope as typeof result.envelope & {
+      orphan: { outputs: Array<{ kind: string; path: string }> };
+    }).orphan;
+    await expect(readFile(orphan.outputs.find((output) => output.kind === "markdown")!.path, "utf8")).resolves.toContain(
+      "# Fixture Markdown Extraction",
+    );
   });
 });

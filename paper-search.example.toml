@@ -1,14 +1,64 @@
 schemaVersion = 1
 
+# This is a user-wide config example, so the implicit context is global.
+# Run `paper-search context init <project>` to create a project-local context.
+
 [providers]
 installDir = "~/.paper-search/providers"
 autoUpdate = false
 allowReleaseFallback = true
 
 [workspace]
-root = "./.paper-search/workspace"
+root = "~/.paper-search/workspace"
 defaultSink = "workspace"
 defaultCollection = "inbox"
+
+# Material files, portable exports, and durable history are independent from
+# workspace bibliographic records. Relative paths in an explicit config remain
+# relative to that config file; these conventional defaults are user-wide.
+[storage]
+artifactRoot = "~/.paper-search/storage/artifacts"
+extractionRoot = "~/.paper-search/storage/extractions"
+exportRoot = "~/.paper-search/exports"
+
+[material]
+# A successful download creates or reuses a selected workspace item. Use
+# "materialized" to keep downloaded artifacts standalone instead.
+downloadDisposition = "selected"
+
+# Optional visible-browser DOI fallback. Accepted only in this conventional
+# user config, never in project or explicit config files.
+[institutional]
+enabled = false
+pythonExecutable = ""
+checkoutRoot = ""
+timeoutMs = 900000
+maxPdfBytes = 104857600
+
+# Agent-assisted continuation authorization is separate from browser-control
+# capability. "allow" requires explicit profile ids; "off" does not block a
+# human running the continuation in a local TTY.
+[institutional.agentControl]
+mode = "ask"
+allowedProfiles = []
+
+[runs]
+root = "~/.paper-search/runs"
+# -1 means that age alone never makes a run eligible for explicit pruning.
+maxAgeDays = -1
+# Real discovery/search calls are recorded unless a config or invocation opts out.
+recordByDefault = true
+
+# Optional Zotero MCP Neo connection plus user-wide selection defaults.
+[zotero]
+enabled = false
+endpoint = "http://127.0.0.1:23120/mcp"
+timeoutMs = 15000
+unavailable = "error"
+syncOnSelected = false
+collectionKeys = []
+attachmentMode = "none" # none | link | import
+markdownMode = "note"   # none | note | link | import
 
 [server]
 enabled = false
@@ -32,6 +82,10 @@ envVar = "PAPER_SEARCH_RUN_SMOKE"
 [search]
 defaultAcademicPresets = ["general"]
 defaultPatentPresets = ["patents"]
+# Per-provider defaultSort overrides these global fallbacks. Explicit CLI/tool
+# sortBy wins over both. date and citations mean descending order.
+defaultAcademicSort = "relevance"
+defaultPatentSort = "relevance"
 
 # User tags are additive local source sets. Built-in taxonomy is unchanged.
 [search.classifications.lab-preferred]

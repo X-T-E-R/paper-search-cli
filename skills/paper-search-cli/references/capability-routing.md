@@ -16,14 +16,18 @@ node scripts/paper-search.mjs help
 | Search through configured External Search v1 | `discover` | `web`, `web-search`, `web_search` | `web_search` |
 | Resolve DOI/PMID/arXiv/ISBN/URL metadata | `identify` | `lookup`, `resource-lookup`, `resource_lookup` | `resource_lookup` |
 | Fetch patent detail blocks | `identify` | `patent-detail`, `patent_detail` | `patent_detail` |
-| Rank, dedupe, or inspect source metrics | `assess` | Reserved group ([ADR-0003](../../../docs/decisions/ADR-0003-assess-capability-group-disposition.md)): no implemented tools or commands. Use live catalog output and result diagnostics only. | None; reserved. |
+| Inspect checksum-bound observations, conflicts, provenance, and an optional explicit policy | `assess` | `assess plan`, `assess run`, `assess show`, `assess list` | `assessment_run`, `assessment_show`, `assessment_list` |
 | Acquire or record an artifact from a URL, workspace item, or DOI | `acquire` | `artifact download`, `artifact list`, `artifact show` | `artifact_download`, `artifact_list`, `artifact_show` |
 | Attach or record a PDF for a saved item | `acquire` | `resource-pdf`, `resource_pdf`, `pdf` | `resource_pdf` |
 | Extract Markdown/JSON/assets from an artifact, URL, or file | `extract` | `extract` | `extract` |
 | Add, list, or export local workspace records | `organize` | `resource-add`, `resource_add`, `add`, `collection-list`, `collection_list`, `collections`, `workspace-export`, `resource-export`, `resource_export` | `resource_add`, `collection_list`, `workspace_export` |
 | Run row-based local flows | `orchestrate` | `batch` | Uses canonical row tool names. |
 | Plan or run material ingest and status | `orchestrate` | `material ingest`, `material status` | `material_ingest`, `material_status` |
-| Inspect source expansion/readiness, retained-checkout state, config, registries/providers, help, tools, or MCP | `operate` | `search-plan`, `status`, `doctor`, `paths`, `setup`, `self`, `config`, `registries`, `providers`, `material-providers`, `platform-status`, `platform_status`, `tools`, `help`, `mcp serve`, `run` | `mcp_help`, `material_provider_list_installed`, `platform_status` plus management command envelopes |
+| Durably wrap an allowlisted discovery tool | `orchestrate` | `run <tool>` | `research_run` |
+| Plan, run, resume, or inspect citation traversal | `orchestrate` | `citation plan`, `citation run`, `citation resume`, `citation status` | `citation_expand`, `citation_run_status` |
+| Initialize or inspect the nearest search context | `operate` | `context init`, `context status` | CLI-only |
+| Inspect durable runs or plan pruning | `operate` | `runs list`, `runs show`, `runs prune` | `run_list`, `run_show`, `run_prune_plan` |
+| Inspect source expansion/readiness, retained-checkout state, config, registries/providers, help, tools, or MCP | `operate` | `search-plan`, `status`, `doctor`, `paths`, `setup`, `self`, `config`, `registries`, `providers`, `material-providers`, `platform-status`, `platform_status`, `tools`, `help`, `mcp serve` | `mcp_help`, `material_provider_list_installed`, `platform_status` plus management command envelopes |
 
 ## Search and Identification
 
@@ -35,6 +39,45 @@ node scripts/paper-search.mjs help
 - Use `web` only when the user-level `external-search.toml` integration is configured. General web browsing belongs to the normal browser/search route unless the user explicitly wants paper-search.
 
 Keep first passes small with `--max-results`. Use `platform-status --json` for static external-search readiness and `doctor --json` for its no-network probe.
+
+## Default history and explicit opt-out
+
+Direct `academic`, `patent`, `lookup`, optional `web`, canonical/MCP, and batch
+discovery calls retain a sanitized request, resolved source selection,
+diagnostics, provenance, failures, and terminal result by default. Paper Search
+uses the nearest ancestor `paper-search.toml` or `.paper-search.toml`; without
+one, it falls back to the user-global context and emits a short hint. Run
+`context init` once for a standalone project and `context status` to inspect the
+effective context. Fresh Paperflow workspaces already mount the run root as
+`search_runs`, so Paperflow reads the same files without per-search import.
+
+Use CLI/batch `--no-history`, canonical/MCP `recordHistory: false`, or
+`runs.recordByDefault = false` only for an explicit opt-out. `run
+<canonical-tool>` and canonical/MCP `research_run` remain the explicitly durable
+forms. The durable discovery set is `academic_search`, `patent_search`,
+`resource_lookup`, `patent_detail`, and optional `web_search`.
+
+Use `runs list` and `runs show` for inspection. `runs prune` is a no-write plan
+unless `--apply` is present. The configured default `maxAgeDays = -1` makes no
+run age-eligible; it does not trigger automatic deletion. Run export, pin/unpin,
+and applied pruning are CLI-only.
+
+## Citation expansion
+
+Use `citation plan` before a bounded run. Supply one or more exact identifiers,
+repeat `--provider` to union graph-capable providers, repeat `--direction` for
+backward and forward traversal, and set depth/breadth/node/edge/page limits.
+Plans perform no provider calls or writes. Runs checkpoint each valid provider
+page; resume interrupted work with `citation resume <id>`. Results preserve
+per-edge provider provenance and are not automatically added to the workspace.
+
+## Transparent assessment
+
+Use `assess plan|run --snapshot <path> --sha256 <digest>` for immutable local
+observation snapshots. An optional `--policy <path>` may produce a traceable
+`include`, `exclude`, or `review` disposition. Without a policy there is no
+disposition. Preserve missing and conflicting signals; do not turn the report
+into a universal quality score or user-independent acceptance decision.
 
 ## Material Acquisition, Extraction, and Ingest
 
@@ -61,29 +104,69 @@ For `artifact download`, `extract`, or `material ingest`, always route through d
    ```
 4. Execute only after the plan reports the expected provider, policy, source, and target paths.
 
+For an explicitly selected local PDF, use `local-pymupdf4llm`; it is never an
+implicit fallback or default:
+
+```bash
+node scripts/paper-search.mjs material setup-local-pymupdf4llm --python <absolute-python-3.11-path> --json
+node scripts/paper-search.mjs material setup-local-pymupdf4llm --python <absolute-python-3.11-path> --apply --json
+node scripts/paper-search.mjs extract <artifactId-or-pdfPath> --provider local-pymupdf4llm --policy local-offline-pdf --json
+```
+
+The provider is `network: false`, accepts only managed artifacts or explicit
+local PDF files, emits no image links/assets, and records parser/page/warning
+metadata. Treat `OCR_UNAVAILABLE` as a request for a separately provisioned OCR
+path; do not retry through another parser unless the user explicitly selects
+one.
+
 ### DOI Resolver Funnel
 
 `artifact download` and `material ingest` accept a bare DOI as input. A DOI is resolved to ordered candidate URLs through an installed resolver provider (manifest `kind` `artifact_resolver`), then the existing download path tries each candidate in order:
 
 - Select a specific resolver with `--resolver <id>`; otherwise the first usable installed resolver is used.
 - The canonical tool `artifact_download` takes the same selection as `resolverId` (snake-case alias `resolver_id`).
-- Dry-run plans list the resolver steps (`load-resolver`, `run-resolver`) before the download steps.
+- Dry-run plans list resolver loading and invocation before the download steps.
 - Resolver failures are typed in envelope diagnostics as `no_resolver`, `no_candidates`, or `resolver_error`, with resolver attempts preserved.
 
 Resolvers return candidate locations only; byte download stays in downloader providers.
 
-No networked material resolver, downloader, or extractor is built into the core CLI. Installed material providers must be discovered and validated at runtime; do not infer that MinerU or any other network extractor exists just because `extract` is available.
+Normal networked material resolution, byte download, and extraction require
+installed material providers; do not infer that MinerU exists just because
+`extract` is available. The one bounded exception is the existing built-in Jina
+Reader exact-URL adapter: `material ingest` may use it only as the terminal
+fallback declared in an exact HTTPS URL plan after `direct-url-downloader`
+reports only HTTP 401/403/429. Prefer the selected URL-capable extractor first. A
+fallback result with `artifact: null` is extraction-only; never describe it as
+a downloaded artifact. Identity mismatch, challenge content, and all-provider
+failure are terminal, and direct `artifact download` is unchanged.
+The official material registry publishes `direct-url-downloader` for bounded,
+provider-mediated acquisition from explicit HTTPS URLs. Its manifest requires
+CLI `>= 0.5.0`, and dry-run must show it as the selected acquire provider before
+execution.
 
 ## Local Workspace and Records
 
 - `resource-add` stores selected metadata in the local workspace sink.
-- `resource-pdf` records or downloads a PDF attachment for an existing workspace item and returns the workspace item id plus artifact id when available.
-- `artifact download` creates artifact records with provenance and attempt history.
+- `resource-pdf` is a compatibility projection over the installed
+  material-provider artifact path; it does not restore direct core fetching.
+- `artifact download` creates artifact records with provenance and attempt
+  history. After bytes commit it selects by default; configure
+  `material.downloadDisposition = "materialized"` to keep it standalone.
 - `extract` creates extraction records with output paths and cache status.
+- If `material ingest` reports `partial: true` at `commitStage: "extraction"`,
+  keep the committed artifact and run its returned `recoveryCommand`; do not
+  repeat acquisition.
 - `material status` reads workspace item, artifact, or extraction status and reports related artifact/extraction ids.
 - `workspace-export` writes portable local exports as JSON, JSONL, CSV, or BibTeX.
 
-Do not claim host-application writes; this CLI writes to its configured local workspace and export paths.
+Zotero MCP Neo is an optional selected-item projection. A user-global policy or
+project `zoteroBinding` may enable it for `resource-add` and successful selected
+downloads; unavailable hosts leave a pending receipt without failing local
+work. The explicit `zotero sink <itemId>` command remains plan-first: use
+`--preview`, then `--apply --ack <previewDigest>`. It supports mapped items,
+multiple existing collections, notes, and link/import attachments. Search hits
+alone never become Zotero items. Other workspace/material operations stay local
+unless an installed provider performs its declared network action.
 
 ## Operate Separately From Research Work
 

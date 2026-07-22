@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "@iarna/toml";
 import { isPlainConfigObject, setNestedValue } from "./env.js";
@@ -22,6 +22,30 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "workspace.root",
   "workspace.defaultSink",
   "workspace.defaultCollection",
+  "storage.artifactRoot",
+  "storage.extractionRoot",
+  "storage.exportRoot",
+  "material.downloadDisposition",
+  "institutional.enabled",
+  "institutional.pythonExecutable",
+  "institutional.checkoutRoot",
+  "institutional.timeoutMs",
+  "institutional.maxPdfBytes",
+  "runs.root",
+  "runs.maxAgeDays",
+  "runs.recordByDefault",
+  "zotero.enabled",
+  "zotero.endpoint",
+  "zotero.timeoutMs",
+  "zotero.unavailable",
+  "zotero.syncOnSelected",
+  "zotero.collectionKeys",
+  "zotero.attachmentMode",
+  "zotero.markdownMode",
+  "zoteroBinding.mode",
+  "zoteroBinding.collectionKeys",
+  "zoteroBinding.attachmentMode",
+  "zoteroBinding.markdownMode",
   "server.enabled",
   "server.transport",
   "server.host",
@@ -35,6 +59,8 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "smoke.envVar",
   "search.defaultAcademicPresets",
   "search.defaultPatentPresets",
+  "search.defaultAcademicSort",
+  "search.defaultPatentSort",
   "search.selection.mode",
   "search.selection.includeIds",
   "search.selection.excludeIds",
@@ -44,6 +70,12 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "search.selection.excludeContentKinds",
   "search.selection.includeAccess",
   "search.selection.excludeAccess",
+] as const;
+
+/** Safe to persist, but mutation is restricted to the dedicated user-authorization command. */
+const DEDICATED_NON_SECRET_KEYS = [
+  "institutional.agentControl.mode",
+  "institutional.agentControl.allowedProfiles",
 ] as const;
 
 export const CONFIGURABLE_DYNAMIC_KEY_PATTERNS = [
@@ -197,6 +229,7 @@ export function classifyConfigKey(
   const key = configKeyToString(segments);
   if ((LEGACY_OWNED_CONFIG_KEYS as readonly string[]).includes(key)) return "owned";
   if ((CONFIGURABLE_FIXED_KEYS as readonly string[]).includes(key)) return "non-secret";
+  if ((DEDICATED_NON_SECRET_KEYS as readonly string[]).includes(key)) return "non-secret";
   if (
     segments[0] === "search" &&
     (segments[1] === "classifications" || segments[1] === "presets") &&
@@ -362,6 +395,31 @@ export async function atomicWriteConfigFile(
   } catch (error) {
     await rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
+  }
+}
+
+export async function atomicCreateConfigFile(
+  filePath: string,
+  content: string,
+  mode?: number,
+): Promise<void> {
+  const directory = path.dirname(filePath);
+  await mkdir(directory, { recursive: true });
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    const handle = await open(temporaryPath, "wx", mode);
+    try {
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
   }
 }
 

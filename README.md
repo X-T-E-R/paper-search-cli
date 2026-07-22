@@ -1,13 +1,61 @@
-# paper-search-cli
+# Paper Search CLI X
 
-`paper-search-cli` is a standalone paper search and material workflow CLI. It
-combines a local command surface, an MCP server, a companion skill, search
-provider packages, and material provider packages under one capability-routed
-contract.
+Paper Search CLI X is a standalone, extensible research-discovery CLI. The X
+stands for extensibility and open possibilities: installed providers can add
+source-specific search, citation-graph, artifact, and extraction behavior while
+the core keeps one stable CLI, canonical-tool, MCP, batch, and Skill contract.
 
-Use it to search literature and web sources, normalize known identifiers, store
-local workspace records, acquire artifacts, extract Markdown or structured
-outputs, export workspace data, and expose the same operations to AI clients.
+Use it to search literature and optional web sources, normalize known
+identifiers, retain auditable search runs, expand citation graphs, and inspect
+transparent assessment signals. A nearest-directory context can keep those runs
+with a standalone project; fresh Paperflow workspaces provide the same context
+automatically. Paperflow can then read mounted history while its generated
+Paper Search config routes selected records, downloads, extractions, exports,
+and integration receipts into the project. Paperflow remains the directory and
+research-workflow layer, not the search engine. The command, package,
+configuration keys, canonical tool names,
+and MCP identity remain
+`paper-search`/`paper-search-cli` compatible.
+
+## Recommended workflow
+
+1. Run `paper-search doctor` and
+   `paper-search providers list-installed --kind search` to inspect local
+   readiness.
+2. For a standalone project, run `paper-search context init .` once. Fresh
+   Paperflow workspaces already contain a `paper-search.toml` whose `runs.root`
+   matches their `search_runs` role. Commands below either root discover the
+   nearest context automatically.
+3. Search one or more presets or sources. Repeated positive selectors form a
+   union. Real `academic`, `patent`, `lookup`, optional `web`, canonical/MCP, and
+   batch discovery calls are recorded by default. Use `--no-history`, canonical
+   `recordHistory: false`, or `runs.recordByDefault = false` only when you
+   explicitly do not want a local record. `paper-search run <canonical-tool>`
+   remains the explicit always-durable form. A search writes one full run to the
+   effective `runs.root`; a non-global run gets only a small locator in global
+   state, not a duplicate payload.
+4. Plan citation expansion before starting it, keep traversal limits explicit,
+   and resume an interrupted durable run by run id.
+5. In Paperflow, inspect the same mounted runs with `paperflow search history`,
+   `paperflow search show`, or `paperflow search candidates`. Promotion into a
+   bibliography, evidence store, or Zotero remains a selected-record action;
+   ordinary search hits are not accepted automatically.
+6. Plan artifact acquisition or extraction, then run it through installed
+   material providers. Core does not contain a source-specific PDF downloader
+   or network extractor.
+7. A successful download is selected by default. Set
+   `material.downloadDisposition = "materialized"` to retain the older
+   standalone-artifact behavior. Zotero remains optional: configure a global
+   selected-item policy or a workspace binding to project metadata and local
+   files through Zotero MCP Neo without changing the authoritative local copy.
+8. Assess explicit, checksum-bound observation snapshots and inspect their
+   provenance, conflicts, and policy trace. Paper Search does not choose which
+   papers you should accept.
+
+See [Paper Search CLI X workflows and storage](./docs/paper-search-cli-x.md) for
+the durable-run, citation, assessment, storage, material-provider, and Zotero
+contracts. See [Paperflow integration](./docs/paperflow-integration.md) for the
+decoupled project-directory boundary.
 
 ## Install from a retained checkout
 
@@ -115,7 +163,9 @@ node dist/cli.js tools --json
 ## Configure Paper Search
 
 Run `paper-search config path --all` to show the conventional configuration
-bundle:
+bundle. All conventional user state lives below `~/.paper-search/`; old
+`%APPDATA%/paper-search`, `$XDG_CONFIG_HOME/paper-search`, and
+`~/.config/paper-search` locations are migration inputs, not live authorities.
 
 - `config.toml` stores user-owned, non-secret runtime settings.
 - `subscriptions.toml` stores user-owned trusted registry definitions and is
@@ -128,16 +178,86 @@ bundle:
 
 Only `config.toml` is required. An example lives at
 [`paper-search.example.toml`](./paper-search.example.toml). Project settings are
-read from `paper-search.toml` and `.paper-search.toml` in the current directory;
-if both exist, they are merged in that order and the CLI reports a compatibility
-warning. `--config <path>` selects an additional explicit config file (or a
-directory containing `config.toml`).
+read from the nearest ancestor directory containing `paper-search.toml` or
+`.paper-search.toml`; if both exist there, they are merged in that order and the
+CLI reports a compatibility warning. `--config <path>` selects an additional
+explicit config file (or a directory containing `config.toml`).
+
+Default local records and outputs are separated by purpose:
+
+```text
+~/.paper-search/
+  config.toml              config.d/
+  subscriptions.toml       credentials.toml
+  external-search.toml     adapters/
+  providers/               cache/registries/
+  cache/archives/          state/
+  workspace/               runs/
+  storage/artifacts/       storage/extractions/
+  exports/
+```
+
+Override future compatibility/output locations with `workspace.root`,
+`storage.artifactRoot`, `storage.extractionRoot`, `storage.exportRoot`, and
+`runs.root`. Existing legacy `path` fields keep their original
+workspace-relative meaning. The default `runs.maxAgeDays = -1` disables
+age-based eligibility; Paper Search never prunes runs opportunistically during
+another command. Durable history is private local plaintext and may therefore
+be retained indefinitely until you explicitly run `runs prune --apply`.
+`runs.recordByDefault = true` records real discovery through friendly CLI,
+canonical/MCP, and batch surfaces. A direct CLI command may use `--no-history`;
+canonical/MCP callers may send `recordHistory: false`. Planning and dry-run
+operations remain write-free.
+
+Plain discovery does not need a destination flag. Paper Search walks upward from
+the invocation directory and uses the nearest `paper-search.toml` or
+`.paper-search.toml`. If that file declares a standalone or Paperflow context,
+the full run is written only to its `runs.root`; otherwise it is written to the
+effective global run root (`~/.paper-search/runs` by default). Context runs
+receive a private global locator so
+`runs show <id>` still works outside the project. Paper Search never parses
+`paperflow.yaml` and never promotes search hits into a bibliography or evidence
+store.
+
+Initialize a standalone context once, then call Paper Search normally from any
+descendant directory:
+
+```bash
+paper-search context init . --id my-review
+paper-search context status
+paper-search academic "retrieval augmented generation"
+```
+
+`context` is project/explicit configuration only. The conventional user
+`config.toml` cannot declare one, and `global` is reserved for the built-in
+fallback.
+
+The default standalone run root is `.paper-search/runs`. A fresh Paperflow
+workspace supplies its own root config and maps `runs.root` to `search_runs`, so
+no per-search import or `--paperflow`/`--save` flag is needed. `--no-history`
+creates neither a run nor a locator.
+
+Recorded discovery adds only `historyRecorded`, `runId`, compact `context`, and
+`savedTo` to diagnostics. Global fallback adds one short `hint`; configured
+contexts omit it.
+
+Downloads use `material.downloadDisposition = "selected"` by default. After
+bytes are committed, Paper Search creates or reuses a workspace item by DOI,
+source id, or URL and attaches the artifact to it. Set the value to
+`"materialized"` when downloads should remain standalone until an explicit
+`resource-add`/attachment step. Extraction alone does not imply selection.
+
+`workspace-export --store <safe-relative-key>` is the managed export path: it
+writes atomically below `storage.exportRoot`, rejects an existing target, and
+supports `--dry-run`. The existing `--out <path>` remains an explicit
+caller-working-directory path, while omitting both options continues to write
+the export to stdout.
 
 Effective values use this precedence, from lowest to highest:
 
 1. built-in defaults
 2. user `config.toml`
-3. project config
+3. nearest ancestor project config
 4. explicit `--config`
 5. user `credentials.toml` for credential keys
 6. `PAPER_SEARCH_*` environment variables
@@ -198,6 +318,58 @@ paper-search academic "foundation models" --preset general --exclude-source wos
 paper-search academic "formal verification" --platform all
 paper-search search-plan --type academic --preset general --category domain:computer-science
 ```
+
+Use `paper-search configure --json` to list only pending provider setup. Target
+one provider with `paper-search configure <id>` for the concise
+configure-now/later/disable flow. Non-interactive and JSON invocations never
+prompt; they return a credential-free command action instead. An absent
+`platform.<id>.enabled` means `auto`, `true` means explicitly enabled, and
+`false` disables both execution and setup reminders.
+
+### Search ordering and defaults
+
+Academic searches accept `--sort-by relevance|date|citations`; patent searches
+accept `--sort-by relevance|date`. `date` and `citations` always mean descending
+order. Sorting remains inside each provider result group because citation counts
+and pagination are not comparable across sources. For date or citation ordering,
+the host stably orders the returned provider page when usable metadata exists,
+puts missing values last, and reports a compact provider entry such as
+`diagnostics.ordering.crossref = "citations:page-desc"`. If no usable metadata
+exists, provider order is preserved and the entry ends in `:unsupported` with a
+warning. Internal ordering proof fields are not repeated in each result group.
+
+Set a user-wide preference in `config.toml` or a focused `config.d/*.toml` file:
+
+```toml
+[search]
+defaultAcademicSort = "citations"
+defaultPatentSort = "date"
+```
+
+The effective sort is chosen independently for every provider:
+
+1. explicit CLI or canonical `sortBy`
+2. `platform.<provider-id>.defaultSort`
+3. `search.defaultAcademicSort` or `search.defaultPatentSort`
+4. built-in `relevance`
+
+This lets a user prefer citation-descending results generally while keeping a
+source-specific exception. Invalid friendly CLI values fail immediately instead
+of silently falling back to relevance. Use `paper-search config explain
+search.defaultAcademicSort` to inspect the winning layered value.
+
+Other common search parameters keep deliberately narrow defaults:
+
+| Parameter | Behavior when omitted |
+| --- | --- |
+| `--max-results <n>` | `platform.<id>.maxResults`, then `defaults.maxResults` (10 by default), capped by the provider manifest. `0` selects configured defaults and `-1` requests the provider limit. |
+| `--page <n>` | Page 1 for every provider. |
+| `--year`, `--author` | No persistent implicit filter; supply them per academic query. |
+| `--extra <json>` | No value. This is provider-specific, so prefer it together with one exact `--source`. |
+
+Use `paper-search config set search.defaultAcademicSort citations` to persist a
+simple user-wide preference. Put larger preference sets in `config.d/` so the
+main `config.toml` stays readable.
 
 Legacy singular `--platform` and `--provider` inputs remain valid. Literal
 `--platform all` selects every installed, valid, configured, enabled, non-view
@@ -308,6 +480,14 @@ Common environment overrides use `PAPER_SEARCH_*` names:
 
 - `PAPER_SEARCH_PROVIDERS_INSTALL_DIR`
 - `PAPER_SEARCH_WORKSPACE_ROOT`
+- `PAPER_SEARCH_STORAGE_ARTIFACT_ROOT`
+- `PAPER_SEARCH_STORAGE_EXTRACTION_ROOT`
+- `PAPER_SEARCH_STORAGE_EXPORT_ROOT`
+- `PAPER_SEARCH_RUNS_ROOT`
+- `PAPER_SEARCH_RUNS_MAX_AGE_DAYS`
+- `PAPER_SEARCH_RUNS_RECORD_BY_DEFAULT`
+- `PAPER_SEARCH_ZOTERO_ENABLED`
+- `PAPER_SEARCH_ZOTERO_ENDPOINT`
 - `PAPER_SEARCH_PLATFORM__PATENTSTAR__LOGIN_NAME`
 - `PAPER_SEARCH_PLATFORM__PATENTSTAR__PASSWORD`
 
@@ -321,12 +501,12 @@ skill.
 | --- | --- | --- |
 | `discover` | Search academic and patent sources, plus optional generic external web search. | `academic`, `patent`, `web` |
 | `identify` | Resolve a known identifier, URL, or provider-native id to normalized metadata. | `lookup`, `patent-detail` |
-| `assess` | **Reserved** — rank, dedupe, and source/journal-level metrics (no shipped tools; promotion criteria in [ADR-0003](./docs/decisions/ADR-0003-assess-capability-group-disposition.md)). | — |
+| `assess` | Inspect checksum-bound observations, provenance, conflicts, and an optional explicit policy trace without an implicit universal verdict. | `assess plan`, `assess run`, `assess show`, `assess list` |
 | `acquire` | Fetch or record artifacts with provenance and attempt history. | `artifact download`, `artifact list`, `artifact show`, `resource-pdf` |
 | `extract` | Turn an artifact, URL, or file into Markdown, JSON, or assets through extractor providers. | `extract` |
 | `organize` | Store, tag, collect, and export workspace records. | `resource-add`, `collection-list`, `workspace-export` |
-| `orchestrate` | Run multi-step workflows over primitives. | `batch`, `material ingest`, `material status` |
-| `operate` | Inspect readiness and config, manage registries/providers, and run the server surface. | `status`, `doctor`, `config`, `registries`, `providers`, `platform-status`, `tools`, `help`, `mcp serve` |
+| `orchestrate` | Run durable discovery, citation expansion, and multi-step material workflows over primitives. | `run`, `citation`, `batch`, `material ingest`, `material status` |
+| `operate` | Inspect readiness, paths, durable runs, and config; manage registries/providers and server surfaces. | `status`, `doctor`, `paths`, `runs`, `config`, `registries`, `providers`, `platform-status`, `tools`, `help`, `mcp serve` |
 
 `operate` is a management layer. It is intentionally separate from research and
 material work so readiness checks, configuration, provider management, and MCP
@@ -345,6 +525,8 @@ interface ResultEnvelope<T> {
   tool: string;
   planned?: boolean;
   data: T | null;
+  state?: "action_required";
+  actions?: Array<{ id: string; kind: "configure_provider"; target: { kind: "provider"; id: string }; command: string }>;
   diagnostics?: Record<string, unknown>;
   warnings?: string[];
   errors?: string[];
@@ -357,6 +539,9 @@ with `planned: true`, carries the payload under `data`, and keeps operational
 details in `diagnostics`, `warnings`, `errors`, and `provenance`. Provider ids,
 policies, config paths, source counts, failed sources, elapsed time, and target
 paths belong in these envelope fields instead of ad-hoc command output.
+`state` and `actions` are omitted in ordinary terminal results. When setup is
+needed, actions contain no credential values and point to `paper-search
+configure <id>`.
 
 ## Providers
 
@@ -425,6 +610,9 @@ paper-search providers inspect-package ./tests/fixtures/material-extractors/fixt
 paper-search providers validate-manifest ./tests/fixtures/material-extractors/fixture-markdown-extractor/manifest.json --kind material --json
 paper-search providers plan-registry ./tests/fixtures/material-provider-registries/local/registry.json --kind material --json
 paper-search providers sync-registry ./tests/fixtures/material-provider-registries/local/registry.json --kind material --json
+paper-search providers install-zip ./provider.zip --kind material --json
+paper-search providers uninstall <id> --kind material --json
+paper-search providers rollback <id> --kind material --revision <sha256> --json
 ```
 
 `material-providers` remains as a compatibility alias for
@@ -439,6 +627,16 @@ Registry sync is plan-first. `providers sync-registry` reports a planned
 envelope by default; pass `--apply` only when you want to write provider changes.
 `sync-registry` and `install-zip` are unbound compatibility workflows: their
 receipts do not authorize subscription-bound updates.
+
+`install-zip` refuses to replace a subscription-bound provider by default. For
+an intentional local-source ownership transition, preview the exact ZIP with
+`--replace-bound`; apply the same command with `--apply` only after reviewing
+the pinned bound receipt/source, installed revision, and emitted rollback
+command. `providers uninstall` is also plan-first and retains the exact provider
+directory and receipt. Restore a retained revision only with the emitted
+`providers rollback <id> --kind <kind> --revision <sha256>` selector. These
+provider operations do not change credentials, configuration, run history, or
+other providers.
 
 Search-provider bundles are trusted extensions executed in the CLI process. The
 compatibility `vm` wrapper is not a hostile-code sandbox; install search
@@ -475,18 +673,29 @@ paper-search resource-add --item-file ./search.json --index 0 --collection-path 
 paper-search resource-pdf <workspace-item-id> --url https://example.org/paper.pdf --filename paper.pdf --json
 paper-search collection-list --flat --json
 paper-search workspace-export --collection-path Research --include-children --out ./paper-search-export.bib --json
+paper-search workspace-export --collection-path Research --store reports/research.bib --dry-run --json
+paper-search workspace-export --collection-path Research --store reports/research.bib --json
 ```
 
 `lookup` is the recommended step before `resource-add` when you already have a
 DOI, PMID, arXiv ID, ISBN, or URL. `patent-detail` is the recommended step
 before `resource-add` when patent claims, legal status, PDF URLs, or image URLs
-matter. `resource-pdf` and `pdf` remain compatibility entrypoints for local
-workspace PDF attachments; new material workflows should prefer artifact and
-extraction records.
+matter. `resource-pdf` and `pdf` remain compatibility entrypoints for existing
+workspace item ids. They use the same installed material-provider path as
+`artifact download`; core does not fetch the URL directly. New material
+workflows should prefer artifact and extraction records.
 
 ## Artifact and Extraction Records
 
-Material workflows store auditable records under the configured workspace root.
+Material workflows store auditable metadata records under the configured
+workspace root. Artifact bytes and extracted outputs use the independently
+configured `storage.artifactRoot` and `storage.extractionRoot`.
+
+With the default selected disposition, a successful `artifact download` or
+`material ingest` also creates or reuses the selected workspace item. Failed
+downloads do not select anything. `--no-download` records only the requested
+artifact, and `material.downloadDisposition = "materialized"` disables the
+implicit selection while preserving the downloaded file and artifact record.
 
 An artifact record describes a fetched, requested, resolved, or user-supplied
 file/URL snapshot. It includes:
@@ -505,8 +714,7 @@ from an artifact, local path, or URL. It includes:
   `cacheHit`
 - optional `itemId` linking the extraction to a workspace item
 - optional message from the extractor
-- output paths such as `material/extractions/<id>/content.md` and
-  `material/extractions/<id>/result.json`
+- versioned output references into the configured extraction storage root
 
 `artifact download` and `material ingest` also accept a DOI as input. The DOI
 is resolved to ordered candidate locations through an installed
@@ -516,6 +724,111 @@ candidate feeds the normal download path in order. Dry-run plans list the
 `load-resolver` and `run-resolver` steps, resolver failures are typed as
 `no_resolver`, `no_candidates`, or `resolver_error`, and resolved acquisitions
 record `resolverProviderId` and `resolverSource` in artifact provenance.
+
+### Optional institutional browser continuation
+
+Institutional acquisition is a user-mediated DOI fallback. It is disabled by
+default and configured only in `~/.paper-search/config.toml`:
+
+```toml
+[institutional]
+enabled = true
+pythonExecutable = "C:/absolute/path/to/python.exe"
+checkoutRoot = "C:/absolute/path/to/pinned/instsci-checkout"
+timeoutMs = 900000
+maxPdfBytes = 104857600
+
+[institutional.agentControl]
+mode = "ask"
+allowedProfiles = []
+```
+
+`artifact download <DOI> --institutional [--institution-profile <id>]` always
+tries the normal resolver/downloader first. If it produces no artifact, the
+command creates a continuation job without opening a browser. Inspect it with
+`institutional status|show`, check prerequisites with `institutional probe`,
+and run `institutional continue <job-id>` in a local interactive terminal.
+
+Agent-assisted continuation is a separate local authority. `ask` (the default)
+requires the user to approve and issue a short-lived, one-attempt receipt with
+`institutional agent-grant issue <job-id>`; pass it with
+`institutional continue <job-id> --agent-assisted --grant <id>`. `allow`
+requires an explicit profile allowlist set by
+`institutional agent-policy set allow --profile <id>` and does not ask again for
+that profile. `off` blocks agent-assisted attempts but never blocks the human TTY
+command. Inspect or change the durable user policy with
+`institutional agent-policy show|set`; revoke receipts with
+`institutional agent-grant revoke <id>|--all`. These controls authorize a
+continuation but do not provide browser-control capability. Policy mutation and
+grant issuance must be performed by the user in a local interactive TTY.
+
+Canonical and MCP callers may create and inspect sanitized jobs through
+`artifact_download` and `institutional_job_show`, but cannot continue them. A
+verified PDF is committed through the normal artifact, selection,
+Paperflow-root, and configured Zotero projection behavior. Cookies, browser
+profile paths, page content, signed URLs, and raw adapter diagnostics are not
+persisted. Paper Search does not install Python packages or browser runtimes.
+Committed artifact identity is allocated in the job before the sidecar runs, so
+a retry after a crash reconciles the same artifact, selection, and Zotero
+projection rather than creating a duplicate.
+
+The official material-provider registry includes `direct-url-downloader` for
+explicit HTTPS artifact URLs. It uses the injected material HTTP runtime's
+bounded Base64 response mode, so downloaded bytes retain provider provenance
+without granting provider bundles raw `fetch` access.
+
+The registry's `mineru-extractor` uses MinerU's document-model heuristic,
+including extensionless `arxiv.org/pdf/...` URLs, and follows the official
+language/OCR/optional-feature defaults. It then downloads the completed result
+ZIP through the same bounded transport and returns its primary Markdown entry.
+URL inputs and artifacts with a remote URL run live; artifact PDF metadata also
+selects the document pipeline when the remote URL has no extension. Local-only
+inputs remain an explicit unsupported path until the host implements MinerU's
+signed batch-upload flow.
+
+`material ingest` remains byte-first for an explicit HTTPS URL. If the selected
+`direct-url-downloader` is denied with HTTP 401, 403, or 429, the plan may declare an
+`exact_url_extraction` fallback: first the selected extractor when it advertises
+URL input, then the built-in exact-URL Jina Reader adapter. A successful
+fallback stores only a URL-sourced extraction record and Markdown/JSON output;
+the result reports `artifact: null`, `acquisition.status: "not_materialized"`,
+and artifact source count zero. It never fabricates artifact bytes or an
+artifact record. Jina content is accepted only when it reports the exact
+requested URL and is not a challenge page. Other HTTP statuses, non-HTTPS URLs,
+DOIs, workspace items, other downloader providers, and direct `artifact download` keep their existing
+fail-closed behavior.
+
+The registry also includes `local-pymupdf4llm` for explicit, offline extraction
+of a managed PDF artifact or a directly selected local PDF. It is never chosen
+implicitly, so installing it does not change MinerU or other default extractor
+routing. Install its provider package, then create the isolated Python 3.11
+runtime and name the provider on each extraction:
+
+```powershell
+paper-search material setup-local-pymupdf4llm --python C:\Path\To\python.exe
+paper-search material setup-local-pymupdf4llm --python C:\Path\To\python.exe --apply
+paper-search extract <artifactId-or-pdfPath> --provider local-pymupdf4llm --policy local-offline-pdf --json
+```
+
+The runtime is fixed to `pymupdf4llm 0.3.4`, `PyMuPDF 1.27.2.3`, and
+`tabulate 0.10.0` under the Paper Search home. PyMuPDF4LLM and PyMuPDF are dual
+licensed under GNU AGPL 3.0 or an Artifex commercial license; review that
+license choice for the deployment. The separately licensed optional
+`pymupdf-layout` extension is not installed. The provider declares
+`network: false`; the host starts only its fixed Python and packaged adapter,
+passes the authorized PDF through JSON stdin, and returns Markdown plus
+parser/page/warning metadata. Images and image links are disabled until managed
+asset commits exist. OCR is also absent initially, so an OCR request or a PDF
+whose text cannot be decoded without OCR fails as `OCR_UNAVAILABLE` instead of
+returning silently degraded text.
+
+For `material ingest <local-file>`, Paper Search preserves the source file and
+copies its bytes into `storage.artifactRoot` before committing the artifact
+record. The record contains a versioned storage reference, digest, and byte
+size, and extraction consumes that managed artifact. An extractor used by this
+orchestrated local-ingest path must advertise `artifact` input support. Direct
+`extract <local-file>` remains available for a one-off path-based extraction and
+does not copy the source into artifact storage.
 
 ```bash
 paper-search artifact download 10.1038/nature12373 --resolver unpaywall --dry-run --json
@@ -554,6 +867,16 @@ installDir = "$tmp/providers"
 [workspace]
 root = "$tmp/workspace"
 defaultCollection = "Inbox"
+
+[storage]
+artifactRoot = "$tmp/storage/artifacts"
+extractionRoot = "$tmp/storage/extractions"
+exportRoot = "$tmp/exports"
+
+[runs]
+root = "$tmp/runs"
+maxAgeDays = -1
+recordByDefault = true
 
 [platform.fixture-artifact-downloader]
 mode = "docs"
@@ -600,25 +923,30 @@ paper-search --config "$tmp/paper-search.toml" extract \
 paper-search --config "$tmp/paper-search.toml" material status "$artifact_id" --json
 ```
 
-The generated workspace contains artifact records under `material/artifacts/`,
-artifact bytes under `material/files/`, extraction records under
-`material/extractions/*.json`, and extracted Markdown/JSON under
-`material/extractions/<extraction-id>/`.
+The generated workspace contains artifact and extraction metadata records.
+Artifact bytes are written below `$tmp/storage/artifacts`; extracted Markdown,
+structured output, and assets are written below `$tmp/storage/extractions`.
 
 ## Batch and Precise Tool Calls
 
 `batch` accepts CSV, JSONL, JSON, and YAML task files. Supported rows include
-search, lookup, workspace, artifact, extract, and material ingest tools. With
-`--resume-from ./results.jsonl --out ./results.jsonl`, rows append durable JSONL
-results and keep both row `index` and row `id`.
+search, lookup, workspace, artifact, extract, material ingest,
+`citation_expand`, and `assessment_run`. With
+`--resume-from ./results.jsonl --out ./results.jsonl`, rows append JSONL results
+and keep both row `index` and row `id`.
 
-Use `run <canonical_tool>` when an agent or script needs a deterministic,
-schema-validated tool call:
+Use `run <tool>` when an agent or script needs a durable, schema-validated
+discovery call. It accepts only `academic_search`, `patent_search`,
+`resource_lookup`, `patent_detail`, and optional `web_search`:
 
 ```bash
-paper-search run material_status --arg target=item-123
-paper-search run artifact_download --json-args '{"input":"https://example.test/files/article.pdf","provider":"fixture-artifact-downloader","dry_run":true}'
+paper-search run academic_search \
+  --json-args '{"query":"retrieval augmented generation","presets":["general","computer-science"],"maxResults":5}'
+paper-search run resource_lookup --arg identifier=10.1145/3366423.3380130
 ```
+
+Use the friendly material commands shown above for local writes. Citation and
+assessment have their own plan/run commands and durable records.
 
 ## MCP Surface
 
@@ -682,4 +1010,4 @@ required environment variables.
 
 ## License
 
-Paper Search CLI is available under the [MIT License](./LICENSE).
+Paper Search CLI X is available under the [MIT License](./LICENSE).

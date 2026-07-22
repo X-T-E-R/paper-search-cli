@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ArtifactAttempt, ArtifactProvenance, ArtifactRecord } from "./records.js";
+import { parseLocalStorageRef, resolveLegacyWorkspacePath, resolveLocalStorageRef } from "../storage/local.js";
+import { sanitizeForPersistence } from "../runtime/sanitizeUrl.js";
 
 export type { ArtifactRecord } from "./records.js";
 
@@ -125,6 +127,8 @@ function parseArtifactRecord(value: unknown): ArtifactRecord {
     fail("status must be recorded | downloaded | requested | failed");
   }
   if (!Array.isArray(value.attempts)) fail("attempts must be an array");
+  const storage = value.storage !== undefined ? parseLocalStorageRef(value.storage, "storage") : undefined;
+  if (storage && storage.area !== "artifact") fail("storage.area must be artifact");
   return {
     id: assertArtifactId(assertString(value.id, "id")),
     kind,
@@ -133,6 +137,7 @@ function parseArtifactRecord(value: unknown): ArtifactRecord {
     ...(value.filename !== undefined ? { filename: assertOptionalString(value.filename, "filename") } : {}),
     ...(value.contentType !== undefined ? { contentType: assertOptionalString(value.contentType, "contentType") } : {}),
     ...(value.path !== undefined ? { path: assertOptionalString(value.path, "path") } : {}),
+    ...(storage ? { storage } : {}),
     ...(value.remoteUrl !== undefined ? { remoteUrl: assertOptionalString(value.remoteUrl, "remoteUrl") } : {}),
     ...(value.sizeBytes !== undefined ? { sizeBytes: assertOptionalNumber(value.sizeBytes, "sizeBytes") } : {}),
     provenance: parseArtifactProvenance(value.provenance),
@@ -147,15 +152,26 @@ export async function createArtifactRecord(
   input: CreateArtifactRecordInput,
 ): Promise<ArtifactRecord> {
   await ensureArtifactRecordDir(workspaceRoot);
-  const record = parseArtifactRecord({
+  const record = parseArtifactRecord(sanitizeForPersistence({
     ...input,
     id: input.id ?? randomUUID(),
     createdAt: input.createdAt ?? new Date().toISOString(),
-  });
-  await writeFile(artifactRecordPath(workspaceRoot, record.id), `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-  });
+  }));
+  const target = artifactRecordPath(workspaceRoot, record.id);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    try {
+      await lstat(target);
+      fail(`Artifact record already exists: ${record.id}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    await rename(temporary, target);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return record;
 }
 
@@ -169,6 +185,16 @@ export async function readArtifactRecord(
     if (isNotFoundError(error)) return null;
     throw error;
   }
+}
+
+/** Resolve new captured storage refs first; legacy paths keep workspace-relative meaning. */
+export async function resolveArtifactRecordPath(
+  workspaceRoot: string,
+  record: ArtifactRecord,
+): Promise<string | null> {
+  if (record.storage) return resolveLocalStorageRef(record.storage);
+  if (record.path) return resolveLegacyWorkspacePath(workspaceRoot, record.path);
+  return null;
 }
 
 export async function listArtifactRecords(

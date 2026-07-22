@@ -6,7 +6,7 @@ import { loadConfig, validateConfigFiles } from "../../src/config/load.js";
 import { resolveConfigFragmentDirectory } from "../../src/config/paths.js";
 
 const tempDirs: string[] = [];
-let originalAppData: string | undefined;
+let originalPaperSearchHome: string | undefined;
 
 async function createRoot(prefix: string): Promise<{
   root: string;
@@ -16,12 +16,12 @@ async function createRoot(prefix: string): Promise<{
 }> {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
   tempDirs.push(root);
-  const appRoot = path.join(root, "appdata", "paper-search");
+  const appRoot = path.join(root, "paper-search-home");
   const projectRoot = path.join(root, "project");
   await mkdir(appRoot, { recursive: true });
   await mkdir(projectRoot, { recursive: true });
-  originalAppData = process.env.APPDATA;
-  process.env.APPDATA = path.join(root, "appdata");
+  originalPaperSearchHome = process.env.PAPER_SEARCH_HOME;
+  process.env.PAPER_SEARCH_HOME = appRoot;
   return {
     root,
     appRoot,
@@ -31,8 +31,9 @@ async function createRoot(prefix: string): Promise<{
 }
 
 afterEach(async () => {
-  process.env.APPDATA = originalAppData;
-  originalAppData = undefined;
+  if (originalPaperSearchHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+  else process.env.PAPER_SEARCH_HOME = originalPaperSearchHome;
+  originalPaperSearchHome = undefined;
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
   tempDirs.length = 0;
 });

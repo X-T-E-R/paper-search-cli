@@ -8,6 +8,7 @@ import {
   showSubscription,
 } from "../subscriptions/service.js";
 import type { RegistryRuntimeKind } from "../subscriptions/types.js";
+import { acceptAlwaysJsonFlag } from "./alwaysJson.js";
 
 interface ApplyOptions { apply?: boolean }
 interface AddOptions extends ApplyOptions { kind: string }
@@ -50,12 +51,14 @@ async function emit(io: Io, tool: string, action: () => Promise<unknown>, planne
 export function registerRegistriesCommands(program: Command, io: Io): void {
   const registries = program.command("registries").description("Manage trusted registry subscriptions.");
 
-  registries.command("list").action(() => emit(io, "registries_list", listSubscriptions));
-  registries.command("show <name>").action((name: string) =>
+  acceptAlwaysJsonFlag(registries.command("list"))
+    .action(() => emit(io, "registries_list", listSubscriptions));
+  acceptAlwaysJsonFlag(registries.command("show <name>"))
+    .action((name: string) =>
     emit(io, "registries_show", () => showSubscription(name)));
 
-  registries
-    .command("add <name> <url>")
+  acceptAlwaysJsonFlag(registries
+    .command("add <name> <url>"))
     .requiredOption("--kind <kind>", "search or material")
     .option("--apply", "apply the displayed trust-change plan")
     .action((name: string, url: string, options: AddOptions) =>
@@ -66,8 +69,8 @@ export function registerRegistriesCommands(program: Command, io: Io): void {
         !options.apply,
       ));
 
-  registries
-    .command("rebind <name> <url>")
+  acceptAlwaysJsonFlag(registries
+    .command("rebind <name> <url>"))
     .option("--orphan-dependents", "retain dependent providers as orphaned")
     .option("--apply", "apply the displayed trust-change plan")
     .action((name: string, url: string, options: OrphanOptions) =>
@@ -84,8 +87,8 @@ export function registerRegistriesCommands(program: Command, io: Io): void {
       ));
 
   for (const operation of ["enable", "disable"] as const) {
-    registries
-      .command(`${operation} <name>`)
+    acceptAlwaysJsonFlag(registries
+      .command(`${operation} <name>`))
       .option("--apply", "apply the displayed trust-change plan")
       .action((name: string, options: ApplyOptions) =>
         emit(
@@ -96,8 +99,8 @@ export function registerRegistriesCommands(program: Command, io: Io): void {
         ));
   }
 
-  registries
-    .command("remove <name>")
+  acceptAlwaysJsonFlag(registries
+    .command("remove <name>"))
     .option("--orphan-dependents", "retain dependent providers as orphaned")
     .option("--apply", "apply the displayed trust-change plan")
     .action((name: string, options: OrphanOptions) =>
@@ -112,8 +115,8 @@ export function registerRegistriesCommands(program: Command, io: Io): void {
         !options.apply,
       ));
 
-  registries
+  acceptAlwaysJsonFlag(registries
     .command("refresh [name]")
-    .description("Explicitly fetch, validate, and snapshot registry metadata without installing providers.")
+    .description("Explicitly fetch, validate, and snapshot registry metadata without installing providers."))
     .action((name?: string) => emit(io, "registries_refresh", () => refreshSubscriptions(name), false));
 }

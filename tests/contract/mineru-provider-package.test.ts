@@ -1,9 +1,10 @@
 import path from "node:path";
-import { mkdir, rm } from "node:fs/promises";
-import { beforeEach, describe, expect, it } from "vitest";
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadMaterialProviderPackage } from "../../src/material/package/load.js";
 import {
   createMaterialRuntimeContext,
+  type MaterialHttpRequestOptions,
   type MaterialHttpTransport,
 } from "../../src/material/runtime/createContext.js";
 import { invokeMaterialProviderFactoryInNode } from "../../src/material/runtime/invokeNodeFactory.js";
@@ -32,15 +33,25 @@ function createQueuedTransport(steps: {
   post?: Array<unknown>;
   get?: Array<unknown>;
 }): MaterialHttpTransport & {
-  requests: Array<{ method: "GET" | "POST"; url: string; body?: unknown }>;
+  requests: Array<{
+    method: "GET" | "POST";
+    url: string;
+    body?: unknown;
+    options?: MaterialHttpRequestOptions;
+  }>;
 } {
-  const requests: Array<{ method: "GET" | "POST"; url: string; body?: unknown }> = [];
+  const requests: Array<{
+    method: "GET" | "POST";
+    url: string;
+    body?: unknown;
+    options?: MaterialHttpRequestOptions;
+  }> = [];
   const postQueue = [...(steps.post ?? [])];
   const getQueue = [...(steps.get ?? [])];
   return {
     requests,
-    async get<T = unknown>(url: string) {
-      requests.push({ method: "GET", url });
+    async get<T = unknown>(url: string, options?: MaterialHttpRequestOptions) {
+      requests.push({ method: "GET", url, options });
       if (getQueue.length === 0) {
         throw new Error(`Unexpected GET request in test transport: ${url}`);
       }
@@ -51,8 +62,12 @@ function createQueuedTransport(steps: {
         headers: {},
       };
     },
-    async post<T = unknown>(url: string, body?: string | Record<string, unknown>) {
-      requests.push({ method: "POST", url, body });
+    async post<T = unknown>(
+      url: string,
+      body?: string | Record<string, unknown>,
+      options?: MaterialHttpRequestOptions,
+    ) {
+      requests.push({ method: "POST", url, body, options });
       if (postQueue.length === 0) {
         throw new Error(`Unexpected POST request in test transport: ${url}`);
       }
@@ -70,6 +85,10 @@ describe("MinerU material provider package", () => {
   beforeEach(async () => {
     await rm(tmpRoot, { recursive: true, force: true });
     await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("loads through the material package loader with manifest, config, permissions, and capabilities", async () => {
@@ -93,6 +112,7 @@ describe("MinerU material provider package", () => {
         network: [
           "https://mineru.net/api/v4/*",
           "https://*.mineru.net/api/v4/*",
+          "https://cdn-mineru.openxlab.org.cn/*",
           "https://*.aliyuncs.com/*",
         ],
         localRead: true,
@@ -116,13 +136,25 @@ describe("MinerU material provider package", () => {
         type: "string",
         default: "auto",
       },
+      language: {
+        type: "string",
+        default: "ch",
+      },
       enableOcr: {
         type: "boolean",
-        default: true,
+        default: false,
+      },
+      maxResultZipBytes: {
+        type: "number",
+        default: 67108864,
+      },
+      maxMarkdownBytes: {
+        type: "number",
+        default: 16777216,
       },
       pollIntervalMs: {
         type: "number",
-        default: 2000,
+        default: 3000,
       },
       timeoutMs: {
         type: "number",
@@ -146,6 +178,7 @@ describe("MinerU material provider package", () => {
         language: "en",
         modelVersion: "auto",
         enableOcr: true,
+        enableTable: true,
         pageRanges: "9-10",
         extraFormats: ["json"],
       },
@@ -356,6 +389,7 @@ describe("MinerU material provider package", () => {
   });
 
   it("polls the URL task until completion using offline transport responses", async () => {
+    const signedUrlSentinel = "MINERU_SIGNED_URL_SENTINEL";
     const mineruPackagePath = path.join(packagesRoot, "mineru-extractor");
     const loaded = await loadMaterialProviderPackage(mineruPackagePath);
     const transport = createQueuedTransport({
@@ -376,7 +410,8 @@ describe("MinerU material provider package", () => {
             task_id: "task_polling",
             state: "done",
             markdown: "# Polled MinerU Markdown",
-            full_zip_url: "https://oss.aliyuncs.com/mineru/task_polling.zip",
+            full_zip_url:
+              `https://oss.aliyuncs.com/mineru/task_polling.zip?signature=${signedUrlSentinel}#${signedUrlSentinel}`,
           },
         },
       ],
@@ -422,12 +457,13 @@ describe("MinerU material provider package", () => {
     expect(result).toMatchObject({
       markdown: "# Polled MinerU Markdown",
       cacheHit: false,
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/task_polling.zip",
+      message: "MinerU extraction completed with inline Markdown.",
       metadata: {
         mineru: {
           done: true,
           outputs: {
-            fullZipUrl: "https://oss.aliyuncs.com/mineru/task_polling.zip",
+            fullZipUrl:
+              `https://oss.aliyuncs.com/mineru/task_polling.zip?signature=${signedUrlSentinel}#${signedUrlSentinel}`,
           },
         },
       },
@@ -446,5 +482,116 @@ describe("MinerU material provider package", () => {
         url: "https://mineru.net/api/v4/extract/task/task_polling",
       }),
     ]);
+    const persistedTask = await readFile(
+      path.join(
+        tmpRoot,
+        "polling-cache",
+        "mineru-extractor",
+        "tasks",
+        "task_polling.json",
+      ),
+      "utf8",
+    );
+    expect(persistedTask).not.toContain(signedUrlSentinel);
+    expect(persistedTask).toContain("signature");
+  });
+
+  it("bridges a manifest-declared process secret into MinerU without exposing it", async () => {
+    const sentinel = "process-only-mineru-sentinel";
+    vi.stubEnv("MINERU_TOKEN", sentinel);
+    vi.stubEnv("UNDECLARED_PROVIDER_SECRET", "must-not-cross");
+    const mineruPackagePath = path.join(packagesRoot, "mineru-extractor");
+    const loaded = await loadMaterialProviderPackage(mineruPackagePath);
+    const transport = createQueuedTransport({
+      post: [{ code: 1001, msg: "invalid token" }],
+    });
+    const runtimeContext = createMaterialRuntimeContext({
+      manifest: loaded.manifest,
+      providerConfig: {
+        endpoint: "https://mineru.net",
+        pollIntervalMs: 0,
+        timeoutMs: 5000,
+      },
+      cacheRoot: path.join(tmpRoot, "environment-secret-cache"),
+      workspaceRoot: path.join(tmpRoot, "environment-secret-workspace"),
+      transport,
+    });
+    const runtime = await invokeMaterialProviderFactoryInNode(
+      loaded.bundleCode,
+      loaded.manifest,
+      runtimeContext,
+    );
+    const extract = runtime.provider.extract;
+    if (!extract) throw new Error("MinerU provider did not expose extract()");
+
+    let failure: unknown;
+    try {
+      await extract({
+        source: { kind: "url", url: "https://example.org/environment-secret.pdf" },
+        options: {},
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain("MinerU API returned code 1001: invalid token");
+    expect(message).not.toContain(sentinel);
+    expect(runtimeContext.config.getRedacted("apiToken")).toBe("<redacted>");
+    expect(runtimeContext.config.get("UNDECLARED_PROVIDER_SECRET")).toBeUndefined();
+    expect(JSON.stringify(runtimeContext.config.getRedacted())).not.toContain(sentinel);
+    expect(transport.requests).toHaveLength(1);
+    expect(transport.requests[0]?.options?.headers?.authorization).toBe(`Bearer ${sentinel}`);
+  });
+
+  it("reports the upstream MinerU task id, state, and message when parsing fails", async () => {
+    const mineruPackagePath = path.join(packagesRoot, "mineru-extractor");
+    const loaded = await loadMaterialProviderPackage(mineruPackagePath);
+    const transport = createQueuedTransport({
+      post: [
+        {
+          code: 0,
+          data: { task_id: "task_parse_failed", state: "submitted" },
+        },
+      ],
+      get: [
+        {
+          code: 0,
+          data: {
+            task_id: "task_parse_failed",
+            state: "failed",
+            err_msg: "Error: parsing failed, please try again later",
+          },
+        },
+      ],
+    });
+    const runtimeContext = createMaterialRuntimeContext({
+      manifest: loaded.manifest,
+      providerConfig: {
+        apiToken: "fixture-token",
+        endpoint: "https://mineru.net",
+        pollIntervalMs: 0,
+        timeoutMs: 5000,
+      },
+      cacheRoot: path.join(tmpRoot, "failed-cache"),
+      workspaceRoot: path.join(tmpRoot, "failed-workspace"),
+      transport,
+    });
+    const runtime = await invokeMaterialProviderFactoryInNode(
+      loaded.bundleCode,
+      loaded.manifest,
+      runtimeContext,
+    );
+    const extract = runtime.provider.extract;
+    if (!extract) throw new Error("MinerU provider did not expose extract()");
+
+    await expect(extract({
+      source: { kind: "url", url: "https://example.org/parse-failure.pdf" },
+      options: {},
+    })).rejects.toThrow(
+      "extract() failed (mineru-extractor): MinerU upstream task task_parse_failed failed " +
+      "(state=failed): parsing failed, please try again later",
+    );
   });
 });

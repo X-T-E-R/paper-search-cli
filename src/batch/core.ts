@@ -2,25 +2,17 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
 import type { ResolvedConfig } from "../config/schema.js";
-import type { ResourceLookupRequest } from "../lookup/resource.js";
-import { planArtifactDownload, runArtifactDownload } from "../material/artifactDownload.js";
+import { AcquireResolverError, planArtifactDownload, runArtifactDownload } from "../material/artifactDownload.js";
 import { planMaterialExtraction, runMaterialExtraction } from "../material/extract.js";
 import { planMaterialIngest, runMaterialIngest } from "../material/ingest.js";
-import { runAcademicSearch } from "../search/academic.js";
-import { runPatentDetail, runPatentSearch } from "../search/patent.js";
-import { runResourceLookup } from "../lookup/resource.js";
-import type { PatentDetailResult, ResourceItem, SearchResult } from "../providers/sdk/types.js";
+import { planResourcePdfCompatibility, runResourcePdfCompatibility } from "../material/resourcePdf.js";
+import type { PatentDetailResult, ResourceItem } from "../providers/sdk/types.js";
 import {
-  addResourceToWorkspace,
-  fetchPdfForWorkspaceItem,
   type WorkspaceDetailPayload,
 } from "../workspace/store.js";
-import type { AcademicSearchRequest } from "../search/academic.js";
-import type { PatentDetailRequest, PatentSearchRequest } from "../search/patent.js";
+import { selectResourceIntoWorkspace } from "../workspace/selection.js";
 import { failEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
-import { runExternalWebSearch } from "../external-search/service.js";
-import type { ExternalWebSearchRequest } from "../external-search/types.js";
-import { ExternalSearchError } from "../external-search/errors.js";
+import { runCanonicalTool } from "../surface/toolRunner.js";
 
 export type BatchAddMode = "row" | "none" | "first";
 export type BatchOutputFormat = "json" | "jsonl" | "csv";
@@ -35,8 +27,15 @@ export type BatchTool =
   | "resource_pdf"
   | "artifact_download"
   | "extract"
-  | "material_ingest";
+  | "material_ingest"
+  | "citation_expand"
+  | "assessment_run";
 export type BatchMaterialTool = Extract<BatchTool, "artifact_download" | "extract" | "material_ingest">;
+export type BatchWorkflowTool = Extract<BatchTool, "citation_expand" | "assessment_run">;
+export type BatchDiscoveryTool = Extract<
+  BatchTool,
+  "academic_search" | "patent_search" | "patent_detail" | "web_search" | "resource_lookup"
+>;
 
 export interface BatchDefaults {
   addMode: BatchAddMode;
@@ -77,6 +76,8 @@ export interface BatchResult {
   selected?: Record<string, unknown>;
   add?: unknown;
   planned?: boolean;
+  state?: ResultEnvelope["state"];
+  actions?: ResultEnvelope["actions"];
   diagnostics?: ResultEnvelope["diagnostics"];
   warnings?: string[];
   errors?: string[];
@@ -88,6 +89,7 @@ export interface BatchResult {
 
 interface BatchRuntime {
   config: ResolvedConfig;
+  recordHistory?: boolean;
 }
 
 interface CollectionTarget {
@@ -103,6 +105,20 @@ const MATERIAL_BATCH_TOOLS = [
 
 function isMaterialBatchTool(tool: BatchTool): tool is BatchMaterialTool {
   return (MATERIAL_BATCH_TOOLS as readonly string[]).includes(tool);
+}
+
+function isWorkflowBatchTool(tool: BatchTool): tool is BatchWorkflowTool {
+  return tool === "citation_expand" || tool === "assessment_run";
+}
+
+function isDiscoveryBatchTool(tool: BatchTool): tool is BatchDiscoveryTool {
+  return [
+    "academic_search",
+    "patent_search",
+    "patent_detail",
+    "web_search",
+    "resource_lookup",
+  ].includes(tool);
 }
 
 export function parseCsvText(text: string): Record<string, string>[] {
@@ -263,7 +279,9 @@ export function buildBatchTask(
   const fetchPdf = parseBoolean(pick(row, ["fetch_pdf", "fetchPDF"]), defaults.fetchPdf);
   const tags = mergeUnique([...defaults.extraTags, ...parseTags(pick(row, ["tags", "tag"]))]);
   const collectionTarget = resolveCollectionTarget(row, defaults);
-  const addMode = isMaterialBatchTool(tool) ? "none" : resolveAddMode(row, defaults.addMode);
+  const addMode = isMaterialBatchTool(tool) || isWorkflowBatchTool(tool)
+    ? "none"
+    : resolveAddMode(row, defaults.addMode);
   const args = buildToolArgs(tool, row, defaults);
   const addArgs = cleanObject({
     collectionKey: collectionTarget.collectionKey,
@@ -326,7 +344,68 @@ export async function executeBatchTask(
   try {
     if (isMaterialBatchTool(task.tool)) {
       const envelope = await executeMaterialTool(runtime.config, task.tool, task.args);
-      return materialEnvelopeBatchResult(task, envelope, includeRaw);
+      return envelopeBatchResult(task, envelope, includeRaw);
+    }
+
+    if (isWorkflowBatchTool(task.tool)) {
+      const envelope = await runCanonicalTool(runtime.config, task.tool, task.args);
+      return envelopeBatchResult(task, envelope, includeRaw);
+    }
+
+    if (isDiscoveryBatchTool(task.tool)) {
+      const envelope = await runCanonicalTool(
+        runtime.config,
+        task.tool,
+        task.args,
+        runtime.recordHistory === undefined
+          ? {}
+          : { recordHistory: runtime.recordHistory },
+      );
+      if (!envelope.ok) return envelopeBatchResult(task, envelope, includeRaw);
+
+      const rawResult = envelope.data;
+      const candidates = extractCandidates(rawResult);
+      const selected = task.addMode === "first"
+        ? selectAddCandidate(task.tool, rawResult, candidates)
+        : undefined;
+      if (task.addMode === "first" && !selected) {
+        return cleanResult({
+          index: task.index,
+          id: task.id,
+          status: "error",
+          ok: false,
+          capability: envelope.capability,
+          tool: task.tool,
+          addMode: task.addMode,
+          resultCount: candidates.length,
+          diagnostics: envelope.diagnostics,
+          warnings: envelope.warnings,
+          provenance: envelope.provenance,
+          raw: includeRaw ? envelope : undefined,
+          error: missingAddCandidateError(task.tool, rawResult, candidates.length),
+        });
+      }
+
+      const addResult = selected
+        ? await executeSelectedAdd(runtime.config, task, rawResult, selected)
+        : undefined;
+      return cleanResult({
+        index: task.index,
+        id: task.id,
+        status: "ok",
+        ok: true,
+        capability: envelope.capability,
+        tool: task.tool,
+        data: envelope.data,
+        addMode: task.addMode,
+        resultCount: candidates.length,
+        selected: selected ? summarizeCandidate(selected) : undefined,
+        add: addResult,
+        diagnostics: envelope.diagnostics,
+        warnings: envelope.warnings,
+        provenance: envelope.provenance,
+        raw: includeRaw ? envelope : undefined,
+      });
     }
 
     if (task.tool === "resource_add") {
@@ -343,73 +422,25 @@ export async function executeBatchTask(
     }
 
     if (task.tool === "resource_pdf") {
-      const pdf = await executeLocalTool(runtime.config, task.tool, task.args);
-      return cleanResult({
-        index: task.index,
-        id: task.id,
-        status: isRecord(pdf) && pdf.ok === false ? "error" : "ok",
-        tool: task.tool,
-        addMode: "direct",
-        add: pdf,
-        raw: includeRaw ? pdf : undefined,
-        error: isRecord(pdf) && pdf.ok === false && typeof pdf.message === "string" ? pdf.message : undefined,
-      });
+      const envelope = await executeLocalTool(runtime.config, task.tool, task.args) as ResultEnvelope;
+      return envelopeBatchResult(task, envelope, includeRaw);
     }
 
-    const rawResult = await executeLocalTool(runtime.config, task.tool, task.args);
-    const candidates = extractCandidates(rawResult);
-    const selected = task.addMode === "first" ? selectAddCandidate(task.tool, rawResult, candidates) : undefined;
-    let addResult: unknown;
-
-    if (task.addMode === "first" && !selected) {
-      return cleanResult({
-        index: task.index,
-        id: task.id,
-        status: "error",
-        tool: task.tool,
-        addMode: task.addMode,
-        resultCount: candidates.length,
-        raw: includeRaw ? rawResult : undefined,
-        error: missingAddCandidateError(task.tool, rawResult, candidates.length),
-      });
-    }
-
-    if (selected) {
-      addResult = await executeSelectedAdd(runtime.config, task, rawResult, selected);
-    }
-
-    return cleanResult({
-      index: task.index,
-      id: task.id,
-      status: "ok",
-      tool: task.tool,
-      addMode: task.addMode,
-      resultCount: candidates.length,
-      selected: selected ? summarizeCandidate(selected) : undefined,
-      add: addResult,
-      raw: includeRaw ? rawResult : undefined,
-    });
+    throw new Error(`Unsupported batch tool: ${task.tool}`);
   } catch (error) {
-    if (isMaterialBatchTool(task.tool)) {
-      return materialEnvelopeBatchResult(
+    if (isMaterialBatchTool(task.tool) || isWorkflowBatchTool(task.tool)) {
+      const capability = task.tool === "assessment_run" ? "assess" : "orchestrate";
+      return envelopeBatchResult(
         task,
-        materialFailureEnvelope(task.tool, error),
+        isMaterialBatchTool(task.tool)
+          ? materialFailureEnvelope(task.tool, error)
+          : failEnvelope({
+              capability,
+              tool: task.tool,
+              errors: [error instanceof Error ? error.message : String(error)],
+            }),
         includeRaw,
       );
-    }
-    if (task.tool === "web_search" && error instanceof ExternalSearchError) {
-      return cleanResult({
-        index: task.index,
-        id: task.id,
-        status: "error",
-        ok: false,
-        capability: "discover",
-        tool: task.tool,
-        addMode: task.addMode,
-        diagnostics: { reason: error.code, retryable: error.retryable },
-        errors: [error.message],
-        error: error.message,
-      });
     }
     return {
       index: task.index,
@@ -491,29 +522,24 @@ async function executeLocalTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (tool) {
-    case "academic_search":
-      return runAcademicSearch(config, args as unknown as AcademicSearchRequest);
-    case "patent_search":
-      return runPatentSearch(config, args as unknown as PatentSearchRequest);
-    case "patent_detail":
-      return runPatentDetail(config, args as unknown as PatentDetailRequest);
-    case "web_search":
-      {
-        const response = await runExternalWebSearch(config, args as unknown as ExternalWebSearchRequest);
-        if (!response.ok) throw new Error(response.error.message);
-        return response.data;
-      }
-    case "resource_lookup":
-      return runResourceLookup(config, args as unknown as ResourceLookupRequest);
     case "resource_add":
       return executeDirectAdd(config, args);
     case "resource_pdf":
-      return fetchPdfForWorkspaceItem(config.workspace.root, {
-        itemKey: typeof args.itemKey === "string" ? args.itemKey : "",
-        url: typeof args.url === "string" ? args.url : undefined,
-        filename: typeof args.filename === "string" ? args.filename : undefined,
-        download: args.download !== false,
-      });
+      {
+        const materialOptions = {
+          config,
+          itemKey: typeof args.itemKey === "string" ? args.itemKey : "",
+          url: typeof args.url === "string" ? args.url : undefined,
+          filename: typeof args.filename === "string" ? args.filename : undefined,
+          download: args.download !== false,
+          providerId: stringArg(args, "providerId"),
+          resolverProviderId: stringArg(args, "resolverProviderId"),
+          policy: stringArg(args, "policy"),
+        };
+        return booleanArg(args, "dryRun") === true
+          ? planResourcePdfCompatibility(materialOptions)
+          : runResourcePdfCompatibility(materialOptions);
+      }
     default:
       throw new Error(`Unsupported batch tool: ${tool}`);
   }
@@ -532,6 +558,7 @@ async function executeMaterialTool(
       attachTo: stringArg(args, "attachTo"),
       providerId: stringArg(args, "providerId"),
       policy: stringArg(args, "policy"),
+      resolverProviderId: stringArg(args, "resolverId") ?? stringArg(args, "resolverProviderId"),
       download: booleanArg(args, "download"),
     };
     return dryRun
@@ -565,7 +592,7 @@ async function executeMaterialTool(
     : runMaterialIngest(materialOptions);
 }
 
-function materialEnvelopeBatchResult(
+function envelopeBatchResult(
   task: BatchTask,
   envelope: ResultEnvelope,
   includeRaw: boolean,
@@ -579,12 +606,14 @@ function materialEnvelopeBatchResult(
     tool: envelope.tool,
     data: envelope.data,
     planned: envelope.planned,
+    state: envelope.state,
+    actions: envelope.actions,
     diagnostics: envelope.diagnostics,
     warnings: envelope.warnings,
     errors: envelope.errors,
     provenance: envelope.provenance,
     raw: includeRaw ? envelope : undefined,
-    error: envelope.ok ? undefined : envelope.errors?.join("; ") || "Material tool failed.",
+    error: envelope.ok ? undefined : envelope.errors?.join("; ") || `${task.tool} failed.`,
   });
 }
 
@@ -593,6 +622,9 @@ function materialFailureEnvelope(tool: BatchMaterialTool, error: unknown): Resul
     capability: materialToolCapability(tool),
     tool,
     errors: [error instanceof Error ? error.message : String(error)],
+    ...(error instanceof AcquireResolverError && error.actions.length > 0
+      ? { state: "action_required", actions: error.actions }
+      : {}),
   });
 }
 
@@ -625,7 +657,7 @@ async function executeDirectAdd(
   const tags = Array.isArray(args.tags)
     ? args.tags.map((tag) => String(tag))
     : parseTags(typeof args.tags === "string" ? args.tags : undefined);
-  return addResourceToWorkspace(config.workspace.root, {
+  const selected = await selectResourceIntoWorkspace(config, {
     item: isRecord(args.item) ? (args.item as unknown as ResourceItem) : undefined,
     detail: isRecord(args.detail) ? (args.detail as WorkspaceDetailPayload) : undefined,
     url: typeof args.url === "string" ? args.url : undefined,
@@ -635,6 +667,10 @@ async function executeDirectAdd(
     tags,
     fetchPdf: args.fetchPDF === true || args.fetchPdf === true,
     defaultCollectionPath: config.workspace.defaultCollection,
+  });
+  return cleanObject({
+    ...selected.workspace,
+    zoteroSync: selected.zoteroSync.status === "not_requested" ? undefined : selected.zoteroSync.status,
   });
 }
 
@@ -842,6 +878,10 @@ function buildToolArgs(
       url: pick(row, ["url", "pdf_url", "pdfUrl"]),
       filename: pick(row, ["filename", "file_name", "fileName"]),
       download: parseOptionalBoolean(pick(row, ["download"])),
+      providerId: pick(row, ["provider", "provider_id", "providerId"]),
+      resolverProviderId: pick(row, ["resolver", "resolver_id", "resolverId"]),
+      policy: pick(row, ["policy"]),
+      dryRun: parseOptionalBoolean(pick(row, ["dry_run", "dryRun", "plan"])),
     });
   }
 
@@ -889,6 +929,53 @@ function buildToolArgs(
     });
   }
 
+  if (tool === "citation_expand") {
+    const canonical = parseCanonicalBatchArgs(row);
+    const explicitSeeds = parseStructuredValue(pick(row, ["seeds", "seeds_json"]));
+    const convenienceSeeds = ([
+      ["doi", pick(row, ["doi", "dois"])],
+      ["pmid", pick(row, ["pmid", "pmids"])],
+      ["arxiv", pick(row, ["arxiv", "arxiv_ids"])],
+      ["semantic", pick(row, ["semantic", "semantic_ids"])],
+      ["openalex", pick(row, ["openalex", "openalex_ids"])],
+      ["scopus", pick(row, ["scopus", "scopus_ids"])],
+    ] as const).flatMap(([kind, value]) =>
+      splitCsv(value).map((identifier) => ({ identifiers: { [kind]: identifier } })),
+    );
+    const explicitLimits = parseStructuredValue(pick(row, ["limits", "limits_json"]));
+    const columnLimits = cleanObject({
+      depth: parseNumber(pick(row, ["depth"])),
+      perNode: parseNumber(pick(row, ["per_node", "perNode"])),
+      nodes: parseNumber(pick(row, ["max_nodes", "nodes"])),
+      edges: parseNumber(pick(row, ["max_edges", "edges"])),
+      providerPages: parseNumber(pick(row, ["max_pages", "provider_pages", "providerPages"])),
+      concurrency: parseNumber(pick(row, ["citation_concurrency", "concurrency"])),
+    });
+    const explicit = cleanObject({
+      mode: pick(row, ["mode"]),
+      runId: pick(row, ["run_id", "runId"]),
+      seeds: explicitSeeds ?? (convenienceSeeds.length > 0 ? convenienceSeeds : undefined),
+      directions: splitCsv(pick(row, ["directions", "direction"])),
+      providers: splitCsv(pick(row, ["providers", "provider"])),
+      excludeIdentifiers: parseStructuredValue(
+        pick(row, ["exclude_identifiers", "excludeIdentifiers", "exclude_identifiers_json"]),
+      ),
+      limits: explicitLimits ?? (Object.keys(columnLimits).length > 0 ? columnLimits : undefined),
+    });
+    return cleanObject({ ...canonical, ...explicit });
+  }
+
+  if (tool === "assessment_run") {
+    const canonical = parseCanonicalBatchArgs(row);
+    const explicit = cleanObject({
+      mode: pick(row, ["mode"]),
+      snapshotPath: pick(row, ["snapshot_path", "snapshotPath", "snapshot"]),
+      snapshotSha256: pick(row, ["snapshot_sha256", "snapshotSha256", "sha256"]),
+      policy: parseStructuredValue(pick(row, ["policy", "policy_json"])),
+    });
+    return cleanObject({ ...canonical, ...explicit });
+  }
+
   throw new Error(`Unsupported batch tool: ${tool}`);
 }
 
@@ -924,6 +1011,12 @@ function normalizeTool(row: Record<string, string>): BatchTask["tool"] {
     material_extract: "extract",
     ingest: "material_ingest",
     material_ingest: "material_ingest",
+    citation: "citation_expand",
+    citations: "citation_expand",
+    citation_expand: "citation_expand",
+    assess: "assessment_run",
+    assessment: "assessment_run",
+    assessment_run: "assessment_run",
     academic_search: "academic_search",
     patent_search: "patent_search",
     resource_lookup: "resource_lookup",
@@ -1098,6 +1191,13 @@ function parseStructuredValue(value: string | undefined): unknown {
   } catch {
     return YAML.parse(value);
   }
+}
+
+function parseCanonicalBatchArgs(row: Record<string, string>): Record<string, unknown> {
+  const parsed = parseStructuredValue(pick(row, ["args", "args_json", "arguments", "arguments_json"]));
+  if (parsed === undefined) return {};
+  if (!isRecord(parsed)) throw new Error("Batch canonical args must be a JSON/YAML object.");
+  return parsed;
 }
 
 function inferIdentifierType(row: Record<string, string>): string | undefined {

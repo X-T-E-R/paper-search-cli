@@ -1,11 +1,31 @@
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
+import JSZip from "jszip";
+import { assertSafeRelativePath } from "../../runtime/safeRelativePath.js";
+import { safeExternalHttpsRequest } from "../../runtime/safeExternalHttps.js";
+import {
+  sanitizeForPersistence,
+  sanitizeUrlForPersistence,
+  sanitizeUrlsForPersistenceInText,
+} from "../../runtime/sanitizeUrl.js";
+import {
+  PYMUPDF4LLM_PROVIDER_ID,
+  normalizePyMuPDF4LLMRequestOptions,
+  runPyMuPDF4LLMSidecar,
+  type PyMuPDF4LLMRequestOptions,
+  type PyMuPDF4LLMResult,
+  type RunPyMuPDF4LLMSidecarOptions,
+} from "../pymupdf4llm/sidecar.js";
 import type { MaterialProviderManifest } from "../types.js";
 
 export interface MaterialHttpRequestOptions {
   params?: Record<string, unknown>;
   headers?: Record<string, string>;
   timeout?: number;
+  /** Return the response body as Base64 instead of JSON/text. */
+  responseType?: "auto" | "base64";
+  /** Abort a Base64 response after this many decoded bytes. */
+  maxResponseBytes?: number;
 }
 
 export interface MaterialHttpResponse<T = unknown> {
@@ -32,6 +52,22 @@ export interface MaterialRuntimePolicy {
   [key: string]: unknown;
 }
 
+export interface MaterialArchiveMarkdownOptions {
+  /** Reject the decoded ZIP before parsing when it exceeds this size. */
+  maxArchiveBytes: number;
+  /** Reject the selected Markdown entry when it exceeds this size. */
+  maxMarkdownBytes: number;
+  /** Preferred ZIP entry basenames or relative paths, in priority order. */
+  preferredEntryNames?: string[];
+}
+
+export interface MaterialArchiveMarkdownResult {
+  markdown: string;
+  entryPath: string;
+  entryCount: number;
+  markdownBytes: number;
+}
+
 export interface MaterialRuntimeContext {
   http: {
     get<T = unknown>(
@@ -49,6 +85,12 @@ export interface MaterialRuntimeContext {
     getRedacted(key: string): unknown;
     getRedacted(): Record<string, unknown>;
   };
+  archive: {
+    readMarkdownFromZipBase64(
+      archiveBase64: string,
+      options: MaterialArchiveMarkdownOptions,
+    ): Promise<MaterialArchiveMarkdownResult>;
+  };
   cache: {
     readText(relativePath: string): Promise<string | null>;
     writeText(relativePath: string, value: string): Promise<{ path: string }>;
@@ -59,6 +101,12 @@ export interface MaterialRuntimeContext {
     get(): MaterialRuntimePolicy;
     get<T = unknown>(key: string, defaultValue?: T): T;
   };
+  sidecar: {
+    pymupdf4llm: {
+      /** Convert the one host-authorized PDF; providers cannot supply a path or process options. */
+      toMarkdown(options?: PyMuPDF4LLMRequestOptions): Promise<PyMuPDF4LLMResult>;
+    };
+  };
   workspace: {
     writeText(relativePath: string, value: string): Promise<{ path: string }>;
     writeJson(relativePath: string, value: unknown): Promise<{ path: string }>;
@@ -68,10 +116,18 @@ export interface MaterialRuntimeContext {
 export interface CreateMaterialRuntimeContextOptions {
   manifest: MaterialProviderManifest;
   providerConfig?: Record<string, unknown>;
+  /** Host environment used only for manifest-declared config fallbacks. */
+  env?: NodeJS.ProcessEnv;
   policy?: MaterialRuntimePolicy;
   cacheRoot: string;
   workspaceRoot: string;
   transport?: MaterialHttpTransport;
+  /** Exact local PDF selected and validated by the host extraction planner. */
+  authorizedPdfPath?: string;
+  /** Host-only dependency injection for focused tests. Never exposed to provider code. */
+  pymupdf4llmRunner?: (
+    options: RunPyMuPDF4LLMSidecarOptions,
+  ) => Promise<PyMuPDF4LLMResult>;
 }
 
 export class MaterialRuntimePermissionError extends Error {
@@ -86,6 +142,171 @@ export class MaterialRuntimePathError extends Error {
     super(message);
     this.name = "MaterialRuntimePathError";
   }
+}
+
+const MAX_MATERIAL_ARCHIVE_ENTRIES = 10_000;
+
+function positiveSafeByteLimit(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${name} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function isPaddedBase64(value: string): boolean {
+  if (value.length === 0 || value.length % 4 !== 0) return false;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const dataLength = value.length - padding;
+  for (let index = 0; index < dataLength; index += 1) {
+    const code = value.charCodeAt(index);
+    const valid =
+      (code >= 0x41 && code <= 0x5a) ||
+      (code >= 0x61 && code <= 0x7a) ||
+      (code >= 0x30 && code <= 0x39) ||
+      code === 0x2b ||
+      code === 0x2f;
+    if (!valid) return false;
+  }
+  for (let index = dataLength; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 0x3d) return false;
+  }
+  return true;
+}
+
+function decodeBoundedBase64Archive(value: string, maxArchiveBytes: number): Buffer {
+  if (typeof value !== "string") {
+    throw new TypeError("archiveBase64 must be a string");
+  }
+  const compact = value.replace(/\s+/gu, "");
+  if (!isPaddedBase64(compact)) {
+    throw new TypeError("archiveBase64 must be valid padded Base64");
+  }
+  const decoded = Buffer.from(compact, "base64");
+  if (decoded.byteLength > maxArchiveBytes) {
+    throw new Error(
+      `Material archive exceeds maxArchiveBytes (${decoded.byteLength} bytes > ${maxArchiveBytes} bytes)`,
+    );
+  }
+  return decoded;
+}
+
+function markdownEntryPriority(
+  entryPath: string,
+  preferredEntryNames: readonly string[],
+): number {
+  const normalized = entryPath.toLocaleLowerCase("en-US");
+  const basename = normalized.split("/").at(-1) ?? normalized;
+  const preferredIndex = preferredEntryNames.findIndex((candidate) => {
+    const preferred = candidate.toLocaleLowerCase("en-US");
+    return normalized === preferred || basename === preferred;
+  });
+  if (preferredIndex >= 0) return preferredIndex;
+  return preferredEntryNames.length + (/^readme(?:\.|$)/u.test(basename) ? 2 : 1);
+}
+
+async function readMarkdownFromZipBase64(
+  archiveBase64: string,
+  options: MaterialArchiveMarkdownOptions,
+): Promise<MaterialArchiveMarkdownResult> {
+  const maxArchiveBytes = positiveSafeByteLimit(
+    options.maxArchiveBytes,
+    "maxArchiveBytes",
+  );
+  const maxMarkdownBytes = positiveSafeByteLimit(
+    options.maxMarkdownBytes,
+    "maxMarkdownBytes",
+  );
+  const preferredEntryNames = (options.preferredEntryNames ?? ["full.md"]).map(
+    (candidate) => assertSafeRelativePath(candidate, "preferred archive entry path"),
+  );
+  const archive = await JSZip.loadAsync(
+    decodeBoundedBase64Archive(archiveBase64, maxArchiveBytes),
+  );
+  const files = Object.values(archive.files).filter((entry) => !entry.dir);
+  if (files.length > MAX_MATERIAL_ARCHIVE_ENTRIES) {
+    throw new Error(
+      `Material archive contains too many files (${files.length} > ${MAX_MATERIAL_ARCHIVE_ENTRIES})`,
+    );
+  }
+
+  const seenPaths = new Set<string>();
+  const candidates = files.flatMap((entry) => {
+    const entryWithOriginalName = entry as typeof entry & { unsafeOriginalName?: string };
+    const entryPath = assertSafeRelativePath(
+      entryWithOriginalName.unsafeOriginalName ?? entry.name,
+      "material archive entry path",
+    );
+    const collisionKey = entryPath.toLocaleLowerCase("en-US");
+    if (seenPaths.has(collisionKey)) {
+      throw new Error(`Duplicate material archive entry path: ${entryPath}`);
+    }
+    seenPaths.add(collisionKey);
+    return /\.(?:md|markdown)$/iu.test(entryPath) ? [{ entry, entryPath }] : [];
+  });
+  candidates.sort((left, right) => {
+    const priority =
+      markdownEntryPriority(left.entryPath, preferredEntryNames) -
+      markdownEntryPriority(right.entryPath, preferredEntryNames);
+    return priority || left.entryPath.localeCompare(right.entryPath, "en-US");
+  });
+  const selected = candidates[0];
+  if (!selected) {
+    throw new Error("Material archive does not contain a Markdown file");
+  }
+
+  const declaredBytes = (
+    selected.entry as typeof selected.entry & {
+      _data?: { uncompressedSize?: number };
+    }
+  )._data?.uncompressedSize;
+  if (typeof declaredBytes === "number" && declaredBytes > maxMarkdownBytes) {
+    throw new Error(
+      `Material archive Markdown exceeds maxMarkdownBytes (${declaredBytes} bytes > ${maxMarkdownBytes} bytes)`,
+    );
+  }
+  const stream = (selected.entry as typeof selected.entry & {
+    internalStream(type: "uint8array"): JSZip.JSZipStreamHelper<Uint8Array>;
+  }).internalStream("uint8array");
+  const { markdownBytes, emittedBytes } = await new Promise<{
+    markdownBytes: Buffer;
+    emittedBytes: number;
+  }>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    stream.on("data", (chunk) => {
+      if (settled) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.byteLength;
+      if (total > maxMarkdownBytes) {
+        settled = true;
+        const error = new Error(
+          `Material archive Markdown exceeds maxMarkdownBytes (${total} bytes > ${maxMarkdownBytes} bytes)`,
+        );
+        stream.pause();
+        reject(error);
+        return;
+      }
+      chunks.push(bytes);
+    });
+    stream.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    stream.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve({ markdownBytes: Buffer.concat(chunks, total), emittedBytes: total });
+    });
+    stream.resume();
+  });
+  return {
+    markdown: new TextDecoder("utf-8").decode(markdownBytes),
+    entryPath: selected.entryPath,
+    entryCount: files.length,
+    markdownBytes: emittedBytes,
+  };
 }
 
 function escapeRegex(value: string): string {
@@ -107,7 +328,7 @@ function assertNetworkAllowed(url: string, manifest: MaterialProviderManifest): 
   const allowed = patterns.some((pattern) => matchesUrlPermission(url, pattern));
   if (!allowed) {
     throw new MaterialRuntimePermissionError(
-      `URL not allowed by material provider permissions: ${url}`,
+      `URL not allowed by material provider permissions: ${sanitizeUrlForPersistence(url)}`,
     );
   }
 }
@@ -129,6 +350,73 @@ async function fetchJsonOrText<T>(response: Response): Promise<T> {
   return (await response.text()) as T;
 }
 
+function normalizedMaxResponseBytes(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError("maxResponseBytes must be a non-negative safe integer");
+  }
+  return value;
+}
+
+function responseSizeError(actualBytes: number, maxBytes: number): Error {
+  return new Error(
+    `Material HTTP response exceeds maxResponseBytes (${actualBytes} bytes > ${maxBytes} bytes)`,
+  );
+}
+
+async function fetchBase64(
+  response: Response,
+  maxResponseBytes: number | undefined,
+): Promise<string> {
+  const maxBytes = normalizedMaxResponseBytes(maxResponseBytes);
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (
+    maxBytes !== undefined &&
+    Number.isFinite(declaredLength) &&
+    declaredLength > maxBytes
+  ) {
+    throw responseSizeError(declaredLength, maxBytes);
+  }
+
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (maxBytes !== undefined && totalBytes > maxBytes) {
+        await reader.cancel();
+        throw responseSizeError(totalBytes, maxBytes);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, totalBytes).toString("base64");
+}
+
+async function fetchResponseData<T>(
+  response: Response,
+  options?: MaterialHttpRequestOptions,
+): Promise<T> {
+  const responseType = options?.responseType ?? "auto";
+  if (responseType !== "auto" && responseType !== "base64") {
+    throw new TypeError("responseType must be auto or base64");
+  }
+  if (responseType === "base64") {
+    if (options?.maxResponseBytes === undefined) {
+      throw new TypeError("Base64 material HTTP responses require maxResponseBytes");
+    }
+    return (await fetchBase64(response, options.maxResponseBytes)) as T;
+  }
+  return fetchJsonOrText<T>(response);
+}
+
 function headersToRecord(headers: Headers): Record<string, string> {
   const record: Record<string, string> = {};
   headers.forEach((value, key) => {
@@ -141,20 +429,22 @@ async function fetchWithTimeout(
   input: string,
   init: RequestInit,
   timeoutMs: number,
+  manifest: MaterialProviderManifest,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, {
-      ...init,
-      signal: controller.signal,
-    });
+    return (await safeExternalHttpsRequest({
+      url: input,
+      init: { ...init, signal: controller.signal },
+      assertAllowed: (url) => assertNetworkAllowed(url, manifest),
+    })).response;
   } finally {
     clearTimeout(timer);
   }
 }
 
-function createDefaultTransport(): MaterialHttpTransport {
+function createDefaultTransport(manifest: MaterialProviderManifest): MaterialHttpTransport {
   return {
     async get<T = unknown>(
       url: string,
@@ -168,9 +458,10 @@ function createDefaultTransport(): MaterialHttpTransport {
         target.toString(),
         { method: "GET", headers: options?.headers },
         options?.timeout ?? 30_000,
+        manifest,
       );
       return {
-        data: await fetchJsonOrText<T>(response),
+        data: await fetchResponseData<T>(response, options),
         status: response.status,
         statusText: response.statusText,
         headers: headersToRecord(response.headers),
@@ -195,9 +486,10 @@ function createDefaultTransport(): MaterialHttpTransport {
         url,
         { method: "POST", headers, body: payload },
         options?.timeout ?? 30_000,
+        manifest,
       );
       return {
-        data: await fetchJsonOrText<T>(response),
+        data: await fetchResponseData<T>(response, options),
         status: response.status,
         statusText: response.statusText,
         headers: headersToRecord(response.headers),
@@ -216,6 +508,25 @@ function resolveConfigValue<T>(
   const schemaDefault = manifest.configSchema?.[key]?.default;
   if (schemaDefault !== undefined) return schemaDefault as T;
   return defaultValue as T;
+}
+
+function hasConfigValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  return typeof value !== "string" || value.trim().length > 0;
+}
+
+function resolveProviderRuntimeConfig(
+  manifest: MaterialProviderManifest,
+  providerConfig: Record<string, unknown>,
+  env: NodeJS.ProcessEnv,
+): Record<string, unknown> {
+  const resolved = { ...providerConfig };
+  for (const [key, field] of Object.entries(manifest.configSchema ?? {})) {
+    if (hasConfigValue(providerConfig[key])) continue;
+    const envName = (field.env ?? []).find((name) => hasConfigValue(env[name]));
+    if (envName) resolved[key] = env[envName];
+  }
+  return resolved;
 }
 
 function redactValue(value: unknown): unknown {
@@ -267,6 +578,30 @@ function assertWorkspaceWriteAllowed(manifest: MaterialProviderManifest): void {
   throw new MaterialRuntimePermissionError(
     `Provider ${manifest.id} is not allowed to write workspace files`,
   );
+}
+
+function assertPyMuPDF4LLMSidecarAllowed(
+  manifest: MaterialProviderManifest,
+  authorizedPdfPath: string | undefined,
+): string {
+  if (
+    manifest.id !== PYMUPDF4LLM_PROVIDER_ID ||
+    manifest.kind !== "extractor" ||
+    manifest.capabilities.network ||
+    manifest.permissions.localRead !== true ||
+    !manifest.capabilities.outputs.includes("markdown") ||
+    !manifest.capabilities.inputs.some((kind) => kind === "artifact" || kind === "local_file")
+  ) {
+    throw new MaterialRuntimePermissionError(
+      `Provider ${manifest.id} is not allowed to use the PyMuPDF4LLM sidecar`,
+    );
+  }
+  if (!authorizedPdfPath) {
+    throw new MaterialRuntimePathError(
+      "The selected input does not resolve to an authorized local PDF",
+    );
+  }
+  return authorizedPdfPath;
 }
 
 function assertPathInsideRoot(rootPath: string, candidatePath: string, label: string): void {
@@ -346,9 +681,13 @@ async function writeTextInsideRoot(
 export function createMaterialRuntimeContext(
   options: CreateMaterialRuntimeContextOptions,
 ): MaterialRuntimeContext {
-  const providerConfig = options.providerConfig ?? {};
+  const providerConfig = resolveProviderRuntimeConfig(
+    options.manifest,
+    options.providerConfig ?? {},
+    options.env ?? process.env,
+  );
   const policy = options.policy ?? {};
-  const transport = options.transport ?? createDefaultTransport();
+  const transport = options.transport ?? createDefaultTransport(options.manifest);
   const cacheRoot = path.join(path.resolve(options.cacheRoot), options.manifest.id);
   function getRedactedConfig(): Record<string, unknown>;
   function getRedactedConfig(key: string): unknown;
@@ -396,13 +735,21 @@ export function createMaterialRuntimeContext(
       },
       getRedacted: getRedactedConfig,
     },
+    archive: {
+      readMarkdownFromZipBase64,
+    },
     cache: {
       async readText(relativePath: string): Promise<string | null> {
         return readTextIfPresent(cacheRoot, relativePath, "provider cache");
       },
       async writeText(relativePath: string, value: string): Promise<{ path: string }> {
         assertCacheWriteAllowed(options.manifest);
-        return writeTextInsideRoot(cacheRoot, relativePath, value, "provider cache");
+        return writeTextInsideRoot(
+          cacheRoot,
+          relativePath,
+          sanitizeUrlsForPersistenceInText(value),
+          "provider cache",
+        );
       },
       async readJson<T = unknown>(relativePath: string): Promise<T | null> {
         const raw = await readTextIfPresent(cacheRoot, relativePath, "provider cache");
@@ -413,7 +760,7 @@ export function createMaterialRuntimeContext(
         return writeTextInsideRoot(
           cacheRoot,
           relativePath,
-          `${JSON.stringify(value, null, 2)}\n`,
+          `${JSON.stringify(sanitizeForPersistence(value), null, 2)}\n`,
           "provider cache",
         );
       },
@@ -425,13 +772,32 @@ export function createMaterialRuntimeContext(
         return defaultValue as T;
       },
     },
+    sidecar: {
+      pymupdf4llm: {
+        async toMarkdown(
+          requestOptions: PyMuPDF4LLMRequestOptions = {},
+        ): Promise<PyMuPDF4LLMResult> {
+          const authorizedPdfPath = assertPyMuPDF4LLMSidecarAllowed(
+            options.manifest,
+            options.authorizedPdfPath,
+          );
+          const normalized = normalizePyMuPDF4LLMRequestOptions(requestOptions);
+          const runner = options.pymupdf4llmRunner ?? runPyMuPDF4LLMSidecar;
+          return runner({
+            pdfPath: authorizedPdfPath,
+            ...normalized,
+            env: options.env ?? process.env,
+          });
+        },
+      },
+    },
     workspace: {
       async writeText(relativePath: string, value: string): Promise<{ path: string }> {
         assertWorkspaceWriteAllowed(options.manifest);
         return writeTextInsideRoot(
           options.workspaceRoot,
           relativePath,
-          value,
+          sanitizeUrlsForPersistenceInText(value),
           "workspace write",
         );
       },
@@ -440,7 +806,7 @@ export function createMaterialRuntimeContext(
         return writeTextInsideRoot(
           options.workspaceRoot,
           relativePath,
-          `${JSON.stringify(value, null, 2)}\n`,
+          `${JSON.stringify(sanitizeForPersistence(value), null, 2)}\n`,
           "workspace write",
         );
       },

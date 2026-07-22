@@ -1,12 +1,18 @@
-import { appendFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { appendFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../../src/index.js";
-import { readArtifactRecord } from "../../src/material/artifactStore.js";
+import { readArtifactRecord, resolveArtifactRecordPath } from "../../src/material/artifactStore.js";
 import { readExtractionRecord } from "../../src/material/extractionStore.js";
-import type { MaterialIngestExecutionData, MaterialIngestPlanData } from "../../src/material/ingest.js";
+import type {
+  MaterialIngestExecutionData,
+  MaterialIngestPlanData,
+  MaterialIngestResultEnvelope,
+} from "../../src/material/ingest.js";
 import { isResultEnvelope, type ResultEnvelope } from "../../src/surface/resultEnvelope.js";
+import { setSafeExternalHttpsTestHooksForTests } from "../../src/runtime/safeExternalHttps.js";
 
 const tempDirs: string[] = [];
 const downloaderFixture = path.resolve(
@@ -28,8 +34,17 @@ const mineruFixture = path.resolve(
   "mineru-extractor",
 );
 
+beforeEach(() => {
+  setSafeExternalHttpsTestHooksForTests({
+    resolve: async () => [{ address: "8.8.8.8", family: 4 }],
+    requestPinned: async (url, init) => fetch(url, init),
+  });
+});
+
 afterEach(async () => {
+  setSafeExternalHttpsTestHooksForTests(undefined);
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   await Promise.all(
     tempDirs.map(async (dir) => {
       try {
@@ -70,6 +85,11 @@ async function writeProjectConfig(root: string, workspaceRoot: string): Promise<
       `root = "${tomlPath(workspaceRoot)}"`,
       'defaultCollection = "Inbox"',
       "",
+      "[storage]",
+      `artifactRoot = "${tomlPath(path.join(root, "artifact-storage"))}"`,
+      `extractionRoot = "${tomlPath(path.join(root, "extraction-storage"))}"`,
+      `exportRoot = "${tomlPath(path.join(root, "exports"))}"`,
+      "",
       "[platform.fixture-artifact-downloader]",
       'mode = "integration"',
       "",
@@ -105,11 +125,19 @@ async function enableMineruProvider(root: string): Promise<void> {
     ].join("\n"),
     "utf8",
   );
-  await writeFile(
-    path.join(root, "appdata", "paper-search", "credentials.toml"),
-    ["schemaVersion = 1", "", "[platform.mineru-extractor]", 'apiToken = "fixture-token"', ""].join("\n"),
-    "utf8",
-  );
+}
+
+async function readPersistedText(root: string): Promise<string> {
+  const chunks: string[] = [];
+  async function visit(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(target);
+      else if (entry.isFile()) chunks.push((await readFile(target)).toString("utf8"));
+    }
+  }
+  await visit(root);
+  return chunks.join("\n");
 }
 
 async function runMaterialCommand(root: string, args: string[]): Promise<{
@@ -121,8 +149,10 @@ async function runMaterialCommand(root: string, args: string[]): Promise<{
   let stderr = "";
   const originalCwd = process.cwd();
   const originalAppData = process.env.APPDATA;
+  const originalPaperSearchHome = process.env.PAPER_SEARCH_HOME;
 
   process.env.APPDATA = path.join(root, "appdata");
+  process.env.PAPER_SEARCH_HOME = path.join(root, "appdata", "paper-search");
   process.chdir(root);
   try {
     await buildProgram({
@@ -137,6 +167,11 @@ async function runMaterialCommand(root: string, args: string[]): Promise<{
       delete process.env.APPDATA;
     } else {
       process.env.APPDATA = originalAppData;
+    }
+    if (originalPaperSearchHome === undefined) {
+      delete process.env.PAPER_SEARCH_HOME;
+    } else {
+      process.env.PAPER_SEARCH_HOME = originalPaperSearchHome;
     }
   }
 
@@ -185,8 +220,6 @@ describe("material ingest execution command", () => {
       "material",
       "ingest",
       "https://example.test/files/article.pdf",
-      "--attach-to",
-      "item-123",
       "--policy",
       "workspace-safe",
       "--dry-run",
@@ -196,8 +229,6 @@ describe("material ingest execution command", () => {
       "material",
       "ingest",
       "https://example.test/files/article.pdf",
-      "--attach-to",
-      "item-123",
       "--policy",
       "workspace-safe",
       "--json",
@@ -212,7 +243,7 @@ describe("material ingest execution command", () => {
       input: "https://example.test/files/article.pdf",
       url: "https://example.test/files/article.pdf",
     });
-    expect(data.policy).toEqual({ name: "workspace-safe", attachTo: "item-123" });
+    expect(data.policy).toEqual({ name: "workspace-safe", attachTo: data.artifact.record.itemId });
     expect(data.artifact).toMatchObject({
       mode: "download",
       artifactId: expect.any(String),
@@ -222,8 +253,14 @@ describe("material ingest execution command", () => {
       },
       record: {
         status: "downloaded",
-        itemId: "item-123",
-        path: `material/files/${data.artifact.artifactId}/fixture-download.pdf`,
+        itemId: expect.any(String),
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "artifact",
+          root: path.join(root, "artifact-storage"),
+          key: `${data.artifact.artifactId}/fixture-download.pdf`,
+        },
       },
     });
     expect(data.extraction).toMatchObject({
@@ -238,7 +275,7 @@ describe("material ingest execution command", () => {
         artifactId: data.artifact.artifactId,
       },
       record: {
-        itemId: "item-123",
+        itemId: data.artifact.record.itemId,
         source: {
           kind: "artifact",
           artifactId: data.artifact.artifactId,
@@ -266,13 +303,14 @@ describe("material ingest execution command", () => {
       "artifact.load-downloader",
       "artifact.run-downloader",
       "artifact.write-artifact",
+      "artifact.select-downloaded-resource",
       "artifact.record-artifact",
       "extraction.load-extractor",
       "extraction.run-extractor",
       "extraction.write-markdown",
       "extraction.record-extraction",
     ]);
-    expect(data.outputs.artifactFilePath).toBe(path.join(workspaceRoot, data.artifact.record.path!));
+    expect(data.outputs.artifactFilePath).toBe(path.join(root, "artifact-storage", data.artifact.artifactId, "fixture-download.pdf"));
     await expect(readFile(data.outputs.artifactFilePath!, "utf8")).resolves.toBe("fixture downloader bytes\n");
     await expect(readArtifactRecord(workspaceRoot, data.artifact.artifactId)).resolves.toMatchObject({
       id: data.artifact.artifactId,
@@ -295,12 +333,182 @@ describe("material ingest execution command", () => {
     );
   });
 
-  it("records a local file artifact and extracts Markdown without using a downloader", async () => {
+  it("retains committed artifact evidence but fails closed on challenge extraction output", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-challenge-");
+    await writeFile(
+      path.join(root, "providers", "fixture-markdown-extractor", "provider.js"),
+      [
+        "globalThis.__material_provider_exports = {",
+        "  createProvider() {",
+        "    return {",
+        "      async extract() {",
+        "        return { markdown: 'Checking your browser before accessing pmc.ncbi.nlm.nih.gov', cacheHit: false };",
+        "      }",
+        "    };",
+        "  }",
+        "};",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await runMaterialCommand(root, [
+      "material",
+      "ingest",
+      "https://example.test/files/challenged.pdf",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "orchestrate",
+      tool: "material_ingest",
+      data: null,
+      diagnostics: {
+        partial: true,
+        commitStage: "extraction",
+        artifactId: expect.any(String),
+        artifactPath: expect.any(String),
+      },
+      errors: [expect.stringContaining("checking your browser before accessing")],
+    });
+    const diagnostics = result.envelope.diagnostics as {
+      artifactId: string;
+      artifactPath: string;
+    };
+    await expect(readArtifactRecord(workspaceRoot, diagnostics.artifactId)).resolves.toMatchObject({
+      id: diagnostics.artifactId,
+      status: "downloaded",
+    });
+    await expect(readFile(diagnostics.artifactPath, "utf8")).resolves.toBe("fixture downloader bytes\n");
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(workspaceRoot, "material", "extractions"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("extracts a valid stored HTML artifact locally instead of letting MinerU refetch its challenged URL", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-stored-html-");
+    await enableMineruProvider(root);
+    const articleHtml = [
+      "<!doctype html>",
+      "<html>",
+      "<head><meta name=\"citation_title\" content=\"Stored Science Article\"></head>",
+      "<body>",
+      "<nav>Publisher navigation</nav>",
+      "<article>",
+      "<h1>Stored Science Article</h1>",
+      "<p>This paragraph came from the already acquired artifact bytes.</p>",
+      "<h2>Results</h2>",
+      "<p>The stored experiment produced a reproducible result.</p>",
+      "</article>",
+      "</body>",
+      "</html>",
+    ].join("");
+    await writeFile(
+      path.join(root, "providers", "fixture-artifact-downloader", "provider.js"),
+      [
+        "globalThis.__material_provider_exports = {",
+        "  createProvider() {",
+        "    return {",
+        "      async download(input) {",
+        "        return {",
+        "          kind: 'html',",
+        "          filename: 'article.html',",
+        "          contentType: 'text/html; charset=utf-8',",
+        "          remoteUrl: input.url,",
+        "          status: 200,",
+        `          text: ${JSON.stringify(articleHtml)}`,
+        "        };",
+        "      }",
+        "    };",
+        "  }",
+        "};",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const fetchMock = vi.fn(async () => {
+      throw new Error("stored HTML extraction must not refetch the remote URL or invoke MinerU");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const challengedRemoteUrl = "https://publisher.example/articles/remote-would-challenge";
+    const result = await runMaterialCommand(root, [
+      "material",
+      "ingest",
+      challengedRemoteUrl,
+      "--artifact-provider",
+      "fixture-artifact-downloader",
+      "--extract-provider",
+      "mineru-extractor",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const data = expectExecutionData(result.envelope);
+    expect(data.artifact.record).toMatchObject({
+      kind: "html",
+      contentType: "text/html; charset=utf-8",
+      remoteUrl: challengedRemoteUrl,
+    });
+    expect(data.extraction).toMatchObject({
+      provider: {
+        id: "builtin-local-html",
+        kind: "builtin",
+        packagePath: "builtin:material/html-to-markdown",
+      },
+      record: {
+        backend: "builtin-local-html",
+        source: { kind: "artifact", artifactId: data.artifact.artifactId },
+        message: "Extracted from the stored HTML artifact without refetching its remote URL.",
+      },
+    });
+    expect(data.providers.extraction.id).toBe("builtin-local-html");
+    expect(data.executedSteps
+      .filter((step) => step.id.startsWith("extraction."))
+      .map((step) => step.providerId))
+      .toEqual(Array(4).fill("builtin-local-html"));
+    expect(data.targetPaths).not.toContain(path.join(root, "providers", "mineru-extractor"));
+    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toContain("# Stored Science Article");
+    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toContain(
+      "This paragraph came from the already acquired artifact bytes.",
+    );
+    await expect(readExtractionRecord(workspaceRoot, data.extraction.extractionId)).resolves.toMatchObject({
+      backend: "builtin-local-html",
+      source: { kind: "artifact", artifactId: data.artifact.artifactId },
+    });
+  });
+
+  it("copies a local file into managed artifact storage and extracts by durable artifact id", async () => {
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-path-");
+    await writeFile(
+      path.join(root, "providers", "fixture-markdown-extractor", "provider.js"),
+      [
+        "var __material_provider_exports = {",
+        "  createProvider() {",
+        "    return {",
+        "      async extract(input) {",
+        "        const artifactPath = input && input.artifact && input.artifact.path;",
+        "        if (typeof artifactPath !== \"string\" || artifactPath.length === 0) {",
+        "          throw new Error(\"managed artifact path is required\");",
+        "        }",
+        "        return { markdown: `Managed artifact path: ${artifactPath}\\n`, cacheHit: false };",
+        "      }",
+        "    };",
+        "  }",
+        "};",
+        "globalThis.__material_provider_exports = __material_provider_exports;",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
     const inputDir = path.join(root, "inputs");
     await mkdir(inputDir, { recursive: true });
     const inputPath = path.join(inputDir, "paper.txt");
-    await writeFile(inputPath, "fixture source body\n", "utf8");
+    const sourceBytes = Buffer.from("fixture source body\n", "utf8");
+    const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
+    await writeFile(inputPath, sourceBytes);
     const fetchMock = vi.fn(async () => {
       throw new Error("local material ingest must not use live fetch");
     });
@@ -310,8 +518,6 @@ describe("material ingest execution command", () => {
       "material",
       "ingest",
       inputPath,
-      "--attach-to",
-      "item-123",
       "--policy",
       "local-safe",
       "--json",
@@ -333,9 +539,19 @@ describe("material ingest execution command", () => {
       },
       record: {
         status: "recorded",
-        itemId: "item-123",
+        itemId: expect.any(String),
         filename: "paper.txt",
         contentType: "text/plain",
+        sizeBytes: sourceBytes.byteLength,
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "artifact",
+          root: path.join(root, "artifact-storage"),
+          key: `${data.artifact.artifactId}/paper.txt`,
+          sha256: sourceDigest,
+          sizeBytes: sourceBytes.byteLength,
+        },
         provenance: {
           origin: "user_supplied",
           providerId: "builtin-local-artifact",
@@ -343,39 +559,237 @@ describe("material ingest execution command", () => {
         },
       },
     });
-    expect(data.outputs.artifactFilePath).toBeUndefined();
+    expect(data.outputs.artifactFilePath).toBe(
+      path.join(root, "artifact-storage", data.artifact.artifactId, "paper.txt"),
+    );
     expect(data.extraction).toMatchObject({
-      materialInputKind: "local_file",
+      materialInputKind: "artifact",
       source: {
-        kind: "path",
-        path: inputPath,
+        kind: "artifact",
+        artifactId: data.artifact.artifactId,
       },
       record: {
-        itemId: "item-123",
+        itemId: data.artifact.record.itemId,
         source: {
-          kind: "path",
-          path: inputPath,
+          kind: "artifact",
+          artifactId: data.artifact.artifactId,
         },
       },
     });
-    await expect(readArtifactRecord(workspaceRoot, data.artifact.artifactId)).resolves.toMatchObject({
+    const storedRecord = await readArtifactRecord(workspaceRoot, data.artifact.artifactId);
+    expect(storedRecord).toMatchObject({
       id: data.artifact.artifactId,
       status: "recorded",
+      storage: data.artifact.record.storage,
     });
+    expect(storedRecord).not.toBeNull();
+    await expect(resolveArtifactRecordPath(workspaceRoot, storedRecord!)).resolves.toBe(
+      data.outputs.artifactFilePath,
+    );
+    await expect(readFile(data.outputs.artifactFilePath!)).resolves.toEqual(sourceBytes);
+    await expect(readFile(inputPath)).resolves.toEqual(sourceBytes);
     await expect(readExtractionRecord(workspaceRoot, data.extraction.extractionId)).resolves.toMatchObject({
       id: data.extraction.extractionId,
       source: {
-        kind: "path",
-        path: inputPath,
+        kind: "artifact",
+        artifactId: data.artifact.artifactId,
       },
       backend: "fixture-markdown-extractor",
     });
-    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toContain("Source kind: path");
-    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toContain(`Source: ${inputPath}`);
+    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toBe(
+      `Managed artifact path: ${data.outputs.artifactFilePath}\n`,
+    );
+    await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.not.toContain(inputPath);
     await expect(readFile(data.outputs.artifactRecordPath, "utf8")).resolves.toContain(data.artifact.artifactId);
+
+    await rm(inputPath);
+    const laterExtraction = await runMaterialCommand(root, [
+      "extract",
+      data.artifact.artifactId,
+      "--provider",
+      "fixture-markdown-extractor",
+      "--json",
+    ]);
+    expect(laterExtraction.stderr).toBe("");
+    expect(laterExtraction.envelope).toMatchObject({
+      ok: true,
+      capability: "extract",
+      tool: "extract",
+      data: {
+        record: {
+          source: {
+            kind: "artifact",
+            artifactId: data.artifact.artifactId,
+          },
+        },
+      },
+    });
   });
 
-  it("executes URL ingest with the MinerU extractor provider through offline fetch stubs", async () => {
+  it("returns a compact recovery command when extraction fails after the selected artifact is committed", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-extraction-failure-");
+    await appendFile(
+      path.join(root, "paper-search.toml"),
+      ['[zoteroBinding]', 'mode = "bound"', 'collectionKeys = ["RECOVERY1"]', ""].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(root, "providers", "fixture-markdown-extractor", "provider.js"),
+      [
+        "var __material_provider_exports = {",
+        "  createProvider() {",
+        "    return { async extract() { throw new Error(\"fixture extraction unavailable\"); } };",
+        "  }",
+        "};",
+        "globalThis.__material_provider_exports = __material_provider_exports;",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const inputDir = path.join(root, "inputs");
+    const inputPath = path.join(inputDir, "paper.pdf");
+    await mkdir(inputDir, { recursive: true });
+    await writeFile(inputPath, "%PDF-fixture\n", "utf8");
+
+    const result = await runMaterialCommand(root, ["material", "ingest", inputPath, "--json"]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "orchestrate",
+      tool: "material_ingest",
+      data: null,
+      diagnostics: {
+        workspaceRoot,
+        partial: true,
+        commitStage: "extraction",
+        artifactId: expect.any(String),
+        artifactPath: expect.any(String),
+        artifactRecordPath: expect.any(String),
+        attachTo: expect.any(String),
+        recoveryCommand: expect.stringMatching(
+          /^paper-search extract [A-Za-z0-9._-]+ --provider fixture-markdown-extractor --attach-to [A-Za-z0-9._-]+ --json$/u,
+        ),
+        zoteroSync: "pending",
+      },
+      errors: [expect.stringContaining("fixture extraction unavailable")],
+    });
+    const diagnostics = result.envelope.diagnostics!;
+    const artifactId = String(diagnostics.artifactId);
+    const itemId = String(diagnostics.attachTo);
+    await expect(readArtifactRecord(workspaceRoot, artifactId)).resolves.toMatchObject({
+      id: artifactId,
+      itemId,
+      status: "recorded",
+    });
+    await expect(readFile(String(diagnostics.artifactPath), "utf8")).resolves.toBe("%PDF-fixture\n");
+    await expect(readFile(path.join(workspaceRoot, "items", `${itemId}.json`), "utf8"))
+      .resolves.toContain(itemId);
+    await expect(readdir(path.join(workspaceRoot, "zotero", "receipts"))).resolves.toHaveLength(1);
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails before metadata or extraction writes when configured artifact storage is not a directory", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-path-collision-");
+    const inputDir = path.join(root, "inputs");
+    const inputPath = path.join(inputDir, "paper.txt");
+    await mkdir(inputDir, { recursive: true });
+    await writeFile(inputPath, "source remains unchanged\n", "utf8");
+    await writeFile(path.join(root, "artifact-storage"), "not a directory\n", "utf8");
+
+    const result = await runMaterialCommand(root, [
+      "material",
+      "ingest",
+      inputPath,
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      capability: "orchestrate",
+      tool: "material_ingest",
+      data: null,
+    });
+    expect(result.envelope.errors).toEqual(["Local storage root must be a real directory"]);
+    await expect(stat(workspaceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(inputPath, "utf8")).resolves.toBe("source remains unchanged\n");
+    await expect(readFile(path.join(root, "artifact-storage"), "utf8")).resolves.toBe("not a directory\n");
+  });
+
+  it("returns a typed orphan without deleting managed bytes when default selection cannot be committed", async () => {
+    const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-path-orphan-");
+    const inputDir = path.join(root, "inputs");
+    const inputPath = path.join(inputDir, "paper.txt");
+    const sourceBytes = Buffer.from("orphaned managed bytes remain\n", "utf8");
+    const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
+    await mkdir(inputDir, { recursive: true });
+    await writeFile(inputPath, sourceBytes);
+    await writeFile(workspaceRoot, "workspace path collision\n", "utf8");
+
+    const result = await runMaterialCommand(root, [
+      "material",
+      "ingest",
+      inputPath,
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    const envelope = result.envelope as MaterialIngestResultEnvelope;
+    expect(envelope).toMatchObject({
+      ok: false,
+      capability: "orchestrate",
+      tool: "material_ingest",
+      data: null,
+      diagnostics: {
+        inputKind: "path",
+        extractionInputKind: "artifact",
+        workspaceRoot,
+        partial: true,
+        orphanedBytes: true,
+        commitStage: "selection",
+      },
+      provenance: {
+        providerIds: ["builtin-local-artifact"],
+      },
+      orphan: {
+        outcome: "orphaned",
+        commitStage: "selection",
+        artifactId: expect.any(String),
+        artifactPath: expect.any(String),
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "artifact",
+          root: path.join(root, "artifact-storage"),
+          key: expect.stringMatching(/^[^/]+\/paper\.txt$/u),
+          sha256: sourceDigest,
+          sizeBytes: sourceBytes.byteLength,
+        },
+        sha256: sourceDigest,
+        sizeBytes: sourceBytes.byteLength,
+        metadataPath: expect.any(String),
+        error: expect.any(String),
+      },
+    });
+    expect(envelope.orphan).toBeDefined();
+    expect(envelope.orphan!.metadataPath).toBe(
+      path.join(workspaceRoot, "material", "artifacts", `${envelope.orphan!.artifactId}.json`),
+    );
+    expect(envelope.orphan!.artifactPath).toBe(
+      path.join(root, "artifact-storage", envelope.orphan!.artifactId, "paper.txt"),
+    );
+    await expect(readFile(envelope.orphan!.artifactPath)).resolves.toEqual(sourceBytes);
+    await expect(readFile(inputPath)).resolves.toEqual(sourceBytes);
+    await expect(readFile(workspaceRoot, "utf8")).resolves.toBe("workspace path collision\n");
+    await expect(stat(path.join(root, "extraction-storage"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("executes MinerU with a process-only token and never persists or reports the token", async () => {
+    const sentinel = "process-only-mineru-integration-sentinel";
+    const urlSentinel = "mineru-full-zip-url-sentinel";
+    vi.stubEnv("MINERU_TOKEN", sentinel);
     const { root, workspaceRoot } = await createProject("paper-search-material-ingest-run-mineru-");
     await enableMineruProvider(root);
 
@@ -402,7 +816,7 @@ describe("material ingest execution command", () => {
               task_id: "task_material_ingest_mineru",
               state: "done",
               markdown: "# MinerU material ingest\n",
-              full_zip_url: "https://oss.aliyuncs.com/mineru/task_material_ingest_mineru.zip",
+              full_zip_url: `https://oss.aliyuncs.com/mineru/task_material_ingest_mineru.zip?signature=${urlSentinel}#${urlSentinel}`,
             },
           }),
           {
@@ -485,10 +899,12 @@ describe("material ingest execution command", () => {
         kind: "artifact",
         artifactId: data.artifact.artifactId,
       },
-      message: "MinerU result zip: https://oss.aliyuncs.com/mineru/task_material_ingest_mineru.zip",
+      message: "MinerU extraction completed with inline Markdown.",
     });
     await expect(readFile(data.outputs.markdownPath, "utf8")).resolves.toBe("# MinerU material ingest\n");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("authorization"))
+      .toBe(`Bearer ${sentinel}`);
     expect(
       fetchMock.mock.calls.map(([input, init]) => ({
         method: init?.method ?? "GET",
@@ -498,5 +914,17 @@ describe("material ingest execution command", () => {
       { method: "POST", url: "https://mineru.net/api/v4/extract/task" },
       { method: "GET", url: "https://mineru.net/api/v4/extract/task/task_material_ingest_mineru" },
     ]);
+    expect(result.stdout).not.toContain(sentinel);
+    expect(result.stderr).not.toContain(sentinel);
+    expect(JSON.stringify(result.envelope)).not.toContain(sentinel);
+    expect(result.stdout).not.toContain(urlSentinel);
+    expect(JSON.stringify(result.envelope)).not.toContain(urlSentinel);
+    await expect(stat(path.join(root, "appdata", "paper-search", "credentials.toml")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    const persistedText = await readPersistedText(root);
+    expect(persistedText).not.toContain(sentinel);
+    expect(persistedText).not.toContain(urlSentinel);
+    expect(persistedText).toContain("full_zip_url");
+    expect(persistedText).toContain("signature");
   });
 });

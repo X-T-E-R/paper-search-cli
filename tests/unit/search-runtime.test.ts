@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../../src/config/defaults.js";
 import type { ResolvedConfig } from "../../src/config/schema.js";
 import {
+  applyReturnedPageOrdering,
   loadInstalledProviderRuntime,
   resolveScopedMaxResults,
+  resolveSearchOptions,
   runProviderSearch,
 } from "../../src/search/runtime.js";
-import type { ProviderInventoryEntry } from "../../src/providers/sdk/types.js";
+import type { ProviderInventoryEntry, ProviderManifest } from "../../src/providers/sdk/types.js";
 
 const tempDirs: string[] = [];
 
@@ -42,7 +44,7 @@ async function writeSearchProvider(
   providerPath: string,
   version: string,
   platform: string,
-  options: { id?: string; inventory?: ProviderInventoryEntry } = {},
+  options: { id?: string; inventory?: ProviderInventoryEntry; configSchema?: ProviderManifest["configSchema"] } = {},
 ): Promise<void> {
   const id = options.id ?? "alpha";
   await mkdir(providerPath, { recursive: true });
@@ -54,6 +56,7 @@ async function writeSearchProvider(
       version,
       sourceType: "academic",
       permissions: { urls: ["https://example.test/*"] },
+      ...(options.configSchema ? { configSchema: options.configSchema } : {}),
       ...(options.inventory ? { inventory: options.inventory } : {}),
     }),
     "utf8",
@@ -105,6 +108,115 @@ describe("resolveScopedMaxResults", () => {
         limit: 80,
       }),
     ).toBe(80);
+  });
+});
+
+describe("search ordering defaults", () => {
+  const manifest: ProviderManifest = {
+    id: "alpha",
+    name: "Alpha",
+    version: "1.0.0",
+    sourceType: "academic",
+    permissions: { urls: ["https://example.test/*"] },
+  };
+
+  it("resolves explicit, provider, global, and built-in sort precedence", () => {
+    const config = createConfig("C:/fixture");
+    config.search.defaultAcademicSort = "citations";
+    config.platform.alpha = { defaultSort: "date" };
+
+    expect(resolveSearchOptions(config, manifest, { query: "q", sortBy: "relevance" }).sortBy)
+      .toBe("relevance");
+    expect(resolveSearchOptions(config, manifest, { query: "q" }).sortBy).toBe("date");
+
+    config.platform.alpha = {};
+    expect(resolveSearchOptions(config, manifest, { query: "q" }).sortBy).toBe("citations");
+
+    config.search.defaultAcademicSort = "relevance";
+    expect(resolveSearchOptions(config, manifest, { query: "q" }).sortBy).toBe("relevance");
+  });
+
+  it("sorts citation values descending, keeps ties stable, and moves missing values last", () => {
+    const result = applyReturnedPageOrdering({
+      platform: "alpha",
+      query: "q",
+      totalResults: 4,
+      page: 1,
+      items: [
+        { itemType: "journalArticle", title: "low", citationCount: 2 },
+        { itemType: "journalArticle", title: "high-a", citationCount: 9 },
+        { itemType: "journalArticle", title: "missing" },
+        { itemType: "journalArticle", title: "high-b", citationCount: 9 },
+      ],
+    }, { value: "citations", origin: "search_config" });
+
+    expect(result.items.map((item) => item.title)).toEqual(["high-a", "high-b", "low", "missing"]);
+    expect(result.ordering).toEqual({
+      requested: "citations",
+      origin: "search_config",
+      scope: "returned_page",
+      mode: "post_page",
+      applied: true,
+      direction: "desc",
+      valueCount: 3,
+      missingCount: 1,
+      reordered: true,
+    });
+  });
+
+  it("preserves provider order and reports unsupported metadata", () => {
+    const result = applyReturnedPageOrdering({
+      platform: "alpha",
+      query: "q",
+      totalResults: 2,
+      page: 1,
+      items: [
+        { itemType: "journalArticle", title: "first" },
+        { itemType: "journalArticle", title: "second" },
+      ],
+    }, { value: "citations", origin: "request" });
+
+    expect(result.items.map((item) => item.title)).toEqual(["first", "second"]);
+    expect(result.ordering).toMatchObject({ mode: "unsupported", applied: false, missingCount: 2 });
+  });
+});
+
+describe("exact default-disabled provider intervention", () => {
+  it("offers enable action for auto/default-off but stays silent for explicit disabled", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-runtime-default-off-"));
+    tempDirs.push(root);
+    const config = createConfig(root);
+    await writeSearchProvider(
+      path.join(config.providers.installDir, "search", "googlescholar"),
+      "1.0.0",
+      "googlescholar",
+      {
+        id: "googlescholar",
+        configSchema: { enabled: { type: "boolean", default: false } },
+      },
+    );
+
+    await expect(runProviderSearch(config, "academic", {
+      query: "graph",
+      platform: "googlescholar",
+    })).resolves.toMatchObject({
+      skipped: true,
+      action: { command: "paper-search configure googlescholar" },
+    });
+
+    const broadSearch = await runProviderSearch(config, "academic", {
+      query: "graph",
+      platform: "all",
+    });
+    expect(broadSearch).not.toHaveProperty("action");
+
+    config.platform.googlescholar = { enabled: false };
+    const explicitlyDisabled = await runProviderSearch(config, "academic", {
+      query: "graph",
+      platform: "googlescholar",
+    });
+    expect(explicitlyDisabled).toMatchObject({ skipped: true });
+    expect(explicitlyDisabled).not.toHaveProperty("action");
   });
 });
 

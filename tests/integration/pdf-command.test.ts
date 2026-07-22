@@ -7,6 +7,7 @@ import { buildProgram } from "../../src/program.js";
 import { addResourceToWorkspace } from "../../src/workspace/store.js";
 
 const tempDirs: string[] = [];
+const downloaderFixturesRoot = path.resolve("tests", "fixtures", "material-downloaders");
 
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -23,16 +24,27 @@ afterEach(async () => {
 });
 
 describe("resource-pdf command", () => {
-  it("fetches a PDF into the configured local attachment sink", async () => {
+  it("fetches a PDF into configured local artifact storage", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-pdf-cli-"));
     tempDirs.push(root);
     const workspaceRoot = path.join(root, "workspace");
     await writeFile(
       path.join(root, "paper-search.toml"),
       [
+        "[providers]",
+        `installDir = "${downloaderFixturesRoot.replace(/\\/g, "\\\\")}"`,
+        "",
         "[workspace]",
         `root = \"${workspaceRoot.replace(/\\/g, "\\\\")}\"`,
         'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `artifactRoot = "${path.join(root, "artifact-storage").replace(/\\/g, "\\\\")}"`,
+        `extractionRoot = "${path.join(root, "extraction-storage").replace(/\\/g, "\\\\")}"`,
+        `exportRoot = "${path.join(root, "exports").replace(/\\/g, "\\\\")}"`,
+        "",
+        "[platform.fixture-artifact-downloader]",
+        'mode = "integration"',
         "",
       ].join("\n"),
       "utf8",
@@ -47,12 +59,7 @@ describe("resource-pdf command", () => {
       defaultCollectionPath: "Inbox",
     });
 
-    const fetchMock = vi.fn(async () =>
-      new Response("cli-pdf", {
-        status: 200,
-        headers: { "content-type": "application/pdf" },
-      }),
-    );
+    const fetchMock = vi.fn(async () => { throw new Error("core fetch must not run"); });
     vi.stubGlobal("fetch", fetchMock);
 
     let stdout = "";
@@ -79,9 +86,7 @@ describe("resource-pdf command", () => {
     }
 
     expect(stderr).toBe("");
-    expect(fetchMock).toHaveBeenCalledWith("https://example.test/files/cli.pdf", {
-      headers: { accept: "application/pdf,*/*" },
-    });
+    expect(fetchMock).not.toHaveBeenCalled();
     const parsed = JSON.parse(stdout);
     expect(parsed).toMatchObject({
       ok: true,
@@ -94,8 +99,14 @@ describe("resource-pdf command", () => {
         attachmentId: expect.any(String),
         artifactId: expect.any(String),
         filename: "cli-paper.pdf",
-        path: `attachments/${addResult.record.id}/cli-paper.pdf`,
-        message: "PDF fetched into local workspace attachments",
+        storage: {
+          schemaVersion: 1,
+          sink: "local",
+          area: "artifact",
+          root: path.join(root, "artifact-storage"),
+          key: expect.stringMatching(/\/cli-paper\.pdf$/u),
+        },
+        message: "PDF acquired through material provider and attached to the workspace item",
         attachment: {
           itemId: addResult.record.id,
           artifactId: expect.any(String),
@@ -105,19 +116,20 @@ describe("resource-pdf command", () => {
     expect(parsed.data.artifactId).not.toBe(addResult.record.id);
     expect(parsed.data.attachment.artifactId).toBe(parsed.data.artifactId);
     await expect(
-      readFile(path.join(workspaceRoot, parsed.data.path), "utf8"),
-    ).resolves.toBe("cli-pdf");
+      readFile(path.join(parsed.data.storage.root, parsed.data.storage.key), "utf8"),
+    ).resolves.toBe("fixture downloader bytes\n");
     await expect(readArtifactRecord(workspaceRoot, parsed.data.artifactId)).resolves.toMatchObject({
       id: parsed.data.artifactId,
       kind: "pdf",
       status: "downloaded",
       itemId: addResult.record.id,
       filename: "cli-paper.pdf",
-      path: `attachments/${addResult.record.id}/cli-paper.pdf`,
+      storage: parsed.data.storage,
       remoteUrl: "https://example.test/files/cli.pdf",
       provenance: {
         origin: "download",
         sourceUrl: "https://example.test/files/cli.pdf",
+        providerId: "fixture-artifact-downloader",
       },
     });
   });
@@ -129,9 +141,17 @@ describe("resource-pdf command", () => {
     await writeFile(
       path.join(root, "paper-search.toml"),
       [
+        "[providers]",
+        `installDir = "${downloaderFixturesRoot.replace(/\\/g, "\\\\")}"`,
+        "",
         "[workspace]",
         `root = \"${workspaceRoot.replace(/\\/g, "\\\\")}\"`,
         'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `artifactRoot = "${path.join(root, "artifact-storage").replace(/\\/g, "\\\\")}"`,
+        `extractionRoot = "${path.join(root, "extraction-storage").replace(/\\/g, "\\\\")}"`,
+        `exportRoot = "${path.join(root, "exports").replace(/\\/g, "\\\\")}"`,
         "",
       ].join("\n"),
       "utf8",
@@ -186,7 +206,7 @@ describe("resource-pdf command", () => {
         attachmentId: expect.any(String),
         artifactId: expect.any(String),
         sourceUrl: "https://example.test/files/alias.pdf",
-        message: "PDF fetch recorded but download was not requested",
+        message: "PDF acquisition recorded through material provider without downloading bytes",
       },
     });
     expect(parsed.data.artifactId).not.toBe(addResult.record.id);
@@ -202,5 +222,120 @@ describe("resource-pdf command", () => {
         sourceUrl: "https://example.test/files/alias.pdf",
       },
     });
+  });
+
+  it("does not let a requested PDF suppress a later default acquisition", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-pdf-request-then-acquire-"));
+    tempDirs.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    await writeFile(
+      path.join(root, "paper-search.toml"),
+      [
+        "[providers]",
+        `installDir = "${downloaderFixturesRoot.replace(/\\/g, "\\\\")}"`,
+        "",
+        "[workspace]",
+        `root = "${workspaceRoot.replace(/\\/g, "\\\\")}"`,
+        'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `artifactRoot = "${path.join(root, "artifact-storage").replace(/\\/g, "\\\\")}"`,
+        `extractionRoot = "${path.join(root, "extraction-storage").replace(/\\/g, "\\\\")}"`,
+        `exportRoot = "${path.join(root, "exports").replace(/\\/g, "\\\\")}"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const added = await addResourceToWorkspace(workspaceRoot, {
+      item: { itemType: "journalArticle", title: "Requested then acquired" },
+      defaultCollectionPath: "Inbox",
+    });
+
+    const runPdf = async (args: string[]): Promise<Record<string, unknown>> => {
+      let stdout = "";
+      const originalCwd = process.cwd();
+      process.chdir(root);
+      try {
+        await buildProgram({ stdout: { write(chunk: string) { stdout += chunk; } } }).parseAsync([
+          "node", "paper-search", ...args,
+        ]);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      return JSON.parse(stdout) as Record<string, unknown>;
+    };
+
+    const requested = await runPdf([
+      "resource-pdf", added.record.id, "--url", "https://example.test/files/requested.pdf", "--no-download", "--json",
+    ]);
+    expect(requested).toMatchObject({
+      ok: true,
+      data: { artifactId: expect.any(String), message: "PDF acquisition recorded through material provider without downloading bytes" },
+    });
+    const requestedArtifactId = (requested.data as { artifactId: string }).artifactId;
+
+    const acquired = await runPdf([
+      "resource-pdf", added.record.id, "--url", "https://example.test/files/requested.pdf", "--json",
+    ]);
+    expect(acquired).toMatchObject({
+      ok: true,
+      tool: "resource_pdf",
+      data: {
+        artifactId: expect.any(String),
+        message: "PDF acquired through material provider and attached to the workspace item",
+        storage: { area: "artifact", key: expect.stringMatching(/\.pdf$/u) },
+      },
+    });
+    const acquiredData = acquired.data as { artifactId: string; storage: { root: string; key: string } };
+    expect(acquiredData.artifactId).not.toBe(requestedArtifactId);
+    await expect(readFile(path.join(acquiredData.storage.root, acquiredData.storage.key), "utf8")).resolves.toBe(
+      "fixture downloader bytes\n",
+    );
+  });
+
+  it("fails actionably without a downloader and never restores direct core HTTP fetching", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-pdf-no-provider-"));
+    tempDirs.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    await writeFile(
+      path.join(root, "paper-search.toml"),
+      [
+        "[providers]",
+        `installDir = "${path.join(root, "empty-providers").replace(/\\/g, "\\\\")}"`,
+        "",
+        "[workspace]",
+        `root = "${workspaceRoot.replace(/\\/g, "\\\\")}"`,
+        'defaultCollection = "Inbox"',
+        "",
+        "[storage]",
+        `artifactRoot = "${path.join(root, "artifact-storage").replace(/\\/g, "\\\\")}"`,
+        `extractionRoot = "${path.join(root, "extraction-storage").replace(/\\/g, "\\\\")}"`,
+        `exportRoot = "${path.join(root, "exports").replace(/\\/g, "\\\\")}"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const added = await addResourceToWorkspace(workspaceRoot, {
+      item: { itemType: "journalArticle", title: "No provider" },
+      defaultCollectionPath: "Inbox",
+    });
+    const fetchMock = vi.fn(async () => { throw new Error("direct fetch must remain disabled"); });
+    vi.stubGlobal("fetch", fetchMock);
+    let stdout = "";
+    const originalCwd = process.cwd();
+    process.chdir(root);
+    try {
+      await buildProgram({ stdout: { write(chunk: string) { stdout += chunk; } } }).parseAsync([
+        "node", "paper-search", "resource-pdf", added.record.id, "--url", "https://example.test/no-provider.pdf", "--json",
+      ]);
+    } finally {
+      process.chdir(originalCwd);
+    }
+    expect(JSON.parse(stdout)).toMatchObject({
+      ok: false,
+      tool: "resource_pdf",
+      errors: [expect.stringContaining("No usable material artifact downloader provider")],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

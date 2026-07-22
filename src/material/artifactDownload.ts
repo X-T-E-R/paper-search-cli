@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   listProviderPackageDirectories,
@@ -7,10 +7,11 @@ import {
 } from "../providers/paths.js";
 import type { ResolvedConfig } from "../config/schema.js";
 import { createPlanEnvelope, type PlannedOperationData } from "../surface/plan.js";
-import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
+import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import {
   ARTIFACT_RECORDS_DIR,
   createArtifactRecord,
+  readArtifactRecord,
 } from "./artifactStore.js";
 import { loadMaterialProviderPackage, type LoadedMaterialProviderPackage } from "./package/load.js";
 import {
@@ -23,8 +24,22 @@ import { tryParseDoiIdentifier } from "./resolverResult.js";
 import type { MaterialIdentifierInput, MaterialResolverCandidateLocation } from "./types.js";
 import type { ArtifactAttempt, ArtifactKind, ArtifactRecord } from "./records.js";
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "./cache.js";
+import { detectUnusableMaterialContent } from "./contentValidation.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
-import type { WorkspaceItemRecord } from "../workspace/store.js";
+import {
+  ensureResourceSelectedInWorkspace,
+  type WorkspaceItemRecord,
+} from "../workspace/store.js";
+import type { ResourceItem } from "../providers/sdk/types.js";
+import { resolveLocalStorageRef, writeLocalStorageBytes } from "../storage/local.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
+import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
+import {
+  sanitizeUrlForPersistence,
+  sanitizeUrlsForPersistenceInText,
+} from "../runtime/sanitizeUrl.js";
+import { createInstitutionalJob } from "../institutional/jobStore.js";
 
 export interface ArtifactDownloadOptions {
   config: ResolvedConfig;
@@ -34,6 +49,12 @@ export interface ArtifactDownloadOptions {
   resolverProviderId?: string;
   policy?: string;
   download?: boolean;
+  filename?: string;
+  /** Material ingest defers selection projection until extraction is complete. */
+  deferZoteroSync?: boolean;
+  /** Create a visible-browser continuation only after ordinary DOI acquisition fails. */
+  institutional?: boolean;
+  institutionProfile?: string;
 }
 
 export interface ArtifactDownloadProviderSummary {
@@ -60,12 +81,93 @@ export interface ArtifactDownloadData {
   artifactPath?: string;
 }
 
+/** Bytes were committed, but their durable artifact record was not. */
+export interface ArtifactDownloadOrphanOutcome {
+  outcome: "orphaned";
+  commitStage: "selection" | "metadata";
+  artifactId: string;
+  artifactPath: string;
+  storage: LocalStorageRefV1;
+  sha256: string;
+  sizeBytes: number;
+  metadataPath: string;
+  error: string;
+}
+
+export type ArtifactDownloadResultEnvelope = ResultEnvelope<ArtifactDownloadData> & {
+  /** Present only when bytes were committed but the record metadata was not. */
+  orphan?: ArtifactDownloadOrphanOutcome;
+};
+
 interface ResolvedArtifactDownloadInput {
   summary: ArtifactDownloadInputSummary;
   sourceUrl?: string;
   identifier?: MaterialIdentifierInput;
   resolverRequired: boolean;
   attachedItemId?: string;
+}
+
+function selectedItemTitle(input: ResolvedArtifactDownloadInput, filename: string): string {
+  if (input.identifier?.scheme === "doi") return input.identifier.value;
+  const candidate = input.sourceUrl ?? input.summary.url;
+  if (candidate) {
+    try {
+      const basename = decodeURIComponent(path.posix.basename(new URL(candidate).pathname));
+      const withoutExtension = basename.replace(/\.[A-Za-z0-9]{1,8}$/u, "").trim();
+      if (withoutExtension) return withoutExtension;
+    } catch {
+      // The input was already validated; fall through to the provider filename.
+    }
+  }
+  return filename.replace(/\.[A-Za-z0-9]{1,8}$/u, "").trim() || filename;
+}
+
+function selectedItemForDownload(
+  input: ResolvedArtifactDownloadInput,
+  filename: string,
+  sourceUrl: string,
+): ResourceItem {
+  if (input.identifier?.scheme === "doi") {
+    return {
+      itemType: "journalArticle",
+      title: selectedItemTitle(input, filename),
+      DOI: input.identifier.value,
+      url: `https://doi.org/${input.identifier.value}`,
+      source: "artifact-download",
+    };
+  }
+  return {
+    itemType: "document",
+    title: selectedItemTitle(input, filename),
+    url: sanitizeUrlForPersistence(sourceUrl),
+    source: "artifact-download",
+  };
+}
+
+async function attachDefaultSelection(options: {
+  config: ResolvedConfig;
+  input: ResolvedArtifactDownloadInput;
+  filename: string;
+  sourceUrl: string;
+}): Promise<ResolvedArtifactDownloadInput> {
+  if (
+    options.input.attachedItemId ||
+    options.config.material.downloadDisposition === "materialized"
+  ) {
+    return options.input;
+  }
+  const selected = await ensureResourceSelectedInWorkspace(options.config.workspace.root, {
+    item: selectedItemForDownload(options.input, options.filename, options.sourceUrl),
+    defaultCollectionPath: options.config.workspace.defaultCollection,
+  });
+  return {
+    ...options.input,
+    attachedItemId: selected.record.id,
+    summary: {
+      ...options.input.summary,
+      attachedItemId: selected.record.id,
+    },
+  };
 }
 
 interface ProviderDownloadResult {
@@ -78,10 +180,25 @@ interface ProviderDownloadResult {
   message?: string;
 }
 
+class UnusableArtifactContentError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message);
+    this.name = "UnusableArtifactContentError";
+  }
+}
+
 export { AcquireResolverError } from "./acquireResolver.js";
 
+export interface ArtifactDownloadFailureDetails {
+  attempts: ArtifactAttempt[];
+  statusCodes: number[];
+}
+
 export class ArtifactDownloadError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly details?: ArtifactDownloadFailureDetails,
+  ) {
     super(message);
     this.name = "ArtifactDownloadError";
   }
@@ -221,7 +338,7 @@ async function resolveDownloadInput(
       attachedItemId,
       summary: {
         kind: "identifier",
-        value: trimmed,
+        value: sanitizeUrlForPersistence(trimmed),
         identifier: doiIdentifier,
         ...(attachedItemId ? { attachedItemId } : {}),
       },
@@ -237,7 +354,7 @@ async function resolveDownloadInput(
       summary: {
         kind: "url",
         value: trimmed,
-        url: trimmed,
+        url: sanitizeUrlForPersistence(trimmed),
         ...(attachedItemId ? { attachedItemId } : {}),
       },
     };
@@ -368,7 +485,7 @@ function inferArtifactKind(contentType: string | undefined, filename: string | u
   return "bytes";
 }
 
-function sanitizeFilename(value: string | undefined): string {
+export function sanitizeArtifactFilename(value: string | undefined): string {
   const cleaned = (value ?? "")
     .replace(/[<>:"/\\|?*\x00-\x1F]/gu, "_")
     .replace(/\s+/gu, " ")
@@ -425,15 +542,25 @@ function parseProviderDownloadResult(value: unknown, sourceUrl: string): Provide
   const remoteUrl = optionalString(value.remoteUrl, "remoteUrl") ?? sourceUrl;
   if (!isHttpUrl(remoteUrl)) fail("download().remoteUrl must be an http(s) URL when provided");
   const contentType = optionalString(value.contentType, "contentType");
-  const filename = sanitizeFilename(optionalString(value.filename, "filename") ?? filenameFromUrl(remoteUrl));
+  const filename = sanitizeArtifactFilename(optionalString(value.filename, "filename") ?? filenameFromUrl(remoteUrl));
   const kind = artifactKindFromValue(value.kind, inferArtifactKind(contentType, filename));
   const status = optionalNumber(value.status, "status");
   const message = optionalString(value.message, "message");
+  const bytes = decodeProviderBytes(value);
+  if (kind === "html" || contentType?.toLowerCase().includes("text/html")) {
+    const unusable = detectUnusableMaterialContent(bytes.toString("utf8"));
+    if (unusable) {
+      throw new UnusableArtifactContentError(
+        `download() returned unusable ${unusable.kind} HTML${status !== undefined ? ` after HTTP ${status}` : ""} (${unusable.marker})`,
+        status,
+      );
+    }
+  }
   return {
     kind,
     filename,
     ...(contentType ? { contentType } : {}),
-    bytes: decodeProviderBytes(value),
+    bytes,
     remoteUrl,
     ...(status !== undefined ? { status } : {}),
     ...(message ? { message } : {}),
@@ -444,28 +571,8 @@ function toWorkspacePath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-function resolveWorkspacePath(workspaceRoot: string, relativePath: string): string {
-  const root = path.resolve(workspaceRoot);
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    fail(`Workspace artifact path escapes workspace root: ${relativePath}`);
-  }
-  return target;
-}
-
 function artifactBytesRelativePath(artifactId: string, filename: string): string {
-  return toWorkspacePath(path.join("material", "files", artifactId, filename));
-}
-
-async function writeArtifactBytes(options: {
-  workspaceRoot: string;
-  relativePath: string;
-  bytes: Buffer;
-}): Promise<void> {
-  const target = resolveWorkspacePath(options.workspaceRoot, options.relativePath);
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, options.bytes);
+  return toWorkspacePath(path.join(artifactId, filename));
 }
 
 function providerInput(options: {
@@ -511,7 +618,7 @@ function artifactRecordInput(options: {
   policy: string;
   download: true;
   providerResult: ProviderDownloadResult;
-  relativePath: string;
+  storage: LocalStorageRefV1;
   resolver?: ResolverProviderSummary;
   resolverSource?: string;
   priorAttempts?: ArtifactAttempt[];
@@ -526,19 +633,19 @@ function artifactRecordInput(options: {
   policy: string;
   download: boolean;
   providerResult?: ProviderDownloadResult;
-  relativePath?: string;
+  storage?: LocalStorageRefV1;
   resolver?: ResolverProviderSummary;
   resolverSource?: string;
   priorAttempts?: ArtifactAttempt[];
   sourceUrl?: string;
   chosenCandidate?: MaterialResolverCandidateLocation;
 }): Parameters<typeof createArtifactRecord>[1] {
-  const downloaded = options.download && options.providerResult && options.relativePath;
+  const downloaded = options.download && options.providerResult && options.storage;
   const effectiveSourceUrl =
     options.sourceUrl ?? options.resolvedInput.sourceUrl ?? options.resolvedInput.identifier?.value;
   const filename = downloaded
     ? options.providerResult!.filename
-    : sanitizeFilename(
+    : sanitizeArtifactFilename(
         filenameFromUrl(effectiveSourceUrl ?? "") ?? options.resolvedInput.identifier?.value ?? "artifact.bin",
       );
   const kind = downloaded
@@ -565,7 +672,7 @@ function artifactRecordInput(options: {
     ...(options.resolvedInput.attachedItemId ? { itemId: options.resolvedInput.attachedItemId } : {}),
     filename,
     ...(downloaded && options.providerResult!.contentType ? { contentType: options.providerResult!.contentType } : {}),
-    ...(downloaded ? { path: options.relativePath! } : {}),
+    ...(downloaded ? { storage: options.storage! } : {}),
     remoteUrl: downloaded ? options.providerResult!.remoteUrl : effectiveSourceUrl,
     ...(downloaded ? { sizeBytes: options.providerResult!.bytes.byteLength } : {}),
     provenance: {
@@ -605,12 +712,14 @@ async function downloadWithResolverFunnel(options: {
   attempts: ArtifactAttempt[];
   chosenCandidate?: MaterialResolverCandidateLocation;
   sourceUrl: string;
+  warnings: string[];
 }> {
   let candidates: MaterialResolverCandidateLocation[] = [];
   let resolver: ResolverProviderSummary | undefined;
   let resolverSource: string | undefined;
   let priorAttempts: ArtifactAttempt[] = [];
   let sourceUrl = options.resolvedInput.sourceUrl;
+  let warnings: string[] = [];
 
   if (options.resolvedInput.resolverRequired) {
     if (!options.resolvedInput.identifier) {
@@ -627,6 +736,7 @@ async function downloadWithResolverFunnel(options: {
     resolverSource = resolved.resolverResult.provenance.source;
     candidates = resolved.candidates;
     priorAttempts = resolved.attempts;
+    warnings = resolved.warnings;
     sourceUrl = candidates[0]!.url;
   } else if (!sourceUrl) {
     fail("Artifact download input did not resolve to a source URL");
@@ -636,6 +746,7 @@ async function downloadWithResolverFunnel(options: {
 
   const attempts = [...priorAttempts];
   const candidateErrors: string[] = [];
+  const statusCodes: number[] = [];
   for (const [index, candidate] of candidates.entries()) {
     const attemptAt = new Date().toISOString();
     try {
@@ -669,27 +780,44 @@ async function downloadWithResolverFunnel(options: {
         attempts,
         chosenCandidate: candidate,
         sourceUrl: candidate.url,
+        warnings,
       };
     } catch (error) {
       const message = formatError(error);
-      candidateErrors.push(`${candidate.url}: ${message}`);
+      const status = providerHttpStatus(error);
+      if (status !== undefined) statusCodes.push(status);
+      candidateErrors.push(`${sanitizeUrlForPersistence(candidate.url)}: ${message}`);
       attempts.push({
         tier: "artifact-download-candidate",
         source: candidate.url,
         providerId: options.provider.id,
         ok: false,
+        ...(status !== undefined ? { status } : {}),
         message,
         at: attemptAt,
       });
     }
   }
 
-  fail(
+  throw new ArtifactDownloadError(
     [
       "All resolver candidate downloads failed",
       ...candidateErrors.map((entry) => `- ${entry}`),
     ].join("\n"),
+    { attempts, statusCodes: [...new Set(statusCodes)] },
   );
+}
+
+function providerHttpStatus(error: unknown): number | undefined {
+  if (typeof error === "object" && error !== null && "status" in error) {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) {
+      return status;
+    }
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/\bHTTP\s+([1-5]\d{2})\b/iu);
+  return match ? Number.parseInt(match[1]!, 10) : undefined;
 }
 
 export async function planArtifactDownload(
@@ -701,9 +829,10 @@ export async function planArtifactDownload(
   const download = options.download !== false;
   const resolvedInput = await resolveDownloadInput(options.config, options.input, attachTo);
   const resolverPlan = resolvedInput.resolverRequired
-    ? await planResolverProvider({
+      ? await planResolverProvider({
         installDir: options.config.providers.installDir,
         resolverProviderId: options.resolverProviderId,
+        config: options.config,
       })
     : undefined;
   const providerPackage = await selectDownloaderProvider({
@@ -711,8 +840,15 @@ export async function planArtifactDownload(
     providerId: options.providerId,
   });
   const provider = providerSummary(providerPackage);
-  const plannedFileDir = path.join(options.config.workspace.root, "material", "files", "<new-artifact-id>");
+  const plannedFileDir = path.join(options.config.storage.artifactRoot, "<new-artifact-id>");
   const recordDir = path.join(options.config.workspace.root, ARTIFACT_RECORDS_DIR);
+  const selectionTargets = [
+    path.join(options.config.workspace.root, WORKSPACE_ITEMS_DIR),
+    path.join(options.config.workspace.root, "collections.json"),
+  ];
+  const selectsDownloadedResource = download &&
+    !resolvedInput.attachedItemId &&
+    options.config.material.downloadDisposition === "selected";
   const resolverSteps = resolverPlan
     ? [
         {
@@ -768,11 +904,21 @@ export async function planArtifactDownload(
             {
               id: "write-artifact",
               action: "write" as const,
-              description: "Write artifact bytes to the workspace.",
+              description: "Write artifact bytes to the configured artifact storage root.",
               targetPaths: [plannedFileDir],
               providerId: provider.id,
               policy,
             },
+            ...(selectsDownloadedResource
+              ? [{
+                  id: "select-downloaded-resource",
+                  action: "record" as const,
+                  description: "Create or reuse the selected workspace item for the downloaded resource.",
+                  targetPaths: selectionTargets,
+                  providerId: provider.id,
+                  policy,
+                }]
+              : []),
           ]
         : []),
       {
@@ -791,6 +937,7 @@ export async function planArtifactDownload(
           ...(resolverPlan ? [resolverPlan.packagePath] : []),
           provider.packagePath,
           plannedFileDir,
+          ...(selectsDownloadedResource ? selectionTargets : []),
           recordDir,
         ]
       : [...(resolverPlan ? [resolverPlan.packagePath] : []), provider.packagePath, recordDir],
@@ -800,6 +947,7 @@ export async function planArtifactDownload(
       workspaceRoot: options.config.workspace.root,
       attachTo: resolvedInput.attachedItemId ?? null,
       download,
+      downloadDisposition: options.config.material.downloadDisposition,
       ...(resolverPlan ? { resolverProviderId: resolverPlan.id } : {}),
     },
     provenance: {
@@ -811,12 +959,13 @@ export async function planArtifactDownload(
 
 export async function runArtifactDownload(
   options: ArtifactDownloadOptions,
-): Promise<ResultEnvelope<ArtifactDownloadData>> {
+): Promise<ArtifactDownloadResultEnvelope> {
   const started = Date.now();
   const attachTo = normalizeAttachTo(options.attachTo);
   const policy = normalizePolicy(options.policy);
   const download = options.download !== false;
-  const resolvedInput = await resolveDownloadInput(options.config, options.input, attachTo);
+  let warnings: string[] = [];
+  let resolvedInput = await resolveDownloadInput(options.config, options.input, attachTo);
   const providerPackage = await selectDownloaderProvider({
     installDir: options.config.providers.installDir,
     providerId: options.providerId,
@@ -843,6 +992,7 @@ export async function runArtifactDownload(
       resolver = resolved.resolver;
       resolverSource = resolved.resolverResult.provenance.source;
       priorAttempts = resolved.attempts;
+      warnings = resolved.warnings;
       sourceUrl = resolved.candidates[0]?.url;
     }
     record = await createArtifactRecord(
@@ -869,7 +1019,7 @@ export async function runArtifactDownload(
         capability: "acquire",
         attachTo: resolvedInput.attachedItemId ?? null,
       },
-      cacheRoot: path.join(options.config.workspace.root, ".material-provider-cache"),
+      cacheRoot: resolveMaterialProviderCacheRoot(options.config),
       workspaceRoot: options.config.workspace.root,
     });
     const loadedProvider = await invokeMaterialProviderFactoryInNode(
@@ -890,36 +1040,99 @@ export async function runArtifactDownload(
       provider,
       downloadMethod,
     });
-    artifactPath = artifactBytesRelativePath(artifactId, funnelResult.providerResult.filename);
-    await writeArtifactBytes({
-      workspaceRoot: options.config.workspace.root,
-      relativePath: artifactPath,
+    warnings = funnelResult.warnings;
+    let filename = sanitizeArtifactFilename(options.filename ?? funnelResult.providerResult.filename);
+    if (options.filename && funnelResult.providerResult.kind === "pdf" && !/\.pdf$/iu.test(filename)) {
+      filename = `${filename}.pdf`;
+    }
+    const stored = await writeLocalStorageBytes({
+      root: options.config.storage.artifactRoot,
+      key: artifactBytesRelativePath(artifactId, filename),
+      area: "artifact",
       bytes: funnelResult.providerResult.bytes,
     });
-    record = await createArtifactRecord(
-      options.config.workspace.root,
-      artifactRecordInput({
-        artifactId,
-        createdAt,
-        provider,
-        resolvedInput,
-        policy,
-        download: true,
-        providerResult: funnelResult.providerResult,
-        relativePath: artifactPath,
-        resolver: funnelResult.resolver,
-        resolverSource: funnelResult.resolverSource,
-        priorAttempts: funnelResult.attempts,
+    artifactPath = stored.path;
+    const normalizedProviderResult = { ...funnelResult.providerResult, filename };
+    let commitStage: ArtifactDownloadOrphanOutcome["commitStage"] = "selection";
+    try {
+      resolvedInput = await attachDefaultSelection({
+        config: options.config,
+        input: resolvedInput,
+        filename,
         sourceUrl: funnelResult.sourceUrl,
-        chosenCandidate: funnelResult.chosenCandidate,
-      }),
-    );
+      });
+      commitStage = "metadata";
+      record = await createArtifactRecord(
+        options.config.workspace.root,
+        artifactRecordInput({
+          artifactId,
+          createdAt,
+          provider,
+          resolvedInput,
+          policy,
+          download: true,
+          providerResult: normalizedProviderResult,
+          storage: stored.ref,
+          resolver: funnelResult.resolver,
+          resolverSource: funnelResult.resolverSource,
+          priorAttempts: funnelResult.attempts,
+          sourceUrl: funnelResult.sourceUrl,
+          chosenCandidate: funnelResult.chosenCandidate,
+        }),
+      );
+    } catch (error) {
+      const metadataError = formatError(error);
+      const orphan: ArtifactDownloadOrphanOutcome = {
+        outcome: "orphaned",
+        commitStage,
+        artifactId,
+        artifactPath: stored.path,
+        storage: stored.ref,
+        sha256: stored.ref.sha256!,
+        sizeBytes: stored.ref.sizeBytes!,
+        metadataPath: path.join(path.resolve(options.config.workspace.root), ARTIFACT_RECORDS_DIR, `${artifactId}.json`),
+        error: metadataError,
+      };
+      return {
+        ok: false,
+        capability: "acquire",
+        tool: "artifact_download",
+        data: null as unknown as ArtifactDownloadData,
+        orphan,
+        diagnostics: {
+          elapsedMs: Date.now() - started,
+          inputKind: resolvedInput.summary.kind,
+          workspaceRoot: options.config.workspace.root,
+          attachTo: resolvedInput.attachedItemId ?? null,
+          download,
+          partial: true,
+          orphanedBytes: true,
+        },
+        errors: [
+          commitStage === "selection"
+            ? `Workspace selection failed after artifact bytes were committed: ${metadataError}`
+            : `Artifact metadata commit failed after bytes were committed: ${metadataError}`,
+        ],
+        provenance: {
+          providerIds: [
+            ...(funnelResult.resolver?.id ? [funnelResult.resolver.id] : []),
+            provider.id,
+          ],
+          policy,
+          configPaths: options.config.meta.loadedFiles,
+        },
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
+    }
   }
 
   const providerIds: string[] = [
     ...(record.provenance.resolverProviderId ? [record.provenance.resolverProviderId] : []),
     provider.id,
   ];
+  const zoteroSync = download && record.itemId && !options.deferZoteroSync
+    ? await syncSelectedItemToZotero({ config: options.config, itemId: record.itemId })
+    : { status: "not_requested" as const };
 
   return okEnvelope({
     capability: "acquire",
@@ -937,6 +1150,8 @@ export async function runArtifactDownload(
       workspaceRoot: options.config.workspace.root,
       attachTo: resolvedInput.attachedItemId ?? null,
       download,
+      downloadDisposition: options.config.material.downloadDisposition,
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
       ...(record.provenance.resolverProviderId
         ? { resolverProviderId: record.provenance.resolverProviderId }
         : {}),
@@ -946,10 +1161,196 @@ export async function runArtifactDownload(
       policy,
       configPaths: options.config.meta.loadedFiles,
     },
+    warnings,
+  });
+}
+
+/**
+ * Preserve the ordinary resolver/downloader funnel as the first authority. The
+ * browser sidecar is represented only by a durable continuation job here; no
+ * child process can be launched from this canonical service path.
+ */
+export async function runArtifactDownloadWithInstitutionalFallback(
+  options: ArtifactDownloadOptions,
+): Promise<ArtifactDownloadResultEnvelope | ResultEnvelope<null>> {
+  try {
+    return await runArtifactDownload(options);
+  } catch (error) {
+    if (!options.institutional || options.download === false) throw error;
+    const resolved = await resolveDownloadInput(options.config, options.input, options.attachTo);
+    if (resolved.identifier?.scheme !== "doi") throw error;
+    if (!options.config.institutional.enabled) {
+      throw new Error("Institutional browser acquisition is disabled; enable it in the conventional user config before opting in.");
+    }
+    if (!options.config.institutional.pythonExecutable || !options.config.institutional.checkoutRoot) {
+      throw new Error("Institutional browser acquisition is not configured; set its Python executable and pinned InstSci checkout in the conventional user config.");
+    }
+    const job = await createInstitutionalJob(options.config, {
+      doi: resolved.identifier.value,
+      profileId: options.institutionProfile,
+      attachTo: resolved.attachedItemId,
+    });
+    return failEnvelope({
+      capability: "acquire",
+      tool: "artifact_download",
+      state: "action_required",
+      actions: [{
+        id: `continue-${job.id}`,
+        kind: "continue_institutional",
+        target: { kind: "institutional_job", id: job.id },
+        command: `paper-search institutional continue ${job.id}`,
+      }],
+      errors: ["Ordinary DOI acquisition did not produce an artifact; local institutional continuation is available."],
+      diagnostics: { failureKind: "institutional_continuation_required", jobId: job.id },
+    });
+  }
+}
+
+/** Commit verified sidecar bytes through the existing artifact/selection/Zotero path. */
+export async function commitInstitutionalArtifact(options: {
+  config: ResolvedConfig;
+  doi: string;
+  bytes: Buffer;
+  attachTo?: string;
+  artifactId: string;
+  institutionalJobId: string;
+  filename: string;
+  createdAt: string;
+}): Promise<ArtifactDownloadResultEnvelope> {
+  const started = Date.now();
+  let resolvedInput = await resolveDownloadInput(options.config, options.doi, options.attachTo);
+  if (resolvedInput.identifier?.scheme !== "doi") fail("institutional artifact commit requires a DOI");
+  const artifactId = options.artifactId;
+  const createdAt = options.createdAt;
+  const filename = sanitizeArtifactFilename(options.filename);
+  const sourceUrl = `https://doi.org/${resolvedInput.identifier.value}`;
+  const key = artifactBytesRelativePath(artifactId, filename);
+  const sha256 = createHash("sha256").update(options.bytes).digest("hex");
+  const expectedRef: LocalStorageRefV1 = {
+    schemaVersion: 1,
+    sink: "local",
+    area: "artifact",
+    root: path.resolve(options.config.storage.artifactRoot),
+    key,
+    sha256,
+    sizeBytes: options.bytes.byteLength,
+  };
+  let record = await readArtifactRecord(options.config.workspace.root, artifactId);
+  if (record) {
+    if (record.createdAt !== createdAt || record.filename !== filename || record.kind !== "pdf" ||
+        record.status !== "downloaded" || record.sizeBytes !== options.bytes.byteLength ||
+        record.provenance.providerId !== "institutional-browser" || record.storage?.root !== expectedRef.root ||
+        record.storage.key !== key || record.storage.sha256 !== sha256 ||
+        record.storage.sizeBytes !== options.bytes.byteLength) {
+      fail("institutional artifact commit intent conflicts with the existing artifact record");
+    }
+  }
+  let stored: { ref: LocalStorageRefV1; path: string };
+  try {
+    const existingPath = await resolveLocalStorageRef(expectedRef);
+    const existingBytes = await readFile(existingPath);
+    if (existingBytes.byteLength !== options.bytes.byteLength ||
+        createHash("sha256").update(existingBytes).digest("hex") !== sha256) {
+      fail("institutional artifact commit intent already contains different bytes");
+    }
+    stored = { ref: expectedRef, path: existingPath };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    stored = await writeLocalStorageBytes({
+      root: options.config.storage.artifactRoot,
+      key,
+      area: "artifact",
+      bytes: options.bytes,
+    });
+  }
+  const provider: ArtifactDownloadProviderSummary = {
+    id: "institutional-browser",
+    name: "Institutional browser sidecar",
+    version: "1",
+    packagePath: "bundled-sidecar",
+  };
+  const providerResult: ProviderDownloadResult = {
+    kind: "pdf",
+    filename,
+    contentType: "application/pdf",
+    bytes: options.bytes,
+    remoteUrl: sourceUrl,
+    message: "DOI-verified PDF acquired through the institutional browser continuation",
+  };
+  let commitStage: ArtifactDownloadOrphanOutcome["commitStage"] = "selection";
+  try {
+    resolvedInput = await attachDefaultSelection({
+      config: options.config,
+      input: resolvedInput,
+      filename,
+      sourceUrl,
+    });
+    if (!record) {
+      commitStage = "metadata";
+      record = await createArtifactRecord(options.config.workspace.root, artifactRecordInput({
+        artifactId,
+        createdAt,
+        provider,
+        resolvedInput,
+        policy: "institutional-browser-opt-in",
+        download: true,
+        providerResult,
+        storage: stored.ref,
+        sourceUrl,
+      }));
+    } else if (record.itemId !== resolvedInput.attachedItemId) {
+      fail("institutional artifact selection conflicts with the existing artifact record");
+    }
+  } catch (error) {
+    const metadataError = formatError(error);
+    return {
+      ok: false,
+      capability: "acquire",
+      tool: "institutional_continue",
+      data: null as unknown as ArtifactDownloadData,
+      orphan: {
+        outcome: "orphaned",
+        commitStage,
+        artifactId,
+        artifactPath: stored.path,
+        storage: stored.ref,
+        sha256: stored.ref.sha256!,
+        sizeBytes: stored.ref.sizeBytes!,
+        metadataPath: path.join(path.resolve(options.config.workspace.root), ARTIFACT_RECORDS_DIR, `${artifactId}.json`),
+        error: metadataError,
+      },
+      diagnostics: { elapsedMs: Date.now() - started, partial: true, orphanedBytes: true },
+      errors: [`Institutional PDF bytes were committed but ${commitStage} failed: ${metadataError}`],
+      provenance: { providerIds: [provider.id], policy: "institutional-browser-opt-in", configPaths: options.config.meta.loadedFiles },
+    };
+  }
+  const zoteroSync = record.itemId
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: record.itemId,
+        projectionCorrelation: {
+          kind: "institutional-artifact",
+          institutionalJobId: options.institutionalJobId,
+          artifactId,
+          storageSha256: sha256,
+        },
+      })
+    : { status: "not_requested" as const };
+  return okEnvelope({
+    capability: "acquire",
+    tool: "institutional_continue",
+    data: { record, provider, input: resolvedInput.summary, download: true, artifactPath: stored.path },
+    diagnostics: {
+      elapsedMs: Date.now() - started,
+      workspaceRoot: options.config.workspace.root,
+      artifactRoot: options.config.storage.artifactRoot,
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
+    },
+    provenance: { providerIds: [provider.id], policy: "institutional-browser-opt-in", configPaths: options.config.meta.loadedFiles },
   });
 }
 
 function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  if (error instanceof Error) return sanitizeUrlsForPersistenceInText(error.message);
+  return sanitizeUrlsForPersistenceInText(String(error));
 }

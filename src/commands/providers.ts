@@ -14,6 +14,7 @@ import { applyMaterialProviderRegistry } from "../material/registry/apply.js";
 import { loadMaterialProviderRegistryManifest } from "../material/registry/load.js";
 import { listInstalledMaterialProviders, planMaterialProviderRegistry } from "../material/registry/plan.js";
 import { createMaterialRuntimeContext } from "../material/runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "../material/cache.js";
 import { inspectMaterialProviderPackageInNode } from "../material/runtime/invokeNodeFactory.js";
 import {
   applyProviderZipInstallPlan,
@@ -45,6 +46,14 @@ import {
   type AppliedProviderLifecyclePlan,
   type ProviderUpdatePlanSet,
 } from "../providers/lifecycle.js";
+import {
+  applyProviderRollbackPlan,
+  applyProviderUninstallPlan,
+  applyProviderZipLifecyclePlan,
+  planProviderRollback,
+  planProviderUninstall,
+  planProviderZipLifecycle,
+} from "../providers/manualLifecycle.js";
 import type { Io } from "../runtime/io.js";
 import { tryAppendLifecycleEvent } from "../runtime/eventLedger.js";
 import { withLocks } from "../subscriptions/locks.js";
@@ -57,6 +66,7 @@ async function assertCompatibilityProviderOwnership(
   kind: ProviderKind,
   installDir: string,
   id: string,
+  options: { allowBoundReplacement?: boolean } = {},
 ): Promise<void> {
   const targetPath = configuredProviderTargetPath(installDir, kind, id);
   const comparablePath = (value: string): string => {
@@ -95,7 +105,7 @@ async function assertCompatibilityProviderOwnership(
 
   if ((await inspectProviderReplacementPrecondition(targetPath)).state === "absent") return;
   const receipt = await readProviderInstallReceipt(targetPath);
-  if (receipt?.bound) {
+  if (receipt?.bound && !options.allowBoundReplacement) {
     throw new Error(`Provider ${id} is subscription-bound; use providers update`);
   }
   if (receipt && (receipt.runtimeKind !== kind || receipt.id !== id)) {
@@ -142,6 +152,15 @@ interface ProviderKindOption extends JsonOption {
 
 interface InstallZipOption extends ProviderKindOption {
   apply?: boolean;
+  replaceBound?: boolean;
+}
+
+interface ProviderApplyOption extends ProviderKindOption {
+  apply?: boolean;
+}
+
+interface ProviderRollbackOption extends ProviderApplyOption {
+  revision: string;
 }
 
 interface ProviderSelectionOption extends ProviderKindOption {
@@ -157,7 +176,9 @@ type ProviderToolBase =
   | "registry_plan"
   | "registry_sync"
   | "registry_apply"
-  | "install_zip";
+  | "install_zip"
+  | "uninstall"
+  | "rollback";
 
 interface ProviderCommandRegistration {
   defaultKind: ProviderKind;
@@ -468,6 +489,10 @@ function registerProviderManagementSubcommands(
     .command("install-zip <zip-path>")
     .description("Plan or apply a manual provider ZIP install. Dry-run by default.")
     .option("--kind <kind>", "provider runtime to use (search or material)", parseProviderKind)
+    .option(
+      "--replace-bound",
+      "explicitly replace one exact subscription-bound provider and retain its rollback revision",
+    )
     .option("--apply", "write the validated provider and unbound receipt to the install directory")
     .option("--json", "emit machine-readable JSON")
     .action(async (zipPath: string, options: InstallZipOption, command: Command) => {
@@ -479,9 +504,58 @@ function registerProviderManagementSubcommands(
         toolBase: "install_zip",
         build: async (kind) => {
           const config = await loadCommandConfig(command);
-          return installZipEnvelope(kind, config, zipPath, Boolean(options.apply));
+          return installZipEnvelope(
+            kind,
+            config,
+            zipPath,
+            Boolean(options.apply),
+            Boolean(options.replaceBound),
+          );
         },
         writeHuman: (envelope) => writeInstallZipHuman(io, envelope, Boolean(options.apply)),
+      });
+    });
+
+  providers
+    .command("uninstall <id>")
+    .description("Plan or apply removal of one installed provider while retaining a rollback revision.")
+    .option("--kind <kind>", "provider runtime to use (search or material)", parseProviderKind)
+    .option("--apply", "remove the exact planned provider and retain its rollback revision")
+    .option("--json", "emit machine-readable JSON")
+    .action(async (id: string, options: ProviderApplyOption, command: Command) => {
+      await runProviderAction({
+        io,
+        options,
+        command,
+        defaultKind: registration.defaultKind,
+        toolBase: "uninstall",
+        build: async (kind) => {
+          const config = await loadCommandConfig(command);
+          return uninstallEnvelope(kind, config, id, Boolean(options.apply));
+        },
+        writeHuman: (envelope) => writeUninstallHuman(io, envelope, Boolean(options.apply)),
+      });
+    });
+
+  providers
+    .command("rollback <id>")
+    .description("Plan or apply restoration of one retained provider revision.")
+    .requiredOption("--revision <sha256>", "exact rollback revision emitted by install or uninstall")
+    .option("--kind <kind>", "provider runtime to use (search or material)", parseProviderKind)
+    .option("--apply", "restore the exact retained revision")
+    .option("--json", "emit machine-readable JSON")
+    .action(async (id: string, options: ProviderRollbackOption, command: Command) => {
+      await runProviderAction({
+        io,
+        options,
+        command,
+        defaultKind: registration.defaultKind,
+        toolBase: "rollback",
+        build: async (kind) => {
+          const config = await loadCommandConfig(command);
+          return rollbackEnvelope(kind, config, id, options.revision, Boolean(options.apply));
+        },
+        writeHuman: (envelope) => writeRollbackHuman(io, envelope, Boolean(options.apply)),
       });
     });
 }
@@ -634,7 +708,7 @@ async function inspectPackageEnvelope(
       manifest: providerPackage.manifest,
       providerConfig: asRecord(config.platform[providerPackage.manifest.id]),
       policy: { name: "material-provider-inspect" },
-      cacheRoot: path.join(config.workspace.root, ".paper-search", "material-provider-cache"),
+      cacheRoot: resolveMaterialProviderCacheRoot(config),
       workspaceRoot: config.workspace.root,
       transport: {
         async get(): Promise<never> {
@@ -683,6 +757,7 @@ async function inspectPackageEnvelope(
     diagnostics: {
       hasSearch: inspection.hasSearch,
       hasGetDetail: inspection.hasGetDetail,
+      hasGetCitationPage: inspection.hasGetCitationPage,
     },
     provenance: { providerIds: [providerPackage.manifest.id] },
   });
@@ -930,11 +1005,21 @@ async function installZipEnvelope(
   config: ResolvedConfig,
   zipPath: string,
   apply: boolean,
+  replaceBound: boolean,
 ): Promise<ResultEnvelope<unknown>> {
   const providersRoot = path.resolve(config.providers.installDir);
   const installDir = configuredProviderInstallDir(providersRoot, kind);
   if (kind === "material") {
-    const plan = await planMaterialProviderZipInstall(zipPath, installDir);
+    const plan = await planProviderZipLifecycle(
+      await planMaterialProviderZipInstall(zipPath, installDir),
+      { replaceBound },
+    );
+    await assertCompatibilityProviderOwnership(
+      "material",
+      config.providers.installDir,
+      plan.id,
+      { allowBoundReplacement: Boolean(plan.ownershipTransition) },
+    );
     const result = apply
       ? await withLocks(
           [`provider/${plan.id}`],
@@ -943,8 +1028,13 @@ async function installZipEnvelope(
               "material",
               config.providers.installDir,
               plan.id,
+              { allowBoundReplacement: Boolean(plan.ownershipTransition) },
             );
-            return applyMaterialProviderZipInstallPlan(plan);
+            return applyProviderZipLifecyclePlan({
+              plan,
+              apply: (authorizedPlan, selection) =>
+                applyMaterialProviderZipInstallPlan(authorizedPlan, { selection }),
+            });
           },
           { command: "providers install-zip" },
         )
@@ -979,13 +1069,31 @@ async function installZipEnvelope(
     });
   }
 
-  const plan = await planProviderZipInstall(zipPath, installDir);
+  const plan = await planProviderZipLifecycle(
+    await planProviderZipInstall(zipPath, installDir),
+    { replaceBound },
+  );
+  await assertCompatibilityProviderOwnership(
+    "search",
+    config.providers.installDir,
+    plan.id,
+    { allowBoundReplacement: Boolean(plan.ownershipTransition) },
+  );
   const result = apply
     ? await withLocks(
         [`provider/${plan.id}`],
         async () => {
-          await assertCompatibilityProviderOwnership("search", config.providers.installDir, plan.id);
-          return applyProviderZipInstallPlan(plan);
+          await assertCompatibilityProviderOwnership(
+            "search",
+            config.providers.installDir,
+            plan.id,
+            { allowBoundReplacement: Boolean(plan.ownershipTransition) },
+          );
+          return applyProviderZipLifecyclePlan({
+            plan,
+            apply: (authorizedPlan, selection) =>
+              applyProviderZipInstallPlan(authorizedPlan, { selection }),
+          });
         },
         { command: "providers install-zip" },
       )
@@ -1020,6 +1128,107 @@ async function installZipEnvelope(
   });
 }
 
+async function uninstallEnvelope(
+  kind: ProviderKind,
+  config: ResolvedConfig,
+  id: string,
+  apply: boolean,
+): Promise<ResultEnvelope<unknown>> {
+  const providersRoot = path.resolve(config.providers.installDir);
+  const plan = await planProviderUninstall({ providersRoot, runtimeKind: kind, id });
+  const result = apply
+    ? await withLocks(
+        [`provider/${plan.id}`],
+        () => applyProviderUninstallPlan(plan),
+        { command: "providers uninstall" },
+      )
+    : undefined;
+  const audit = result
+    ? await tryAppendLifecycleEvent({
+        command: "providers uninstall",
+        planDigest: createHash("sha256").update(JSON.stringify(plan)).digest("hex"),
+        affectedIds: [plan.id],
+        ...(plan.receipt.archiveSha256
+          ? { archiveSha256: plan.receipt.archiveSha256 }
+          : {}),
+        outcome: "applied",
+      })
+    : undefined;
+  return okEnvelope({
+    capability: "operate",
+    tool: providerToolName(kind, "uninstall"),
+    planned: !apply,
+    data: {
+      kind,
+      apply,
+      providersRoot,
+      installDir: plan.installDir,
+      plan,
+      ...(result ? { result } : {}),
+    },
+    provenance: {
+      providerIds: [plan.id],
+      rollbackRevision: plan.rollback.revision,
+      policy: "provider-uninstall-retain-rollback",
+    },
+    warnings: audit?.warning ? [audit.warning] : undefined,
+  });
+}
+
+async function rollbackEnvelope(
+  kind: ProviderKind,
+  config: ResolvedConfig,
+  id: string,
+  revision: string,
+  apply: boolean,
+): Promise<ResultEnvelope<unknown>> {
+  const providersRoot = path.resolve(config.providers.installDir);
+  const plan = await planProviderRollback({
+    providersRoot,
+    runtimeKind: kind,
+    id,
+    revision,
+  });
+  const result = apply
+    ? await withLocks(
+        [`provider/${plan.id}`],
+        () => applyProviderRollbackPlan(plan),
+        { command: "providers rollback" },
+      )
+    : undefined;
+  const audit = result
+    ? await tryAppendLifecycleEvent({
+        command: "providers rollback",
+        planDigest: createHash("sha256").update(JSON.stringify(plan)).digest("hex"),
+        affectedIds: [plan.id],
+        outcome: "recovered",
+      })
+    : undefined;
+  const warnings = [
+    ...(result?.warnings ?? []),
+    ...(audit?.warning ? [audit.warning] : []),
+  ];
+  return okEnvelope({
+    capability: "operate",
+    tool: providerToolName(kind, "rollback"),
+    planned: !apply,
+    data: {
+      kind,
+      apply,
+      providersRoot,
+      installDir: plan.installDir,
+      plan,
+      ...(result ? { result } : {}),
+    },
+    provenance: {
+      providerIds: [plan.id],
+      rollbackRevision: plan.source.revision,
+      policy: "provider-retained-revision-rollback",
+    },
+    warnings,
+  });
+}
+
 function writeListInstalledHuman(io: Io, envelope: ResultEnvelope<unknown>, kind: ProviderKind): void {
   const payload = requireEnvelopeData<{
     installDir: string;
@@ -1047,7 +1256,12 @@ function writeValidateManifestHuman(io: Io, envelope: ResultEnvelope<unknown>, k
 function writeInspectPackageHuman(io: Io, envelope: ResultEnvelope<unknown>, kind: ProviderKind): void {
   const payload = requireEnvelopeData<{
     manifest: { id: string; version: string; sourceType?: string; kind?: string };
-    inspection: { hasSearch?: boolean; hasGetDetail?: boolean; methods?: string[] };
+    inspection: {
+      hasSearch?: boolean;
+      hasGetDetail?: boolean;
+      hasGetCitationPage?: boolean;
+      methods?: string[];
+    };
   }>(envelope);
   const runtimeLabel = kind === "material" ? payload.manifest.kind : payload.manifest.sourceType;
   io.writeLine(`package ok: ${payload.manifest.id}@${payload.manifest.version} (${runtimeLabel})`);
@@ -1056,7 +1270,7 @@ function writeInspectPackageHuman(io: Io, envelope: ResultEnvelope<unknown>, kin
     return;
   }
   io.writeLine(
-    `capabilities: search=${payload.inspection.hasSearch ? "yes" : "no"}, getDetail=${payload.inspection.hasGetDetail ? "yes" : "no"}`,
+    `capabilities: search=${payload.inspection.hasSearch ? "yes" : "no"}, getDetail=${payload.inspection.hasGetDetail ? "yes" : "no"}, getCitationPage=${payload.inspection.hasGetCitationPage ? "yes" : "no"}`,
   );
 }
 
@@ -1168,8 +1382,14 @@ function writeInstallZipHuman(io: Io, envelope: ResultEnvelope<unknown>, apply: 
       archiveSha256: string;
       targetPath: string;
       replacementPrecondition: { state: string };
+      ownershipTransition?: { rollbackCommand: string };
     };
-    result: { id: string; manifest: { version: string }; installPath: string };
+    result: {
+      id: string;
+      manifest: { version: string };
+      installPath: string;
+      rollbackCommand?: string;
+    };
   }>(envelope);
   if (!apply) {
     io.writeLine("dry-run only; pass --apply to install this ZIP.");
@@ -1180,9 +1400,45 @@ function writeInstallZipHuman(io: Io, envelope: ResultEnvelope<unknown>, apply: 
     io.writeLine(
       `target: ${payload.plan.targetPath} (${payload.plan.replacementPrecondition.state})`,
     );
+    if (payload.plan.ownershipTransition) {
+      io.writeLine(`rollback: ${payload.plan.ownershipTransition.rollbackCommand}`);
+    }
     return;
   }
   io.writeLine(`installed ${payload.result.id}@${payload.result.manifest.version} -> ${payload.result.installPath}`);
+  if (payload.result.rollbackCommand) io.writeLine(`rollback: ${payload.result.rollbackCommand}`);
+}
+
+function writeUninstallHuman(io: Io, envelope: ResultEnvelope<unknown>, apply: boolean): void {
+  const payload = requireEnvelopeData<{
+    plan: { id: string; version: string; targetPath: string; rollbackCommand: string };
+    result?: { removed: true; rollbackCommand: string };
+  }>(envelope);
+  if (!apply) {
+    io.writeLine("dry-run only; pass --apply to uninstall this provider.");
+    io.writeLine(`provider: ${payload.plan.id}@${payload.plan.version} -> remove ${payload.plan.targetPath}`);
+    io.writeLine(`rollback: ${payload.plan.rollbackCommand}`);
+    return;
+  }
+  io.writeLine(`uninstalled ${payload.plan.id}@${payload.plan.version}`);
+  io.writeLine(`rollback: ${payload.result!.rollbackCommand}`);
+}
+
+function writeRollbackHuman(io: Io, envelope: ResultEnvelope<unknown>, apply: boolean): void {
+  const payload = requireEnvelopeData<{
+    plan: { id: string; version: string; source: { revision: string }; redoCommand?: string };
+    result?: { restored: true; redoCommand?: string };
+  }>(envelope);
+  if (!apply) {
+    io.writeLine("dry-run only; pass --apply to restore this provider revision.");
+    io.writeLine(
+      `provider: ${payload.plan.id}@${payload.plan.version} <- ${payload.plan.source.revision}`,
+    );
+    if (payload.plan.redoCommand) io.writeLine(`redo: ${payload.plan.redoCommand}`);
+    return;
+  }
+  io.writeLine(`restored ${payload.plan.id}@${payload.plan.version}`);
+  if (payload.result?.redoCommand) io.writeLine(`redo: ${payload.result.redoCommand}`);
 }
 
 function writePlanEntries(

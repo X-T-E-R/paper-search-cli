@@ -13,6 +13,7 @@ import {
 } from "./extractionStore.js";
 import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import type { WorkspaceItemRecord } from "../workspace/store.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
 
 export interface MaterialStatusOptions {
   config: ResolvedConfig;
@@ -45,6 +46,9 @@ export interface MaterialExtractionOutputSummary {
   markdownPath?: string;
   jsonPath?: string;
   assetsDir?: string;
+  markdownStorage?: LocalStorageRefV1;
+  jsonStorage?: LocalStorageRefV1;
+  assetsStorage?: LocalStorageRefV1;
   hasInlineMarkdown: boolean;
 }
 
@@ -181,6 +185,9 @@ function hasExtractedOutput(record: ExtractionRecord): boolean {
     isNonEmptyString(record.outputs.markdownPath) ||
     isNonEmptyString(record.outputs.jsonPath) ||
     isNonEmptyString(record.outputs.assetsDir) ||
+    record.outputs.markdownStorage !== undefined ||
+    record.outputs.jsonStorage !== undefined ||
+    record.outputs.assetsStorage !== undefined ||
     isNonEmptyString(record.outputs.markdown)
   );
 }
@@ -192,6 +199,9 @@ function extractionOutputSummary(record: ExtractionRecord): MaterialExtractionOu
     ...(record.outputs.markdownPath ? { markdownPath: record.outputs.markdownPath } : {}),
     ...(record.outputs.jsonPath ? { jsonPath: record.outputs.jsonPath } : {}),
     ...(record.outputs.assetsDir ? { assetsDir: record.outputs.assetsDir } : {}),
+    ...(record.outputs.markdownStorage ? { markdownStorage: record.outputs.markdownStorage } : {}),
+    ...(record.outputs.jsonStorage ? { jsonStorage: record.outputs.jsonStorage } : {}),
+    ...(record.outputs.assetsStorage ? { assetsStorage: record.outputs.assetsStorage } : {}),
     hasInlineMarkdown: isNonEmptyString(record.outputs.markdown),
   };
 }

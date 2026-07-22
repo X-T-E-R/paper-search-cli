@@ -36,6 +36,10 @@ function createConfig(root: string): ResolvedConfig {
       root: path.join(root, "workspace"),
       defaultCollection: "Inbox",
     },
+    storage: {
+      ...structuredClone(DEFAULT_CONFIG.storage),
+      artifactRoot: path.join(root, "storage", "artifacts"),
+    },
     server: {
       ...structuredClone(DEFAULT_CONFIG.server),
       host: "127.0.0.1",
@@ -218,7 +222,11 @@ describe("MCP HTTP server", () => {
       tool: string;
       data: {
         provider: { id: string };
-        record: { id: string; path: string; provenance: { policy: string } };
+        record: {
+          id: string;
+          storage: { schemaVersion: number; sink: string; area: string; root: string; key: string };
+          provenance: { policy: string };
+        };
       };
     };
     expect(artifactResult).toMatchObject({
@@ -228,12 +236,21 @@ describe("MCP HTTP server", () => {
       data: {
         provider: { id: "fixture-artifact-downloader" },
         record: {
+          storage: {
+            schemaVersion: 1,
+            sink: "local",
+            area: "artifact",
+            root: path.join(root, "storage", "artifacts"),
+          },
           provenance: { policy: "mcp-fixture" },
         },
       },
     });
     await expect(
-      readFile(path.join(root, "workspace", artifactResult.data.record.path), "utf8"),
+      readFile(
+        path.join(artifactResult.data.record.storage.root, ...artifactResult.data.record.storage.key.split("/")),
+        "utf8",
+      ),
     ).resolves.toBe("fixture downloader bytes\n");
 
     const artifactList = await postRpc(running.endpoint, {
@@ -242,7 +259,7 @@ describe("MCP HTTP server", () => {
       method: "tools/call",
       params: {
         name: "artifact_list",
-        arguments: { standalone: true },
+        arguments: {},
       },
     });
     const artifactListText = (artifactList.result as { content: Array<{ text: string }> }).content[0]!.text;
@@ -252,7 +269,6 @@ describe("MCP HTTP server", () => {
       tool: "artifact_list",
       data: {
         count: 1,
-        standalone: true,
         records: [
           expect.objectContaining({
             id: artifactResult.data.record.id,
@@ -261,7 +277,6 @@ describe("MCP HTTP server", () => {
       },
       diagnostics: {
         sourceCounts: { artifacts: 1 },
-        standalone: true,
       },
     });
 

@@ -49,6 +49,7 @@ describe("academic command", () => {
 
     let stdout = "";
     let planStdout = "";
+    let planJsonStdout = "";
     let stderr = "";
     const originalCwd = process.cwd();
     process.chdir(root);
@@ -72,6 +73,23 @@ describe("academic command", () => {
         "fixture-academic-searchable",
         "--category",
         "domain:multidisciplinary",
+      ]);
+      await buildProgram({
+        stdout: { write(chunk: string) { planJsonStdout += chunk; } },
+        stderr: { write(chunk: string) { stderr += chunk; } },
+      }).parseAsync([
+        "node",
+        "paper-search",
+        "search-plan",
+        "--type",
+        "academic",
+        "--preset",
+        "general",
+        "--source",
+        "fixture-academic-searchable",
+        "--category",
+        "domain:multidisciplinary",
+        "--json",
       ]);
     } finally {
       process.chdir(originalCwd);
@@ -102,5 +120,23 @@ describe("academic command", () => {
         runnableProviderIds: ["fixture-academic-searchable"],
       },
     });
+    expect(JSON.parse(planJsonStdout)).toEqual(plan);
+  });
+
+  it("keeps rejecting unknown search-plan options", async () => {
+    const program = buildProgram({
+      stdout: { write(_chunk: string) {} },
+      stderr: { write(_chunk: string) {} },
+    });
+    const searchPlanCommand = program.commands.find((command) => command.name() === "search-plan");
+    expect(searchPlanCommand).toBeDefined();
+    searchPlanCommand!.exitOverride();
+
+    await expect(program.parseAsync([
+      "node",
+      "paper-search",
+      "search-plan",
+      "--unknown-output-option",
+    ])).rejects.toMatchObject({ code: "commander.unknownOption" });
   });
 });

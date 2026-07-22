@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   listProviderPackageDirectories,
@@ -8,13 +8,20 @@ import {
 import type { ResolvedConfig } from "../config/schema.js";
 import { createPlanEnvelope, type PlannedOperationData } from "../surface/plan.js";
 import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
-import { readArtifactRecord } from "./artifactStore.js";
-import { createExtractionRecord } from "./extractionStore.js";
+import { readArtifactRecord, resolveArtifactRecordPath } from "./artifactStore.js";
+import { detectUnusableMaterialContent } from "./contentValidation.js";
+import { EXTRACTION_RECORDS_DIR, createExtractionRecord } from "./extractionStore.js";
 import { loadMaterialProviderPackage, type LoadedMaterialProviderPackage } from "./package/load.js";
 import type { ArtifactRecord, ExtractionRecord, ExtractionSource } from "./records.js";
 import { createMaterialRuntimeContext } from "./runtime/createContext.js";
+import { resolveMaterialProviderCacheRoot } from "./cache.js";
 import { invokeMaterialProviderFactoryInNode } from "./runtime/invokeNodeFactory.js";
 import type { MaterialInputKind } from "./types.js";
+import { writeLocalStorageBytes } from "../storage/local.js";
+import type { LocalStorageRefV1 } from "../storage/types.js";
+import { PYMUPDF4LLM_PROVIDER_ID } from "./pymupdf4llm/sidecar.js";
+import { sanitizeForPersistence } from "../runtime/sanitizeUrl.js";
+import { localHtmlToMarkdown } from "./htmlToMarkdown.js";
 
 export interface MaterialExtractionOptions {
   config: ResolvedConfig;
@@ -48,6 +55,44 @@ export interface MaterialExtractionData {
   provider: MaterialExtractionProviderSummary;
 }
 
+/**
+ * Provider-mediated extraction without committing workspace outputs or records.
+ * Used by bounded callers that need to inspect exact-source content before
+ * deciding whether a material record is warranted.
+ */
+export interface MaterialExtractionProviderProbeData {
+  source: ExtractionSource;
+  markdown: string;
+  metadata?: unknown;
+  cacheHit: boolean;
+  message?: string;
+  provider: MaterialExtractionProviderSummary;
+  policy: string;
+}
+
+export interface MaterialExtractionCommittedOutput {
+  kind: "markdown" | "json";
+  path: string;
+  storage: LocalStorageRefV1;
+  sha256: string;
+  sizeBytes: number;
+}
+
+/** One or more extraction files were committed without a durable record. */
+export interface MaterialExtractionOrphanOutcome {
+  outcome: "orphaned";
+  commitStage: "output" | "metadata";
+  extractionId: string;
+  outputs: MaterialExtractionCommittedOutput[];
+  metadataPath: string;
+  error: string;
+}
+
+export type MaterialExtractionResultEnvelope = ResultEnvelope<MaterialExtractionData> & {
+  /** Present only when one or more output files were committed without record metadata. */
+  orphan?: MaterialExtractionOrphanOutcome;
+};
+
 interface ResolvedExtractionInput {
   source: ExtractionSource;
   materialInputKind: MaterialInputKind;
@@ -61,6 +106,16 @@ interface ProviderExtractionResult {
   message?: string;
 }
 
+class ExtractionOutputCommitError extends Error {
+  constructor(
+    readonly committedOutputs: MaterialExtractionCommittedOutput[],
+    cause: unknown,
+  ) {
+    super(formatError(cause));
+    this.name = "ExtractionOutputCommitError";
+  }
+}
+
 export class MaterialExtractionError extends Error {
   constructor(message: string) {
     super(message);
@@ -70,6 +125,13 @@ export class MaterialExtractionError extends Error {
 
 const ARTIFACT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const PROVIDER_ID_RE = /^[a-z][a-z0-9_-]{1,63}$/;
+const MINERU_PROVIDER_ID = "mineru-extractor";
+const LOCAL_HTML_PROVIDER: MaterialExtractionProviderSummary = {
+  id: "builtin-local-html",
+  name: "Paper Search Local HTML Extractor",
+  version: "1.0.0",
+  packagePath: "builtin:material/html-to-markdown",
+};
 
 function fail(message: string): never {
   throw new MaterialExtractionError(message);
@@ -119,16 +181,6 @@ function toWorkspacePath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-function resolveWorkspacePath(workspaceRoot: string, relativePath: string): string {
-  const root = path.resolve(workspaceRoot);
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    fail(`Workspace output path escapes workspace root: ${relativePath}`);
-  }
-  return target;
-}
-
 async function resolvePathInput(cwd: string, input: string): Promise<string | null> {
   const candidate = path.isAbsolute(input) ? input : path.resolve(cwd, input);
   try {
@@ -165,10 +217,12 @@ async function resolveExtractionInput(config: ResolvedConfig, input: string): Pr
   if (ARTIFACT_ID_RE.test(trimmed)) {
     const artifact = await readArtifactRecord(config.workspace.root, trimmed);
     if (artifact) {
+      const artifactPath = await resolveArtifactRecordPath(config.workspace.root, artifact);
+      const resolvedArtifact = artifactPath ? { ...artifact, path: artifactPath } : artifact;
       return {
         source: { kind: "artifact", artifactId: artifact.id },
         materialInputKind: "artifact",
-        artifact,
+        artifact: resolvedArtifact,
       };
     }
   }
@@ -210,6 +264,12 @@ async function selectExtractorProvider(options: {
         );
       }
       if (providerSupportsInput(providerPackage, options.inputKind)) {
+        if (!providerId && providerPackage.manifest.id === PYMUPDF4LLM_PROVIDER_ID) {
+          loadErrors.push(
+            `${providerPackage.manifest.id}: requires explicit --provider selection`,
+          );
+          continue;
+        }
         return providerPackage;
       }
       loadErrors.push(
@@ -247,6 +307,10 @@ function parseProviderExtractionResult(value: unknown): ProviderExtractionResult
   if (typeof markdown !== "string" || markdown.trim().length === 0) {
     fail("extract() must return non-empty markdown");
   }
+  const unusable = detectUnusableMaterialContent(markdown);
+  if (unusable) {
+    fail(`extract() returned unusable ${unusable.kind} content (${unusable.marker})`);
+  }
   const cacheHit = value.cacheHit;
   if (cacheHit !== undefined && typeof cacheHit !== "boolean") {
     fail("extract().cacheHit must be a boolean when provided");
@@ -257,14 +321,14 @@ function parseProviderExtractionResult(value: unknown): ProviderExtractionResult
   }
   return {
     markdown,
-    ...(value.metadata !== undefined ? { metadata: value.metadata } : {}),
+    ...(value.metadata !== undefined ? { metadata: sanitizeForPersistence(value.metadata) } : {}),
     cacheHit: cacheHit === true,
-    ...(message !== undefined ? { message } : {}),
+    ...(message !== undefined ? { message: sanitizeForPersistence(message) } : {}),
   };
 }
 
 function outputRelativePaths(extractionId: string): { markdownPath: string; jsonPath: string } {
-  const base = toWorkspacePath(path.join("material", "extractions", extractionId));
+  const base = toWorkspacePath(path.join(extractionId));
   return {
     markdownPath: `${base}/content.md`,
     jsonPath: `${base}/result.json`,
@@ -272,30 +336,55 @@ function outputRelativePaths(extractionId: string): { markdownPath: string; json
 }
 
 async function writeExtractionOutputs(options: {
-  workspaceRoot: string;
+  extractionRoot: string;
   markdownPath: string;
   jsonPath: string;
   markdown: string;
   providerResult: ProviderExtractionResult;
-}): Promise<void> {
-  const markdownTarget = resolveWorkspacePath(options.workspaceRoot, options.markdownPath);
-  const jsonTarget = resolveWorkspacePath(options.workspaceRoot, options.jsonPath);
-  await mkdir(path.dirname(markdownTarget), { recursive: true });
-  await writeFile(markdownTarget, options.markdown, "utf8");
-  await writeFile(
-    jsonTarget,
-    `${JSON.stringify(
-      {
-        markdown: options.providerResult.markdown,
-        metadata: options.providerResult.metadata ?? null,
-        cacheHit: options.providerResult.cacheHit,
-        message: options.providerResult.message ?? null,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+}): Promise<{
+  markdown: { ref: LocalStorageRefV1; path: string };
+  json: { ref: LocalStorageRefV1; path: string };
+}> {
+  const markdown = await writeLocalStorageBytes({
+    root: options.extractionRoot,
+    key: options.markdownPath,
+    area: "extraction",
+    bytes: Buffer.from(options.markdown, "utf8"),
+  });
+  let json: { ref: LocalStorageRefV1; path: string };
+  try {
+    json = await writeLocalStorageBytes({
+      root: options.extractionRoot,
+      key: options.jsonPath,
+      area: "extraction",
+      bytes: Buffer.from(`${JSON.stringify(
+        {
+          markdown: options.providerResult.markdown,
+          metadata: options.providerResult.metadata ?? null,
+          cacheHit: options.providerResult.cacheHit,
+          message: options.providerResult.message ?? null,
+        },
+        null,
+        2,
+      )}\n`, "utf8"),
+    });
+  } catch (error) {
+    throw new ExtractionOutputCommitError([committedOutput("markdown", markdown)], error);
+  }
+  return { markdown, json };
+}
+
+function committedOutput(
+  kind: MaterialExtractionCommittedOutput["kind"],
+  output: { ref: LocalStorageRefV1; path: string },
+): MaterialExtractionCommittedOutput {
+  return {
+    kind,
+    path: output.path,
+    storage: output.ref,
+    sha256: output.ref.sha256!,
+    sizeBytes: output.ref.sizeBytes!,
+  };
 }
 
 function providerInput(options: {
@@ -311,6 +400,240 @@ function providerInput(options: {
   };
 }
 
+function isStoredHtmlArtifact(resolvedInput: ResolvedExtractionInput): boolean {
+  const artifact = resolvedInput.artifact;
+  if (!artifact?.path) return false;
+  const contentType = artifact.contentType?.toLowerCase() ?? "";
+  return artifact.kind === "html" || contentType.includes("text/html") || /\.html?$/iu.test(artifact.filename ?? "");
+}
+
+async function localHtmlProviderResult(
+  resolvedInput: ResolvedExtractionInput,
+): Promise<ProviderExtractionResult> {
+  const artifact = resolvedInput.artifact;
+  if (!artifact?.path) fail("Stored HTML extraction requires managed artifact bytes");
+  const converted = localHtmlToMarkdown(await readFile(artifact.path, "utf8"));
+  return parseProviderExtractionResult({
+    markdown: converted.markdown,
+    metadata: {
+      mode: "stored-html",
+      artifactId: artifact.id,
+      contentType: artifact.contentType ?? null,
+      rootSelector: converted.rootSelector,
+      title: converted.title ?? null,
+    },
+    cacheHit: false,
+    message: "Extracted from the stored HTML artifact without refetching its remote URL.",
+  });
+}
+
+export async function runMaterialExtractionProviderProbe(
+  options: MaterialExtractionOptions,
+): Promise<MaterialExtractionProviderProbeData> {
+  const policy = normalizePolicy(options.policy);
+  const resolvedInput = await resolveExtractionInput(options.config, options.input);
+  const providerPackage = await selectExtractorProvider({
+    installDir: options.config.providers.installDir,
+    inputKind: resolvedInput.materialInputKind,
+    providerId: options.providerId,
+  });
+  const provider = providerSummary(providerPackage);
+  if (provider.id === MINERU_PROVIDER_ID && isStoredHtmlArtifact(resolvedInput)) {
+    const result = await localHtmlProviderResult(resolvedInput);
+    return {
+      source: resolvedInput.source,
+      markdown: result.markdown,
+      ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+      cacheHit: result.cacheHit,
+      ...(result.message !== undefined ? { message: result.message } : {}),
+      provider: LOCAL_HTML_PROVIDER,
+      policy,
+    };
+  }
+  const runtimeContext = createMaterialRuntimeContext({
+    manifest: providerPackage.manifest,
+    providerConfig: (options.config.platform[provider.id] ?? {}) as Record<string, unknown>,
+    policy: {
+      name: policy,
+      capability: "extract",
+      attachTo: null,
+    },
+    cacheRoot: resolveMaterialProviderCacheRoot(options.config),
+    workspaceRoot: options.config.workspace.root,
+    authorizedPdfPath: authorizedPdfPath(resolvedInput),
+  });
+  const loadedProvider = await invokeMaterialProviderFactoryInNode(
+    providerPackage.bundleCode,
+    providerPackage.manifest,
+    runtimeContext,
+  );
+  const extractMethod = loadedProvider.provider.extract;
+  if (!extractMethod) {
+    fail(`Material provider ${provider.id} does not implement extract()`);
+  }
+  const input = providerInput({ resolvedInput, policy });
+  input.options = { cache: false };
+  const result = parseProviderExtractionResult(await extractMethod(input));
+  return {
+    source: resolvedInput.source,
+    markdown: result.markdown,
+    ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+    cacheHit: result.cacheHit,
+    ...(result.message !== undefined ? { message: result.message } : {}),
+    provider,
+    policy,
+  };
+}
+
+function authorizedPdfPath(resolvedInput: ResolvedExtractionInput): string | undefined {
+  if (resolvedInput.source.kind === "path") return resolvedInput.source.path;
+  if (resolvedInput.source.kind === "artifact") return resolvedInput.artifact?.path;
+  return undefined;
+}
+
+async function commitResolvedExtraction(options: {
+  options: MaterialExtractionOptions;
+  started: number;
+  attachTo?: string;
+  policy: string;
+  resolvedInput: ResolvedExtractionInput;
+  provider: MaterialExtractionProviderSummary;
+  providerResult: ProviderExtractionResult;
+}): Promise<MaterialExtractionResultEnvelope> {
+  const extractionId = randomUUID();
+  const outputs = outputRelativePaths(extractionId);
+  let storedOutputs: Awaited<ReturnType<typeof writeExtractionOutputs>>;
+  try {
+    storedOutputs = await writeExtractionOutputs({
+      extractionRoot: options.options.config.storage.extractionRoot,
+      markdownPath: outputs.markdownPath,
+      jsonPath: outputs.jsonPath,
+      markdown: options.providerResult.markdown,
+      providerResult: options.providerResult,
+    });
+  } catch (error) {
+    if (error instanceof ExtractionOutputCommitError) {
+      return extractionOrphanEnvelope({
+        options: options.options,
+        started: options.started,
+        provider: options.provider,
+        policy: options.policy,
+        attachTo: options.attachTo,
+        resolvedInput: options.resolvedInput,
+        extractionId,
+        commitStage: "output",
+        committedOutputs: error.committedOutputs,
+        error: error.message,
+      });
+    }
+    throw error;
+  }
+  let record: ExtractionRecord;
+  try {
+    record = await createExtractionRecord(options.options.config.workspace.root, {
+      id: extractionId,
+      source: options.resolvedInput.source,
+      backend: options.provider.id,
+      options: {
+        policy: options.policy,
+        providerVersion: options.provider.version,
+      },
+      outputs: {
+        markdownStorage: storedOutputs.markdown.ref,
+        jsonStorage: storedOutputs.json.ref,
+        markdown: options.providerResult.markdown,
+      },
+      cacheHit: options.providerResult.cacheHit,
+      ...(options.attachTo ? { itemId: options.attachTo } : {}),
+      ...(options.providerResult.message ? { message: options.providerResult.message } : {}),
+    });
+  } catch (error) {
+    return extractionOrphanEnvelope({
+      options: options.options,
+      started: options.started,
+      provider: options.provider,
+      policy: options.policy,
+      attachTo: options.attachTo,
+      resolvedInput: options.resolvedInput,
+      extractionId,
+      commitStage: "metadata",
+      committedOutputs: [
+        committedOutput("markdown", storedOutputs.markdown),
+        committedOutput("json", storedOutputs.json),
+      ],
+      error: formatError(error),
+    });
+  }
+
+  return okEnvelope({
+    capability: "extract",
+    tool: "extract",
+    data: {
+      record,
+      markdown: options.providerResult.markdown,
+      markdownPath: storedOutputs.markdown.path,
+      jsonPath: storedOutputs.json.path,
+      provider: options.provider,
+    },
+    diagnostics: {
+      elapsedMs: Date.now() - options.started,
+      inputKind: options.resolvedInput.materialInputKind,
+      workspaceRoot: options.options.config.workspace.root,
+      attachTo: options.attachTo ?? null,
+    },
+    provenance: {
+      providerIds: [options.provider.id],
+      policy: options.policy,
+      configPaths: options.options.config.meta.loadedFiles,
+    },
+  });
+}
+
+/** Commit already verified exact-URL Markdown without inventing an artifact record. */
+export async function commitMaterialExtractionProviderProbe(options: {
+  config: ResolvedConfig;
+  probe: MaterialExtractionProviderProbeData;
+  attachTo?: string;
+}): Promise<MaterialExtractionResultEnvelope> {
+  const started = Date.now();
+  const attachTo = normalizeAttachTo(options.attachTo);
+  if (options.probe.source.kind !== "url" || !options.probe.source.url) {
+    fail("Only an exact URL extraction probe can be committed without an artifact");
+  }
+  const sourceUrl = new URL(options.probe.source.url);
+  if (sourceUrl.protocol !== "https:") {
+    fail("Only a safe HTTPS exact URL extraction probe can be committed without an artifact");
+  }
+  const normalizedUrl = sourceUrl.toString();
+  const providerId = normalizeProviderId(options.probe.provider.id);
+  if (!providerId) fail("Exact URL extraction probe must identify its provider");
+  const policy = normalizePolicy(options.probe.policy);
+  const providerResult = parseProviderExtractionResult(options.probe);
+  return commitResolvedExtraction({
+    options: {
+      config: options.config,
+      input: normalizedUrl,
+      attachTo,
+      providerId,
+      policy,
+    },
+    started,
+    attachTo,
+    policy,
+    resolvedInput: {
+      source: { kind: "url", url: normalizedUrl },
+      materialInputKind: "url",
+    },
+    provider: {
+      id: providerId,
+      name: options.probe.provider.name,
+      version: options.probe.provider.version,
+      packagePath: options.probe.provider.packagePath,
+    },
+    providerResult,
+  });
+}
+
 export async function planMaterialExtractionForInputKind(
   options: MaterialExtractionPlanForInputKindOptions,
 ): Promise<ResultEnvelope<PlannedOperationData>> {
@@ -324,9 +647,7 @@ export async function planMaterialExtractionForInputKind(
   });
   const provider = providerSummary(providerPackage);
   const plannedOutputDir = path.join(
-    options.config.workspace.root,
-    "material",
-    "extractions",
+    options.config.storage.extractionRoot,
     "<new-extraction-id>",
   );
 
@@ -359,7 +680,7 @@ export async function planMaterialExtractionForInputKind(
       {
         id: "write-markdown",
         action: "write",
-        description: "Write extracted Markdown and structured provider output to the workspace.",
+        description: "Write extracted Markdown and structured provider output to the configured extraction root.",
         targetPaths: [plannedOutputDir],
         providerId: provider.id,
         policy,
@@ -405,7 +726,7 @@ export async function planMaterialExtraction(
 
 export async function runMaterialExtraction(
   options: MaterialExtractionOptions,
-): Promise<ResultEnvelope<MaterialExtractionData>> {
+): Promise<MaterialExtractionResultEnvelope> {
   const started = Date.now();
   const attachTo = normalizeAttachTo(options.attachTo);
   const policy = normalizePolicy(options.policy);
@@ -416,6 +737,17 @@ export async function runMaterialExtraction(
     providerId: options.providerId,
   });
   const provider = providerSummary(providerPackage);
+  if (provider.id === MINERU_PROVIDER_ID && isStoredHtmlArtifact(resolvedInput)) {
+    return commitResolvedExtraction({
+      options,
+      started,
+      attachTo,
+      policy,
+      resolvedInput,
+      provider: LOCAL_HTML_PROVIDER,
+      providerResult: await localHtmlProviderResult(resolvedInput),
+    });
+  }
   const runtimeContext = createMaterialRuntimeContext({
     manifest: providerPackage.manifest,
     providerConfig: (options.config.platform[provider.id] ?? {}) as Record<string, unknown>,
@@ -424,8 +756,9 @@ export async function runMaterialExtraction(
       capability: "extract",
       attachTo: attachTo ?? null,
     },
-    cacheRoot: path.join(options.config.workspace.root, ".material-provider-cache"),
+    cacheRoot: resolveMaterialProviderCacheRoot(options.config),
     workspaceRoot: options.config.workspace.root,
+    authorizedPdfPath: authorizedPdfPath(resolvedInput),
   });
   const loadedProvider = await invokeMaterialProviderFactoryInNode(
     providerPackage.bundleCode,
@@ -439,55 +772,63 @@ export async function runMaterialExtraction(
   const providerResult = parseProviderExtractionResult(
     await extractMethod(providerInput({ resolvedInput, attachTo, policy })),
   );
-  const extractionId = randomUUID();
-  const outputs = outputRelativePaths(extractionId);
-  await writeExtractionOutputs({
-    workspaceRoot: options.config.workspace.root,
-    markdownPath: outputs.markdownPath,
-    jsonPath: outputs.jsonPath,
-    markdown: providerResult.markdown,
+  return commitResolvedExtraction({
+    options,
+    started,
+    attachTo,
+    policy,
+    resolvedInput,
+    provider,
     providerResult,
   });
-  const record = await createExtractionRecord(options.config.workspace.root, {
-    id: extractionId,
-    source: resolvedInput.source,
-    backend: provider.id,
-    options: {
-      policy,
-      providerVersion: provider.version,
-    },
-    outputs: {
-      markdownPath: outputs.markdownPath,
-      jsonPath: outputs.jsonPath,
-      markdown: providerResult.markdown,
-    },
-    cacheHit: providerResult.cacheHit,
-    ...(attachTo ? { itemId: attachTo } : {}),
-    ...(providerResult.message ? { message: providerResult.message } : {}),
-  });
+}
 
-  return okEnvelope({
+function extractionOrphanEnvelope(options: {
+  options: MaterialExtractionOptions;
+  started: number;
+  provider: MaterialExtractionProviderSummary;
+  policy: string;
+  attachTo?: string;
+  resolvedInput: ResolvedExtractionInput;
+  extractionId: string;
+  commitStage: MaterialExtractionOrphanOutcome["commitStage"];
+  committedOutputs: MaterialExtractionCommittedOutput[];
+  error: string;
+}): MaterialExtractionResultEnvelope {
+  const orphan: MaterialExtractionOrphanOutcome = {
+    outcome: "orphaned",
+    commitStage: options.commitStage,
+    extractionId: options.extractionId,
+    outputs: options.committedOutputs,
+    metadataPath: path.join(
+      path.resolve(options.options.config.workspace.root),
+      EXTRACTION_RECORDS_DIR,
+      `${options.extractionId}.json`,
+    ),
+    error: options.error,
+  };
+  return {
+    ok: false,
     capability: "extract",
     tool: "extract",
-    data: {
-      record,
-      markdown: providerResult.markdown,
-      markdownPath: outputs.markdownPath,
-      jsonPath: outputs.jsonPath,
-      provider,
-    },
+    data: null as unknown as MaterialExtractionData,
+    orphan,
     diagnostics: {
-      elapsedMs: Date.now() - started,
-      inputKind: resolvedInput.materialInputKind,
-      workspaceRoot: options.config.workspace.root,
-      attachTo: attachTo ?? null,
+      elapsedMs: Date.now() - options.started,
+      inputKind: options.resolvedInput.materialInputKind,
+      workspaceRoot: options.options.config.workspace.root,
+      attachTo: options.attachTo ?? null,
+      partial: true,
+      orphanedBytes: true,
+      commitStage: options.commitStage,
     },
+    errors: [`Extraction ${options.commitStage} commit failed after bytes were committed: ${options.error}`],
     provenance: {
-      providerIds: [provider.id],
-      policy,
-      configPaths: options.config.meta.loadedFiles,
+      providerIds: [options.provider.id],
+      policy: options.policy,
+      configPaths: options.options.config.meta.loadedFiles,
     },
-  });
+  };
 }
 
 function formatError(error: unknown): string {

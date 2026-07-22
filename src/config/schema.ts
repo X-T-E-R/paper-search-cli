@@ -21,6 +21,96 @@ export const WorkspaceConfigSchema = z.object({
   defaultCollection: z.string().min(1),
 }).strict();
 
+export const StorageConfigSchema = z.object({
+  artifactRoot: z.string().min(1),
+  extractionRoot: z.string().min(1),
+  exportRoot: z.string().min(1),
+}).strict();
+
+export const MaterialConfigSchema = z.object({
+  /**
+   * `selected` creates or reuses a workspace item after bytes are committed.
+   * `materialized` keeps the artifact standalone until an explicit selection.
+   */
+  downloadDisposition: z.enum(["selected", "materialized"]),
+}).strict();
+
+/** User-global authority for the optional visible-browser acquisition sidecar. */
+export const InstitutionalProfileIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u);
+
+const InstitutionalAgentControlFieldsSchema = z.object({
+  mode: z.enum(["ask", "allow", "off"]),
+  allowedProfiles: z.array(InstitutionalProfileIdSchema).refine(
+    (profiles) => new Set(profiles).size === profiles.length,
+    { message: "institutional agent-control profile ids must be unique" },
+  ),
+}).strict();
+
+export const InstitutionalAgentControlSchema = InstitutionalAgentControlFieldsSchema.superRefine((control, refinement) => {
+  if (control.mode === "allow" && control.allowedProfiles.length === 0) {
+    refinement.addIssue({ code: "custom", message: "institutional agent control allow mode requires an explicit profile allowlist" });
+  }
+});
+
+export const InstitutionalConfigSchema = z.object({
+  enabled: z.boolean(),
+  pythonExecutable: z.string(),
+  checkoutRoot: z.string(),
+  timeoutMs: z.number().int().min(1_000).max(3_600_000),
+  maxPdfBytes: z.number().int().min(1_024).max(1_073_741_824),
+  agentControl: InstitutionalAgentControlSchema,
+}).strict();
+
+const UserInstitutionalConfigSchema = InstitutionalConfigSchema
+  .omit({ agentControl: true })
+  .partial()
+  .extend({ agentControl: InstitutionalAgentControlFieldsSchema.partial().optional() })
+  .strict();
+
+export const RunsConfigSchema = z.object({
+  root: z.string().min(1),
+  maxAgeDays: z.union([z.literal(-1), z.number().int().min(1)]),
+  recordByDefault: z.boolean(),
+}).strict();
+
+const ContextConfigFieldsSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+  kind: z.enum(["global", "standalone", "paperflow"]),
+}).strict();
+
+export const ContextConfigSchema = ContextConfigFieldsSchema.superRefine((context, refinement) => {
+  if ((context.kind === "global") !== (context.id === "global")) {
+    refinement.addIssue({
+      code: "custom",
+      message: "the built-in global context must use id = global and project contexts must use another id",
+    });
+  }
+});
+
+export const ProjectContextConfigSchema = ContextConfigSchema.refine(
+  (context) => context.kind !== "global",
+  { message: "global is a built-in fallback context and cannot be declared in a config file" },
+);
+
+export const ZoteroConfigSchema = z.object({
+  enabled: z.boolean(),
+  endpoint: z.string().url(),
+  timeoutMs: z.number().int().min(100).max(300_000),
+  unavailable: z.enum(["error", "warn"]),
+  syncOnSelected: z.boolean(),
+  collectionKeys: z.array(z.string().regex(/^[A-Za-z0-9]+$/u)),
+  attachmentMode: z.enum(["none", "link", "import"]),
+  markdownMode: z.enum(["none", "note", "link", "import"]),
+}).strict();
+
+export const ZoteroBindingConfigSchema = z.object({
+  /** Inherit global selection-sync defaults, disable them, or bind this workspace explicitly. */
+  mode: z.enum(["inherit", "off", "bound"]),
+  collectionKeys: z.array(z.string().regex(/^[A-Za-z0-9]+$/u)).optional(),
+  attachmentMode: z.enum(["none", "link", "import"]).optional(),
+  markdownMode: z.enum(["none", "note", "link", "import"]).optional(),
+}).strict();
+
 export const ServerConfigSchema = z.object({
   enabled: z.boolean(),
   transport: z.enum(["stdio", "http"]),
@@ -206,10 +296,15 @@ export const SearchSelectionConfigSchema = SearchSelectionFieldsSchema.superRefi
   }
 });
 
+export const AcademicSearchSortSchema = z.enum(["relevance", "date", "citations"]);
+export const PatentSearchSortSchema = z.enum(["relevance", "date"]);
+
 const SearchConfigFieldsSchema = z.object({
   selection: SearchSelectionConfigSchema,
   defaultAcademicPresets: z.array(SearchDefinitionNameSchema),
   defaultPatentPresets: z.array(SearchDefinitionNameSchema),
+  defaultAcademicSort: AcademicSearchSortSchema,
+  defaultPatentSort: PatentSearchSortSchema,
   classifications: z.record(SearchDefinitionNameSchema, SearchClassificationConfigSchema),
   presets: SearchPresetDefinitionsSchema,
 }).strict();
@@ -293,6 +388,8 @@ const UserSearchConfigSchema = z.object({
   selection: SearchSelectionFieldsSchema.partial().optional(),
   defaultAcademicPresets: z.array(SearchDefinitionNameSchema).optional(),
   defaultPatentPresets: z.array(SearchDefinitionNameSchema).optional(),
+  defaultAcademicSort: AcademicSearchSortSchema.optional(),
+  defaultPatentSort: PatentSearchSortSchema.optional(),
   classifications: z
     .record(SearchDefinitionNameSchema, SearchClassificationConfigSchema)
     .optional(),
@@ -316,8 +413,15 @@ export const ConfigMetaSchema = z.object({
 }).strict();
 
 export const ResolvedConfigSchema = z.object({
+  context: ContextConfigSchema,
   providers: ProvidersConfigSchema,
   workspace: WorkspaceConfigSchema,
+  storage: StorageConfigSchema,
+  material: MaterialConfigSchema,
+  institutional: InstitutionalConfigSchema,
+  runs: RunsConfigSchema,
+  zotero: ZoteroConfigSchema,
+  zoteroBinding: ZoteroBindingConfigSchema,
   server: ServerConfigSchema,
   defaults: DefaultsConfigSchema,
   output: OutputConfigSchema,
@@ -329,8 +433,15 @@ export const ResolvedConfigSchema = z.object({
 }).strict();
 
 export const UserConfigSchema = z.object({
+  context: ProjectContextConfigSchema.optional(),
   providers: ProvidersConfigSchema.partial().optional(),
   workspace: WorkspaceConfigSchema.partial().optional(),
+  storage: StorageConfigSchema.partial().optional(),
+  material: MaterialConfigSchema.partial().optional(),
+  institutional: UserInstitutionalConfigSchema.optional(),
+  runs: RunsConfigSchema.partial().optional(),
+  zotero: ZoteroConfigSchema.partial().optional(),
+  zoteroBinding: ZoteroBindingConfigSchema.partial().optional(),
   server: ServerConfigSchema.partial().optional(),
   defaults: DefaultsConfigSchema.partial().optional(),
   output: OutputConfigSchema.partial().optional(),
@@ -367,5 +478,7 @@ export type UserConfig = z.infer<typeof UserConfigSchema>;
 export type SearchSelector = z.infer<typeof SearchSelectorSchema>;
 export type SearchClassificationConfig = z.infer<typeof SearchClassificationConfigSchema>;
 export type SearchPresetConfig = z.infer<typeof SearchPresetConfigSchema>;
+export type AcademicSearchSort = z.infer<typeof AcademicSearchSortSchema>;
+export type PatentSearchSort = z.infer<typeof PatentSearchSortSchema>;
 export type CredentialsConfigFile = z.infer<typeof CredentialsConfigFileSchema>;
 export type SubscriptionsConfigFile = z.infer<typeof SubscriptionsConfigFileSchema>;

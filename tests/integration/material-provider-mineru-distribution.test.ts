@@ -125,7 +125,7 @@ describe("mineru-extractor distributable install integration", () => {
     const listData = list.envelope.data as { installed?: Array<{ id: string; version: string; valid: boolean }> };
     expect(listData.installed).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "mineru-extractor", version: "1.0.0", valid: true }),
+        expect.objectContaining({ id: "mineru-extractor", version: "1.1.1", valid: true }),
       ]),
     );
     await access(path.join(installDir, "material", "mineru-extractor", "provider.js"));
@@ -149,10 +149,10 @@ describe("mineru-extractor distributable install integration", () => {
           providers: [
             {
               id: "mineru-extractor",
-              version: "1.0.0",
+              version: "1.1.1",
               archiveRef: "./mineru-extractor.zip",
               sha256: sha256Hex(archiveBytes),
-              minCliVersion: "0.1.0",
+              minCliVersion: "0.5.0",
             },
           ],
         },
@@ -166,13 +166,13 @@ describe("mineru-extractor distributable install integration", () => {
     const plan = await planMaterialProviderRegistry({
       registry,
       installDir,
-      currentVersion: "0.1.0",
+      currentVersion: "0.5.0",
     });
     expect(plan.data?.actions).toEqual([
       expect.objectContaining({
         id: "mineru-extractor",
         action: "install",
-        minRequiredVersion: "0.1.0",
+        minRequiredVersion: "0.5.0",
         installPath: path.join(installDir, "material", "mineru-extractor"),
       }),
     ]);
@@ -181,14 +181,14 @@ describe("mineru-extractor distributable install integration", () => {
     const envelope = await applyMaterialProviderRegistry({
       registry,
       installDir,
-      currentVersion: "0.1.0",
+      currentVersion: "0.5.0",
     });
     expect(envelope.ok).toBe(true);
     expect(envelope.data?.applied).toEqual([
       expect.objectContaining({
         id: "mineru-extractor",
         action: "install",
-        version: "1.0.0",
+        version: "1.1.1",
         checksumTarget: "archive",
         installPath: path.join(installDir, "material", "mineru-extractor"),
       }),
@@ -211,7 +211,7 @@ describe("mineru-extractor distributable install integration", () => {
     };
     expect(listAfterData.installed).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "mineru-extractor", version: "1.0.0", valid: true }),
+        expect.objectContaining({ id: "mineru-extractor", version: "1.1.1", valid: true }),
       ]),
     );
   });
@@ -233,7 +233,7 @@ describe("mineru-extractor distributable install integration", () => {
           providers: [
             {
               id: "mineru-extractor",
-              version: "1.0.0",
+              version: "1.1.1",
               archiveRef: "./mineru-extractor.zip",
               minCliVersion: "9.9.9",
             },
@@ -249,7 +249,7 @@ describe("mineru-extractor distributable install integration", () => {
     const plan = await planMaterialProviderRegistry({
       registry,
       installDir,
-      currentVersion: "0.1.0",
+      currentVersion: "0.5.0",
     });
     expect(plan.data?.actions).toEqual([
       expect.objectContaining({
@@ -263,7 +263,7 @@ describe("mineru-extractor distributable install integration", () => {
     const envelope = await applyMaterialProviderRegistry({
       registry,
       installDir,
-      currentVersion: "0.1.0",
+      currentVersion: "0.5.0",
     });
     expect(envelope.data?.applied).toEqual([]);
     expect(envelope.data?.skipped).toEqual([

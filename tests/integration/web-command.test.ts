@@ -14,8 +14,8 @@ describe("web command", () => {
   it("returns typed disabled failure without credentials or a process", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-web-disabled-"));
     temporary.push(root);
-    const oldAppData = process.env.APPDATA;
-    process.env.APPDATA = path.join(root, "appdata");
+    const oldHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = path.join(root, "paper-search-home");
     let stdout = "";
     try {
       await buildProgram({
@@ -23,8 +23,8 @@ describe("web command", () => {
         stderr: { write() {} },
       }).parseAsync(["node", "paper-search", "web", "offline query"]);
     } finally {
-      if (oldAppData === undefined) delete process.env.APPDATA;
-      else process.env.APPDATA = oldAppData;
+      if (oldHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = oldHome;
     }
     expect(JSON.parse(stdout)).toMatchObject({
       ok: false, tool: "web_search", diagnostics: { reason: "external_search_disabled" },
@@ -34,8 +34,7 @@ describe("web command", () => {
   it("invokes the native External Search v1 fixture", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-web-native-"));
     temporary.push(root);
-    const appData = path.join(root, "appdata");
-    const configRoot = path.join(appData, "paper-search");
+    const configRoot = path.join(root, "paper-search-home");
     await mkdir(configRoot, { recursive: true });
     await writeFile(path.join(configRoot, "external-search.toml"), [
       "schemaVersion = 1", "enabled = true", 'adapter = "native"', "timeoutMs = 2000", "",
@@ -43,8 +42,8 @@ describe("web command", () => {
       `args = ${JSON.stringify([path.resolve("tests/fixtures/external-search/native-cli.mjs"), "normal"])}`,
       `workingDirectory = ${JSON.stringify(process.cwd())}`, "",
     ].join("\n"));
-    const oldAppData = process.env.APPDATA;
-    process.env.APPDATA = appData;
+    const oldHome = process.env.PAPER_SEARCH_HOME;
+    process.env.PAPER_SEARCH_HOME = configRoot;
     let stdout = "";
     try {
       await buildProgram({
@@ -52,8 +51,8 @@ describe("web command", () => {
         stderr: { write() {} },
       }).parseAsync(["node", "paper-search", "web", "offline query", "--mode", "fast", "--freshness", "pw", "--max-results", "2"]);
     } finally {
-      if (oldAppData === undefined) delete process.env.APPDATA;
-      else process.env.APPDATA = oldAppData;
+      if (oldHome === undefined) delete process.env.PAPER_SEARCH_HOME;
+      else process.env.PAPER_SEARCH_HOME = oldHome;
     }
     expect(JSON.parse(stdout)).toMatchObject({
       ok: true,

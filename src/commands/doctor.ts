@@ -36,6 +36,7 @@ import { inspectExternalSearchStatic, type ExternalSearchStaticStatus } from "..
 import { probeExternalSearch } from "../external-search/service.js";
 import { ExternalSearchError } from "../external-search/errors.js";
 import { getSystemVersion } from "../runtime/version.js";
+import { planConfigLocationMigration, type ConfigLocationMigrationPlan } from "../config/locationMigration.js";
 
 interface DoctorOptions {
   json?: boolean;
@@ -84,6 +85,7 @@ interface ApiKeyReportEntry {
 }
 
 export interface DoctorReport {
+  configLocationMigration: ConfigLocationMigrationPlan;
   installation: {
     checkout: string;
     buildPresent: boolean;
@@ -773,7 +775,10 @@ export function registerDoctorCommand(program: Command, io: Io): void {
       let envelope: ResultEnvelope<DoctorReport> | ResultEnvelope<null>;
       try {
         const globalOptions = command.optsWithGlobals<{ config?: string }>();
-        const config = await loadConfig({ explicitConfigPath: globalOptions.config });
+        const config = await loadConfig({
+          explicitConfigPath: globalOptions.config,
+          allowPendingLocationMigration: true,
+        });
         const report = await createDoctorReport(config);
         const installCounts = {
           search: report.providerLifecycle.inventory.byKind.search.total > 0
@@ -801,6 +806,9 @@ export function registerDoctorCommand(program: Command, io: Io): void {
           ...report.providerLifecycle.health.issues
             .filter((issue) => issue.severity !== "info")
             .map((issue) => `Provider lifecycle ${issue.code}: ${issue.message} ${issue.action}`),
+          ...(["pending", "ambiguous", "conflicted", "blocked"].includes(report.configLocationMigration.status)
+            ? [`Configuration location migration is ${report.configLocationMigration.status}; run \`paper-search migrate\` before config-dependent work.`]
+            : []),
         ];
         envelope = okEnvelope({
           capability: "operate",
@@ -839,7 +847,7 @@ export function registerDoctorCommand(program: Command, io: Io): void {
 }
 
 async function createDoctorReport(config: ResolvedConfig): Promise<DoctorReport> {
-  const [searchProviders, materialProviders, registry, workspace, installation, providerLifecycle, externalStatic] = await Promise.all([
+  const [searchProviders, materialProviders, registry, workspace, installation, providerLifecycle, externalStatic, configLocationMigration] = await Promise.all([
     listInstalledProviders(config.providers.installDir),
     listInstalledMaterialProviders(config.providers.installDir),
     inspectRegistryReachability(config.providers.registryUrl, config.meta.cwd),
@@ -847,6 +855,7 @@ async function createDoctorReport(config: ResolvedConfig): Promise<DoctorReport>
     inspectInstallHealth(),
     inspectProviderLifecycleHealth(config.providers.installDir),
     inspectExternalSearchStatic(),
+    planConfigLocationMigration(),
   ]);
   let externalSearch: DoctorReport["externalSearch"] = externalStatic;
   if (externalStatic.state === "configured") {
@@ -897,6 +906,7 @@ async function createDoctorReport(config: ResolvedConfig): Promise<DoctorReport>
       : "stdio";
 
   return {
+    configLocationMigration,
     installation: {
       checkout: installation.paths.repoRoot,
       buildPresent: Boolean(installation.build),

@@ -1,0 +1,42 @@
+{
+  "id": "local-pymupdf4llm",
+  "name": "Local PyMuPDF4LLM Extractor",
+  "version": "1.0.0",
+  "kind": "extractor",
+  "entry": "provider.js",
+  "description": "Explicit offline PDF-to-Markdown extraction through Paper Search's pinned local PyMuPDF4LLM runtime.",
+  "author": "Paper Search CLI X",
+  "minCliVersion": "0.5.0",
+  "capabilities": {
+    "inputs": [
+      "local_file",
+      "artifact"
+    ],
+    "inputTypes": [
+      "pdf"
+    ],
+    "outputs": [
+      "markdown",
+      "json"
+    ],
+    "network": false
+  },
+  "configSchema": {
+    "ocr": {
+      "type": "boolean",
+      "default": false,
+      "label": "OCR",
+      "description": "Request OCR. The initial pinned runtime returns OCR_UNAVAILABLE because it does not install an OCR engine."
+    },
+    "timeoutMs": {
+      "type": "number",
+      "default": 300000,
+      "label": "Timeout (ms)",
+      "description": "Local parser deadline from 1000 through 600000 milliseconds."
+    }
+  },
+  "permissions": {
+    "localRead": true,
+    "localWrite": "none"
+  }
+}

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "kind": "extractor",
   "entry": "provider.js",
-  "description": "External MinerU material extractor wrapper for URL extraction into Markdown, JSON, assets, and result zips; local-file upload request construction is exposed as a wrapper contract for host-mediated integration.",
+  "description": "External MinerU material extractor wrapper for exact-URL extraction into Markdown, including managed material-ingest recovery after eligible byte-acquisition denial; local-file upload request construction remains a host-mediated contract.",
   "author": "Paper Search fixtures",
   "capabilities": {
     "inputs": ["url", "artifact"],
@@ -34,27 +34,35 @@
     },
     "language": {
       "type": "string",
-      "default": "auto",
-      "description": "MinerU language option."
+      "default": "ch",
+      "description": "MinerU language option; defaults to the official wrapper value."
     },
     "enableOcr": {
       "type": "boolean",
-      "default": true,
+      "default": false,
       "description": "Map to MinerU is_ocr."
     },
     "enableTable": {
       "type": "boolean",
-      "default": true,
-      "description": "Map to MinerU enable_table."
+      "description": "Map to MinerU enable_table when explicitly configured; otherwise omit it like the official wrapper."
     },
     "enableFormula": {
       "type": "boolean",
-      "default": true,
-      "description": "Map to MinerU enable_formula."
+      "description": "Map to MinerU enable_formula when explicitly configured; otherwise omit it like the official wrapper."
+    },
+    "maxResultZipBytes": {
+      "type": "number",
+      "default": 67108864,
+      "description": "Maximum decoded MinerU result ZIP size."
+    },
+    "maxMarkdownBytes": {
+      "type": "number",
+      "default": 16777216,
+      "description": "Maximum extracted Markdown entry size."
     },
     "pollIntervalMs": {
       "type": "number",
-      "default": 2000,
+      "default": 3000,
       "description": "Default poll interval for live extraction."
     },
     "timeoutMs": {
@@ -72,6 +80,7 @@
     "network": [
       "https://mineru.net/api/v4/*",
       "https://*.mineru.net/api/v4/*",
+      "https://cdn-mineru.openxlab.org.cn/*",
       "https://*.aliyuncs.com/*"
     ],
     "localRead": true,

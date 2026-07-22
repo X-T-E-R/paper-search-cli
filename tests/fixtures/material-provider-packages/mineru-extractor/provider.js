@@ -2,6 +2,9 @@ var __material_provider_exports = {
   createProvider(runtimeContext) {
     const CONTRACT_VERSION = "paper-search.material-provider.mineru.v1";
     const DEFAULT_ENDPOINT = "https://mineru.net";
+    const OFFICIAL_USER_AGENT = "openclaw-mineru";
+    const DEFAULT_RESULT_ZIP_MAX_BYTES = 64 * 1024 * 1024;
+    const DEFAULT_MARKDOWN_MAX_BYTES = 16 * 1024 * 1024;
     const DOCUMENT_EXTENSIONS = /\.(pdf|docx?|pptx?|png|jpe?g|tiff?|bmp|webp)(?:[?#].*)?$/i;
 
     function configValue(key, fallback) {
@@ -36,6 +39,14 @@ var __material_provider_exports = {
       return fallback;
     }
 
+    function byteLimit(configKey, fallback) {
+      const value = numberValue(configValue(configKey, fallback), fallback);
+      if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`${configKey} must be a positive safe integer.`);
+      }
+      return value;
+    }
+
     function apiBase() {
       return stringValue(configValue("endpoint", DEFAULT_ENDPOINT), DEFAULT_ENDPOINT).replace(/\/+$/, "");
     }
@@ -64,7 +75,8 @@ var __material_provider_exports = {
       return {
         accept: "application/json",
         authorization: authHeader(redacted),
-        "content-type": "application/json"
+        "content-type": "application/json",
+        "user-agent": OFFICIAL_USER_AGENT
       };
     }
 
@@ -87,10 +99,39 @@ var __material_provider_exports = {
       return configValue(configKey, fallback);
     }
 
-    function pickModelVersion(locator, configured) {
+    function pickModelVersion(locator, configured, input) {
       const requested = stringValue(configured, "auto");
       if (requested !== "auto") return requested;
-      return DOCUMENT_EXTENSIONS.test(String(locator)) ? "pipeline" : "MinerU-HTML";
+      const value = String(locator);
+      if (DOCUMENT_EXTENSIONS.test(value)) return "pipeline";
+      const artifact = input && typeof input === "object" && input.artifact && typeof input.artifact === "object"
+        ? input.artifact
+        : null;
+      if (artifact) {
+        const artifactKind = stringValue(artifact.kind, "").toLowerCase();
+        const contentType = stringValue(artifact.contentType || artifact.mimeType, "").toLowerCase();
+        const artifactLocator = artifact.filename || artifact.path || (artifact.storage && artifact.storage.key) || "";
+        if (
+          artifactKind === "pdf" ||
+          contentType === "application/pdf" ||
+          DOCUMENT_EXTENSIONS.test(String(artifactLocator))
+        ) {
+          return "pipeline";
+        }
+      }
+      try {
+        const parsed = new URL(value);
+        const hostname = parsed.hostname.toLowerCase();
+        if (
+          (hostname === "arxiv.org" || hostname.endsWith(".arxiv.org")) &&
+          /^\/pdf(?:\/|$)/i.test(parsed.pathname)
+        ) {
+          return "pipeline";
+        }
+      } catch {
+        // Local paths and non-URL locators are handled by the extension check above.
+      }
+      return "MinerU-HTML";
     }
 
     function basename(filePath) {
@@ -197,16 +238,22 @@ var __material_provider_exports = {
     }
 
     function sharedMineruOptions(input, locator) {
-      const language = stringValue(optionValue(input, "language", "language", "auto"), "auto");
+      const language = stringValue(optionValue(input, "language", "language", "ch"), "ch");
       const pageRanges = stringValue(inputOption(input, "pageRanges"), "");
       const extraFormats = inputOption(input, "extraFormats");
       const body = {
-        model_version: pickModelVersion(locator, optionValue(input, "modelVersion", "modelVersion", "auto")),
+        model_version: pickModelVersion(
+          locator,
+          optionValue(input, "modelVersion", "modelVersion", "auto"),
+          input
+        ),
         language,
-        is_ocr: booleanValue(optionValue(input, "enableOcr", "enableOcr", true), true),
-        enable_table: booleanValue(optionValue(input, "enableTable", "enableTable", true), true),
-        enable_formula: booleanValue(optionValue(input, "enableFormula", "enableFormula", true), true)
+        is_ocr: booleanValue(optionValue(input, "enableOcr", "enableOcr", false), false)
       };
+      const enableTable = optionValue(input, "enableTable", "enableTable", undefined);
+      const enableFormula = optionValue(input, "enableFormula", "enableFormula", undefined);
+      if (enableTable !== undefined) body.enable_table = booleanValue(enableTable, false);
+      if (enableFormula !== undefined) body.enable_formula = booleanValue(enableFormula, false);
       if (pageRanges) body.page_ranges = pageRanges;
       if (Array.isArray(extraFormats) && extraFormats.length > 0) {
         body.extra_formats = extraFormats.map(String);
@@ -218,8 +265,10 @@ var __material_provider_exports = {
       const source = resolveSource(input);
 
       if (source.kind === "url" || source.kind === "artifact_url") {
-        const body = sharedMineruOptions(input, source.url);
-        body.url = source.url;
+        const body = {
+          url: source.url,
+          ...sharedMineruOptions(input, source.url)
+        };
         return {
           contractVersion: CONTRACT_VERSION,
           source,
@@ -351,18 +400,22 @@ var __material_provider_exports = {
 
     async function pollUrlTask(request, taskId) {
       const timeoutMs = numberValue(configValue("timeoutMs", 600000), 600000);
-      const pollIntervalMs = Math.max(0, numberValue(configValue("pollIntervalMs", 2000), 2000));
+      const pollIntervalMs = Math.max(0, numberValue(configValue("pollIntervalMs", 3000), 3000));
       const deadline = Date.now() + timeoutMs;
       const pollUrl = request.poll.endpointTemplate.replace("{task_id}", encodeURIComponent(taskId));
 
       while (true) {
         const polled = await runtimeContext.http.get(pollUrl, {
           headers: request.headers,
-          timeout: timeoutMs
+          timeout: Math.min(timeoutMs, 60000)
         });
         const parsed = parseTaskResult(polled.data);
         if (parsed.failed) {
-          throw new Error(parsed.message || "MinerU extraction failed.");
+          const upstreamMessage = String(parsed.message || "MinerU extraction failed.")
+            .replace(/^Error:\s*/i, "");
+          throw new Error(
+            `MinerU upstream task ${taskId} failed (state=${parsed.state}): ${upstreamMessage}`
+          );
         }
         if (parsed.done) {
           return parsed;
@@ -377,15 +430,62 @@ var __material_provider_exports = {
       }
     }
 
-    function extractionResultFromParsed(input, parsed) {
+    async function resolveResultMarkdown(parsed) {
+      if (typeof parsed.outputs.markdown === "string" && parsed.outputs.markdown.length > 0) {
+        return {
+          markdown: parsed.outputs.markdown,
+          retrieval: { mode: "inline", entryPath: null, entryCount: null, markdownBytes: null }
+        };
+      }
+      if (!parsed.outputs.fullZipUrl) {
+        throw new Error("MinerU completed without inline Markdown or full_zip_url.");
+      }
+      if (
+        !runtimeContext.archive ||
+        typeof runtimeContext.archive.readMarkdownFromZipBase64 !== "function"
+      ) {
+        throw new Error("MinerU result archive retrieval requires Paper Search CLI >= 0.5.0.");
+      }
+      const maxArchiveBytes = byteLimit("maxResultZipBytes", DEFAULT_RESULT_ZIP_MAX_BYTES);
+      const maxMarkdownBytes = byteLimit("maxMarkdownBytes", DEFAULT_MARKDOWN_MAX_BYTES);
+      const response = await runtimeContext.http.get(parsed.outputs.fullZipUrl, {
+        headers: { "user-agent": OFFICIAL_USER_AGENT },
+        responseType: "base64",
+        maxResponseBytes: maxArchiveBytes,
+        timeout: numberValue(configValue("timeoutMs", 600000), 600000)
+      });
+      if (typeof response.data !== "string") {
+        throw new Error("MinerU result archive response was not Base64 text.");
+      }
+      const extracted = await runtimeContext.archive.readMarkdownFromZipBase64(response.data, {
+        maxArchiveBytes,
+        maxMarkdownBytes,
+        preferredEntryNames: ["full.md"]
+      });
       return {
-        markdown: parsed.outputs.markdown || `# MinerU Extraction\n\nResult zip: ${parsed.outputs.fullZipUrl || "(not supplied)"}`,
+        markdown: extracted.markdown,
+        retrieval: {
+          mode: "result-archive",
+          entryPath: extracted.entryPath,
+          entryCount: extracted.entryCount,
+          markdownBytes: extracted.markdownBytes
+        }
+      };
+    }
+
+    function extractionResultFromParsed(input, parsed, resolved) {
+      return {
+        markdown: resolved.markdown,
         metadata: {
           mineru: parsed,
-          request: buildRequestInternal(input, true)
+          request: buildRequestInternal(input, true),
+          resultRetrieval: resolved.retrieval
         },
         cacheHit: false,
-        message: parsed.outputs.fullZipUrl ? `MinerU result zip: ${parsed.outputs.fullZipUrl}` : "MinerU extraction completed."
+        message:
+          resolved.retrieval.mode === "result-archive"
+            ? `MinerU extraction completed from archive entry ${resolved.retrieval.entryPath}.`
+            : "MinerU extraction completed with inline Markdown."
       };
     }
 
@@ -401,13 +501,18 @@ var __material_provider_exports = {
         const cached = cachedExtractionResult(await runtimeContext.cache.readJson(cachePath));
         if (cached) return cached;
       }
-      const created = await runtimeContext.http.post(request.endpoint, request.body, {
-        headers: request.headers,
-        timeout: numberValue(configValue("timeoutMs", 600000), 600000)
-      });
+      const created = await runtimeContext.http.post(
+        request.endpoint,
+        request.body,
+        {
+          headers: request.headers,
+          timeout: Math.min(numberValue(configValue("timeoutMs", 600000), 600000), 90000)
+        }
+      );
       const task = parseCreateTaskResponse(created.data);
       const parsed = await pollUrlTask(request, task.taskId);
-      const result = extractionResultFromParsed(input, parsed);
+      const resolved = await resolveResultMarkdown(parsed);
+      const result = extractionResultFromParsed(input, parsed, resolved);
       if (useCache) {
         await runtimeContext.cache.writeJson(`tasks/${task.taskId}.json`, parsed);
         await runtimeContext.cache.writeJson(cachePath, result);
@@ -437,6 +542,8 @@ var __material_provider_exports = {
             "enableOcr",
             "enableTable",
             "enableFormula",
+            "maxMarkdownBytes",
+            "maxResultZipBytes",
             "pollIntervalMs",
             "timeoutMs",
             "cache"
