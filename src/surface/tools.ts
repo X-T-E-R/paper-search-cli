@@ -60,6 +60,11 @@ export const CLI_TOOL_MAPPINGS: CliToolMapping[] = [
     note: "Uses material downloader providers and stores artifact records with provenance.",
   },
   {
+    tool: "institutional_job_show",
+    commands: ["institutional show", "institutional status"],
+    note: "Read-only sanitized job inspection; only the local institutional continue command can launch a browser.",
+  },
+  {
     tool: "artifact_list",
     commands: ["artifact list"],
     note: "Reads artifact records from the local workspace.",

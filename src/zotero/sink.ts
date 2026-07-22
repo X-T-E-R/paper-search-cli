@@ -18,6 +18,7 @@ import { ZoteroRemoteError, ZoteroUnavailableError } from "./client.js";
 import { readZoteroItemMapping, writeZoteroItemMapping } from "./mapping.js";
 import type {
   ZoteroItemMapping,
+  ZoteroProjectionCorrelation,
   ZoteroResolvedSettings,
   ZoteroSinkPlan,
   ZoteroSinkPreview,
@@ -28,6 +29,8 @@ import type {
 const RECEIPTS_DIR = "zotero/receipts";
 const CREATED_ITEM_PLACEHOLDER = "$createdItemKey";
 const ZOTERO_KEY_RE = /^[A-Za-z0-9]+$/u;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SHA256_RE = /^[a-f0-9]{64}$/u;
 
 export class ZoteroSinkError extends Error {
   constructor(message: string) {
@@ -188,6 +191,7 @@ export async function planZoteroSink(options: {
   existingZoteroItemKey?: string;
   attachmentMode?: "none" | "link" | "import";
   markdownMode?: "none" | "note" | "link" | "import";
+  projectionCorrelation?: ZoteroProjectionCorrelation;
 }): Promise<ZoteroSinkPlan> {
   const workspaceRoot = path.resolve(options.workspaceRoot);
   const item = await readWorkspaceItemRecord(workspaceRoot, options.itemId);
@@ -199,6 +203,9 @@ export async function planZoteroSink(options: {
   ]);
   const attachmentMode = options.attachmentMode ?? "none";
   const markdownMode = options.markdownMode ?? "note";
+  const projectionCorrelation = options.projectionCorrelation
+    ? normalizeProjectionCorrelation(options.projectionCorrelation)
+    : undefined;
   const mapping = await readZoteroItemMapping(workspaceRoot, item.id)
     ?? await readRecoverableZoteroItemMapping(workspaceRoot, item.id);
   const explicitItemKey = options.existingZoteroItemKey?.trim();
@@ -317,6 +324,7 @@ export async function planZoteroSink(options: {
     ...(existingZoteroItemKey ? { existingZoteroItemKey } : {}),
     actions,
     omissions,
+    ...(projectionCorrelation ? { projectionCorrelation } : {}),
   };
   return { ...base, planDigest: digest(base) };
 }
@@ -605,6 +613,67 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizeProjectionCorrelation(value: unknown): ZoteroProjectionCorrelation {
+  if (!isRecord(value) || Object.keys(value).length !== 4 ||
+      value.kind !== "institutional-artifact" ||
+      typeof value.institutionalJobId !== "string" || !UUID_RE.test(value.institutionalJobId) ||
+      typeof value.artifactId !== "string" || !UUID_RE.test(value.artifactId) ||
+      typeof value.storageSha256 !== "string" || !SHA256_RE.test(value.storageSha256)) {
+    throw new ZoteroSinkError("Invalid Zotero projection correlation identity");
+  }
+  return {
+    kind: "institutional-artifact",
+    institutionalJobId: value.institutionalJobId,
+    artifactId: value.artifactId,
+    storageSha256: value.storageSha256,
+  };
+}
+
+function sameProjectionCorrelation(
+  left: ZoteroProjectionCorrelation,
+  right: ZoteroProjectionCorrelation,
+): boolean {
+  return left.kind === right.kind &&
+    left.institutionalJobId === right.institutionalJobId &&
+    left.artifactId === right.artifactId &&
+    left.storageSha256 === right.storageSha256;
+}
+
+export async function findZoteroProjectionReceipt(
+  workspaceRoot: string,
+  correlation: ZoteroProjectionCorrelation,
+): Promise<{ status: "complete" | "partial" | "pending"; pendingReason?: string } | null> {
+  const expected = normalizeProjectionCorrelation(correlation);
+  const directory = path.join(path.resolve(workspaceRoot), RECEIPTS_DIR);
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  let match: { status: "complete" | "partial" | "pending"; pendingReason?: string } | null = null;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const raw = JSON.parse(await readFile(path.join(directory, name), "utf8")) as unknown;
+      if (!isRecord(raw) || raw.schemaVersion !== 1 ||
+          (raw.status !== "complete" && raw.status !== "partial" && raw.status !== "pending")) continue;
+      const candidate = normalizeProjectionCorrelation(raw.projectionCorrelation);
+      if (!sameProjectionCorrelation(candidate, expected)) continue;
+      const current: { status: "complete" | "partial" | "pending"; pendingReason?: string } = {
+        status: raw.status,
+        ...(typeof raw.pendingReason === "string" ? { pendingReason: raw.pendingReason } : {}),
+      };
+      if (!match || current.status === "complete" ||
+          (current.status === "partial" && match.status === "pending")) match = current;
+    } catch {
+      // Invalid or concurrently written receipts are not recovery authority.
+    }
+  }
+  return match;
+}
+
 function parseRecoveryMapping(value: unknown, itemId: string): ZoteroItemMapping | null {
   if (!isRecord(value)
     || value.schemaVersion !== 1
@@ -819,6 +888,7 @@ async function applyZoteroSinkUnderLock(options: {
     ...(failedPhase ? { failedPhase } : {}),
     ...(verification !== undefined ? { verification } : {}),
     ...(mappingRecovery ? { mappingRecovery } : {}),
+    ...(options.plan.projectionCorrelation ? { projectionCorrelation: options.plan.projectionCorrelation } : {}),
   };
   const reportedReceipt = structuredClone(receipt);
   delete reportedReceipt.mappingRecovery;
@@ -864,6 +934,7 @@ export async function recordPendingZoteroSink(options: {
     extractionId: options.extractionId ?? null,
     reason: options.reason,
     planDigest: options.plan?.planDigest ?? null,
+    projectionCorrelation: options.plan?.projectionCorrelation ?? null,
   });
   const receipt: ZoteroSinkReceipt = {
     schemaVersion: 1,
@@ -878,6 +949,7 @@ export async function recordPendingZoteroSink(options: {
     ...(options.plan?.collectionKeys.length ? { collectionKeys: options.plan.collectionKeys } : {}),
     completedPhases: [],
     pendingReason: options.reason,
+    ...(options.plan?.projectionCorrelation ? { projectionCorrelation: options.plan.projectionCorrelation } : {}),
   };
   return { receipt, receiptPath: await writeReceipt(options.workspaceRoot, receipt) };
 }

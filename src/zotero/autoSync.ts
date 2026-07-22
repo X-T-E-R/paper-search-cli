@@ -3,10 +3,12 @@ import { resolveZoteroSelectionBinding } from "./binding.js";
 import { createZoteroHttpClient } from "./client.js";
 import {
   applyZoteroSink,
+  findZoteroProjectionReceipt,
   planZoteroSink,
   previewZoteroSink,
   recordPendingZoteroSink,
 } from "./sink.js";
+import type { ZoteroProjectionCorrelation } from "./types.js";
 
 export type ZoteroAutoSyncStatus = "not_requested" | "pending" | "partial" | "complete";
 
@@ -44,9 +46,22 @@ export async function syncSelectedItemToZotero(options: {
   config: ResolvedConfig;
   itemId: string;
   extractionId?: string;
+  /** Exact host-owned identity for caller crash-window reconciliation. */
+  projectionCorrelation?: ZoteroProjectionCorrelation;
 }): Promise<ZoteroAutoSyncResult> {
   const binding = resolveZoteroSelectionBinding(options.config);
   if (!binding.requested) return { status: "not_requested" };
+  if (options.projectionCorrelation) {
+    const recovered = await findZoteroProjectionReceipt(
+      options.config.workspace.root,
+      options.projectionCorrelation,
+    );
+    if (recovered) {
+      return recovered.status === "pending"
+        ? { status: "pending", ...(recovered.pendingReason ? { reason: recovered.pendingReason } : {}) }
+        : { status: recovered.status };
+    }
+  }
 
   let plan: Awaited<ReturnType<typeof planZoteroSink>>;
   try {
@@ -57,6 +72,7 @@ export async function syncSelectedItemToZotero(options: {
       collectionKeys: binding.collectionKeys,
       attachmentMode: binding.attachmentMode,
       markdownMode: binding.markdownMode,
+      projectionCorrelation: options.projectionCorrelation,
     });
   } catch (error) {
     return pending({

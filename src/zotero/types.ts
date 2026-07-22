@@ -33,6 +33,14 @@ export interface ZoteroItemMapping {
   updatedAt: string;
 }
 
+/** Exact host-owned identity for deduplicating one institutional projection. */
+export interface ZoteroProjectionCorrelation {
+  kind: "institutional-artifact";
+  institutionalJobId: string;
+  artifactId: string;
+  storageSha256: string;
+}
+
 export interface ZoteroSinkPlan {
   schemaVersion: 1;
   workspaceRoot: string;
@@ -43,6 +51,7 @@ export interface ZoteroSinkPlan {
   existingZoteroItemKey?: string;
   actions: ZoteroWriteAction[];
   omissions: string[];
+  projectionCorrelation?: ZoteroProjectionCorrelation;
   planDigest: string;
 }
 
@@ -76,4 +85,5 @@ export interface ZoteroSinkReceipt {
   verification?: unknown;
   /** Present only when remote writes succeeded but the canonical mapping could not be persisted. */
   mappingRecovery?: ZoteroItemMapping;
+  projectionCorrelation?: ZoteroProjectionCorrelation;
 }

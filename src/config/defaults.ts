@@ -30,6 +30,17 @@ export function createDefaultConfig(
     material: {
       downloadDisposition: "selected",
     },
+    institutional: {
+      enabled: false,
+      pythonExecutable: "",
+      checkoutRoot: "",
+      timeoutMs: 900_000,
+      maxPdfBytes: 100 * 1024 * 1024,
+      agentControl: {
+        mode: "ask",
+        allowedProfiles: [],
+      },
+    },
     runs: {
       root: paths.runsRoot,
       maxAgeDays: -1,

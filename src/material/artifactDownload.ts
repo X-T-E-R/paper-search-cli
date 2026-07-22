@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -7,10 +7,11 @@ import {
 } from "../providers/paths.js";
 import type { ResolvedConfig } from "../config/schema.js";
 import { createPlanEnvelope, type PlannedOperationData } from "../surface/plan.js";
-import { okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
+import { failEnvelope, okEnvelope, type ResultEnvelope } from "../surface/resultEnvelope.js";
 import {
   ARTIFACT_RECORDS_DIR,
   createArtifactRecord,
+  readArtifactRecord,
 } from "./artifactStore.js";
 import { loadMaterialProviderPackage, type LoadedMaterialProviderPackage } from "./package/load.js";
 import {
@@ -31,13 +32,14 @@ import {
   type WorkspaceItemRecord,
 } from "../workspace/store.js";
 import type { ResourceItem } from "../providers/sdk/types.js";
-import { writeLocalStorageBytes } from "../storage/local.js";
+import { resolveLocalStorageRef, writeLocalStorageBytes } from "../storage/local.js";
 import type { LocalStorageRefV1 } from "../storage/types.js";
 import { syncSelectedItemToZotero } from "../zotero/autoSync.js";
 import {
   sanitizeUrlForPersistence,
   sanitizeUrlsForPersistenceInText,
 } from "../runtime/sanitizeUrl.js";
+import { createInstitutionalJob } from "../institutional/jobStore.js";
 
 export interface ArtifactDownloadOptions {
   config: ResolvedConfig;
@@ -50,6 +52,9 @@ export interface ArtifactDownloadOptions {
   filename?: string;
   /** Material ingest defers selection projection until extraction is complete. */
   deferZoteroSync?: boolean;
+  /** Create a visible-browser continuation only after ordinary DOI acquisition fails. */
+  institutional?: boolean;
+  institutionProfile?: string;
 }
 
 export interface ArtifactDownloadProviderSummary {
@@ -1157,6 +1162,191 @@ export async function runArtifactDownload(
       configPaths: options.config.meta.loadedFiles,
     },
     warnings,
+  });
+}
+
+/**
+ * Preserve the ordinary resolver/downloader funnel as the first authority. The
+ * browser sidecar is represented only by a durable continuation job here; no
+ * child process can be launched from this canonical service path.
+ */
+export async function runArtifactDownloadWithInstitutionalFallback(
+  options: ArtifactDownloadOptions,
+): Promise<ArtifactDownloadResultEnvelope | ResultEnvelope<null>> {
+  try {
+    return await runArtifactDownload(options);
+  } catch (error) {
+    if (!options.institutional || options.download === false) throw error;
+    const resolved = await resolveDownloadInput(options.config, options.input, options.attachTo);
+    if (resolved.identifier?.scheme !== "doi") throw error;
+    if (!options.config.institutional.enabled) {
+      throw new Error("Institutional browser acquisition is disabled; enable it in the conventional user config before opting in.");
+    }
+    if (!options.config.institutional.pythonExecutable || !options.config.institutional.checkoutRoot) {
+      throw new Error("Institutional browser acquisition is not configured; set its Python executable and pinned InstSci checkout in the conventional user config.");
+    }
+    const job = await createInstitutionalJob(options.config, {
+      doi: resolved.identifier.value,
+      profileId: options.institutionProfile,
+      attachTo: resolved.attachedItemId,
+    });
+    return failEnvelope({
+      capability: "acquire",
+      tool: "artifact_download",
+      state: "action_required",
+      actions: [{
+        id: `continue-${job.id}`,
+        kind: "continue_institutional",
+        target: { kind: "institutional_job", id: job.id },
+        command: `paper-search institutional continue ${job.id}`,
+      }],
+      errors: ["Ordinary DOI acquisition did not produce an artifact; local institutional continuation is available."],
+      diagnostics: { failureKind: "institutional_continuation_required", jobId: job.id },
+    });
+  }
+}
+
+/** Commit verified sidecar bytes through the existing artifact/selection/Zotero path. */
+export async function commitInstitutionalArtifact(options: {
+  config: ResolvedConfig;
+  doi: string;
+  bytes: Buffer;
+  attachTo?: string;
+  artifactId: string;
+  institutionalJobId: string;
+  filename: string;
+  createdAt: string;
+}): Promise<ArtifactDownloadResultEnvelope> {
+  const started = Date.now();
+  let resolvedInput = await resolveDownloadInput(options.config, options.doi, options.attachTo);
+  if (resolvedInput.identifier?.scheme !== "doi") fail("institutional artifact commit requires a DOI");
+  const artifactId = options.artifactId;
+  const createdAt = options.createdAt;
+  const filename = sanitizeArtifactFilename(options.filename);
+  const sourceUrl = `https://doi.org/${resolvedInput.identifier.value}`;
+  const key = artifactBytesRelativePath(artifactId, filename);
+  const sha256 = createHash("sha256").update(options.bytes).digest("hex");
+  const expectedRef: LocalStorageRefV1 = {
+    schemaVersion: 1,
+    sink: "local",
+    area: "artifact",
+    root: path.resolve(options.config.storage.artifactRoot),
+    key,
+    sha256,
+    sizeBytes: options.bytes.byteLength,
+  };
+  let record = await readArtifactRecord(options.config.workspace.root, artifactId);
+  if (record) {
+    if (record.createdAt !== createdAt || record.filename !== filename || record.kind !== "pdf" ||
+        record.status !== "downloaded" || record.sizeBytes !== options.bytes.byteLength ||
+        record.provenance.providerId !== "institutional-browser" || record.storage?.root !== expectedRef.root ||
+        record.storage.key !== key || record.storage.sha256 !== sha256 ||
+        record.storage.sizeBytes !== options.bytes.byteLength) {
+      fail("institutional artifact commit intent conflicts with the existing artifact record");
+    }
+  }
+  let stored: { ref: LocalStorageRefV1; path: string };
+  try {
+    const existingPath = await resolveLocalStorageRef(expectedRef);
+    const existingBytes = await readFile(existingPath);
+    if (existingBytes.byteLength !== options.bytes.byteLength ||
+        createHash("sha256").update(existingBytes).digest("hex") !== sha256) {
+      fail("institutional artifact commit intent already contains different bytes");
+    }
+    stored = { ref: expectedRef, path: existingPath };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    stored = await writeLocalStorageBytes({
+      root: options.config.storage.artifactRoot,
+      key,
+      area: "artifact",
+      bytes: options.bytes,
+    });
+  }
+  const provider: ArtifactDownloadProviderSummary = {
+    id: "institutional-browser",
+    name: "Institutional browser sidecar",
+    version: "1",
+    packagePath: "bundled-sidecar",
+  };
+  const providerResult: ProviderDownloadResult = {
+    kind: "pdf",
+    filename,
+    contentType: "application/pdf",
+    bytes: options.bytes,
+    remoteUrl: sourceUrl,
+    message: "DOI-verified PDF acquired through the institutional browser continuation",
+  };
+  let commitStage: ArtifactDownloadOrphanOutcome["commitStage"] = "selection";
+  try {
+    resolvedInput = await attachDefaultSelection({
+      config: options.config,
+      input: resolvedInput,
+      filename,
+      sourceUrl,
+    });
+    if (!record) {
+      commitStage = "metadata";
+      record = await createArtifactRecord(options.config.workspace.root, artifactRecordInput({
+        artifactId,
+        createdAt,
+        provider,
+        resolvedInput,
+        policy: "institutional-browser-opt-in",
+        download: true,
+        providerResult,
+        storage: stored.ref,
+        sourceUrl,
+      }));
+    } else if (record.itemId !== resolvedInput.attachedItemId) {
+      fail("institutional artifact selection conflicts with the existing artifact record");
+    }
+  } catch (error) {
+    const metadataError = formatError(error);
+    return {
+      ok: false,
+      capability: "acquire",
+      tool: "institutional_continue",
+      data: null as unknown as ArtifactDownloadData,
+      orphan: {
+        outcome: "orphaned",
+        commitStage,
+        artifactId,
+        artifactPath: stored.path,
+        storage: stored.ref,
+        sha256: stored.ref.sha256!,
+        sizeBytes: stored.ref.sizeBytes!,
+        metadataPath: path.join(path.resolve(options.config.workspace.root), ARTIFACT_RECORDS_DIR, `${artifactId}.json`),
+        error: metadataError,
+      },
+      diagnostics: { elapsedMs: Date.now() - started, partial: true, orphanedBytes: true },
+      errors: [`Institutional PDF bytes were committed but ${commitStage} failed: ${metadataError}`],
+      provenance: { providerIds: [provider.id], policy: "institutional-browser-opt-in", configPaths: options.config.meta.loadedFiles },
+    };
+  }
+  const zoteroSync = record.itemId
+    ? await syncSelectedItemToZotero({
+        config: options.config,
+        itemId: record.itemId,
+        projectionCorrelation: {
+          kind: "institutional-artifact",
+          institutionalJobId: options.institutionalJobId,
+          artifactId,
+          storageSha256: sha256,
+        },
+      })
+    : { status: "not_requested" as const };
+  return okEnvelope({
+    capability: "acquire",
+    tool: "institutional_continue",
+    data: { record, provider, input: resolvedInput.summary, download: true, artifactPath: stored.path },
+    diagnostics: {
+      elapsedMs: Date.now() - started,
+      workspaceRoot: options.config.workspace.root,
+      artifactRoot: options.config.storage.artifactRoot,
+      ...(zoteroSync.status !== "not_requested" ? { zoteroSync: zoteroSync.status } : {}),
+    },
+    provenance: { providerIds: [provider.id], policy: "institutional-browser-opt-in", configPaths: options.config.meta.loadedFiles },
   });
 }
 

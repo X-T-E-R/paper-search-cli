@@ -114,6 +114,10 @@ async function main() {
       path.join(repoRoot, "src", "material", "pymupdf4llm", "requirements.lock.txt"),
       path.join(outputRoot, "requirements.lock.txt"),
     );
+    await copyFile(
+      path.join(repoRoot, "src", "institutional", "instsci-adapter.py"),
+      path.join(outputRoot, "instsci-adapter.py"),
+    );
 
     const digest = process.env.PAPER_SEARCH_BUILD_INPUT_DIGEST
       ? {

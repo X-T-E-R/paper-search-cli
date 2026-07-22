@@ -81,6 +81,19 @@ selected-item projection and explicit `zotero sink` handoff.
    network fallback. Successful downloads select by default; use
    `material.downloadDisposition = "materialized"` only when the file should
    remain standalone.
+   An explicitly opted-in DOI acquisition may return one credential-free
+   institutional continuation action after ordinary acquisition fails.
+   Authorization and capability are separate: canonical/MCP never carries
+   continuation authority, and only OS-level Computer Use capable of controlling
+   the standalone InstSci window can perform an agent-assisted attempt. The
+   in-app Browser and Chrome connectors are not sufficient. In `ask` mode offer
+   the user exactly: authorize one attempt (issue a grant), permanently allow
+   this explicit profile, or refuse; never issue your own grant or mutate the
+   policy on the user's behalf. In `allow` mode do not ask repeatedly for
+   an allowlisted profile. In `off` mode do not attempt agent continuation; a
+   human may still run the local TTY command. Always stop for the user at login,
+   MFA, CAPTCHA, consent, payment, entitlement, account selection, or any other
+   sensitive interaction; policy or a grant never authorizes answering it.
 7. Use `assess plan` or `assess run` only with an exact snapshot checksum. Read
    conflicts and the policy trace; do not treat assessment as a ranking oracle.
 8. Treat Zotero as an optional projection, never the authoritative workspace.

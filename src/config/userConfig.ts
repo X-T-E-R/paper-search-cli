@@ -26,6 +26,11 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "storage.extractionRoot",
   "storage.exportRoot",
   "material.downloadDisposition",
+  "institutional.enabled",
+  "institutional.pythonExecutable",
+  "institutional.checkoutRoot",
+  "institutional.timeoutMs",
+  "institutional.maxPdfBytes",
   "runs.root",
   "runs.maxAgeDays",
   "runs.recordByDefault",
@@ -65,6 +70,12 @@ export const CONFIGURABLE_FIXED_KEYS = [
   "search.selection.excludeContentKinds",
   "search.selection.includeAccess",
   "search.selection.excludeAccess",
+] as const;
+
+/** Safe to persist, but mutation is restricted to the dedicated user-authorization command. */
+const DEDICATED_NON_SECRET_KEYS = [
+  "institutional.agentControl.mode",
+  "institutional.agentControl.allowedProfiles",
 ] as const;
 
 export const CONFIGURABLE_DYNAMIC_KEY_PATTERNS = [
@@ -218,6 +229,7 @@ export function classifyConfigKey(
   const key = configKeyToString(segments);
   if ((LEGACY_OWNED_CONFIG_KEYS as readonly string[]).includes(key)) return "owned";
   if ((CONFIGURABLE_FIXED_KEYS as readonly string[]).includes(key)) return "non-secret";
+  if ((DEDICATED_NON_SECRET_KEYS as readonly string[]).includes(key)) return "non-secret";
   if (
     segments[0] === "search" &&
     (segments[1] === "classifications" || segments[1] === "presets") &&

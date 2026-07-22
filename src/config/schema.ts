@@ -35,6 +35,38 @@ export const MaterialConfigSchema = z.object({
   downloadDisposition: z.enum(["selected", "materialized"]),
 }).strict();
 
+/** User-global authority for the optional visible-browser acquisition sidecar. */
+export const InstitutionalProfileIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u);
+
+const InstitutionalAgentControlFieldsSchema = z.object({
+  mode: z.enum(["ask", "allow", "off"]),
+  allowedProfiles: z.array(InstitutionalProfileIdSchema).refine(
+    (profiles) => new Set(profiles).size === profiles.length,
+    { message: "institutional agent-control profile ids must be unique" },
+  ),
+}).strict();
+
+export const InstitutionalAgentControlSchema = InstitutionalAgentControlFieldsSchema.superRefine((control, refinement) => {
+  if (control.mode === "allow" && control.allowedProfiles.length === 0) {
+    refinement.addIssue({ code: "custom", message: "institutional agent control allow mode requires an explicit profile allowlist" });
+  }
+});
+
+export const InstitutionalConfigSchema = z.object({
+  enabled: z.boolean(),
+  pythonExecutable: z.string(),
+  checkoutRoot: z.string(),
+  timeoutMs: z.number().int().min(1_000).max(3_600_000),
+  maxPdfBytes: z.number().int().min(1_024).max(1_073_741_824),
+  agentControl: InstitutionalAgentControlSchema,
+}).strict();
+
+const UserInstitutionalConfigSchema = InstitutionalConfigSchema
+  .omit({ agentControl: true })
+  .partial()
+  .extend({ agentControl: InstitutionalAgentControlFieldsSchema.partial().optional() })
+  .strict();
+
 export const RunsConfigSchema = z.object({
   root: z.string().min(1),
   maxAgeDays: z.union([z.literal(-1), z.number().int().min(1)]),
@@ -386,6 +418,7 @@ export const ResolvedConfigSchema = z.object({
   workspace: WorkspaceConfigSchema,
   storage: StorageConfigSchema,
   material: MaterialConfigSchema,
+  institutional: InstitutionalConfigSchema,
   runs: RunsConfigSchema,
   zotero: ZoteroConfigSchema,
   zoteroBinding: ZoteroBindingConfigSchema,
@@ -405,6 +438,7 @@ export const UserConfigSchema = z.object({
   workspace: WorkspaceConfigSchema.partial().optional(),
   storage: StorageConfigSchema.partial().optional(),
   material: MaterialConfigSchema.partial().optional(),
+  institutional: UserInstitutionalConfigSchema.optional(),
   runs: RunsConfigSchema.partial().optional(),
   zotero: ZoteroConfigSchema.partial().optional(),
   zoteroBinding: ZoteroBindingConfigSchema.partial().optional(),

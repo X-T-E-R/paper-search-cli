@@ -26,6 +26,22 @@ exportRoot = "~/.paper-search/exports"
 # "materialized" to keep downloaded artifacts standalone instead.
 downloadDisposition = "selected"
 
+# Optional visible-browser DOI fallback. Accepted only in this conventional
+# user config, never in project or explicit config files.
+[institutional]
+enabled = false
+pythonExecutable = ""
+checkoutRoot = ""
+timeoutMs = 900000
+maxPdfBytes = 104857600
+
+# Agent-assisted continuation authorization is separate from browser-control
+# capability. "allow" requires explicit profile ids; "off" does not block a
+# human running the continuation in a local TTY.
+[institutional.agentControl]
+mode = "ask"
+allowedProfiles = []
+
 [runs]
 root = "~/.paper-search/runs"
 # -1 means that age alone never makes a run eligible for explicit pruning.

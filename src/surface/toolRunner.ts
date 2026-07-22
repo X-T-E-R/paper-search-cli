@@ -7,7 +7,7 @@ import {
 import {
   AcquireResolverError,
   planArtifactDownload,
-  runArtifactDownload,
+  runArtifactDownloadWithInstitutionalFallback,
 } from "../material/artifactDownload.js";
 import {
   planMaterialExtraction,
@@ -94,6 +94,7 @@ import {
   runAssessment,
 } from "../assessment/index.js";
 import { getSystemVersion } from "../runtime/version.js";
+import { showInstitutionalJob } from "../institutional/service.js";
 
 export type { ToolArguments } from "./toolArguments.js";
 
@@ -511,6 +512,9 @@ async function dispatchToolCall(
     case "artifact_show":
       return handleArtifactShow(config, args);
 
+    case "institutional_job_show":
+      return handleInstitutionalJobShow(config, args);
+
     case "extract":
       return handleExtract(config, args);
 
@@ -882,10 +886,23 @@ async function handleArtifactDownload(config: ResolvedConfig, args: ToolArgument
     resolverProviderId: asString(args.resolverId) ?? asString(args.resolver_id),
     policy: asString(args.policy),
     download: asBoolean(args.download),
+    institutional: asBoolean(args.institutional),
+    institutionProfile: asString(args.institutionProfile) ?? asString(args.institution_profile),
   };
   const dryRun = asBoolean(args.dryRun) ?? asBoolean(args.dry_run) ?? false;
   return captureFailure("acquire", "artifact_download", async () =>
-    dryRun ? await planArtifactDownload(materialOptions) : await runArtifactDownload(materialOptions));
+    dryRun ? await planArtifactDownload(materialOptions) : await runArtifactDownloadWithInstitutionalFallback(materialOptions));
+}
+
+async function handleInstitutionalJobShow(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {
+  const jobId = asString(args.jobId) ?? asString(args.job_id) ?? asString(args.id);
+  if (!jobId) return invalidArgs("acquire", "institutional_job_show", "jobId is required and must be a string");
+  return captureFailure("acquire", "institutional_job_show", async () => {
+    const job = await showInstitutionalJob(config, jobId);
+    return job
+      ? okEnvelope({ capability: "acquire", tool: "institutional_job_show", data: { job } })
+      : failEnvelope({ capability: "acquire", tool: "institutional_job_show", errors: [`Institutional job not found: ${jobId}`] });
+  });
 }
 
 async function handleArtifactList(config: ResolvedConfig, args: ToolArguments): Promise<unknown> {

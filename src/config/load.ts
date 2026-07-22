@@ -144,6 +144,13 @@ function resolveConfigRelativePaths(config: UserConfig, filePath: string): UserC
     next.runs.root = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
   }
 
+  for (const key of ["pythonExecutable", "checkoutRoot"] as const) {
+    const configured = next.institutional?.[key];
+    if (!configured) continue;
+    const expanded = expandHome(configured);
+    next.institutional![key] = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+  }
+
   return next;
 }
 
@@ -200,6 +207,19 @@ async function loadNonSecretTomlConfig(
     throw new Error(
       `forbidden_config_authority: Zotero host-write settings are allowed only in the conventional user config (${filePath})`,
     );
+  }
+  if (originKind !== "user" && parsed.data.institutional !== undefined) {
+    throw new Error(
+      `forbidden_config_authority: institutional browser settings are allowed only in the conventional user config (${filePath})`,
+    );
+  }
+  if (originKind === "user" && parsed.data.institutional) {
+    for (const key of ["pythonExecutable", "checkoutRoot"] as const) {
+      const configured = parsed.data.institutional[key];
+      if (configured && !path.isAbsolute(expandHome(configured))) {
+        throw new Error(`institutional.${key} must be an absolute path in the conventional user config (${filePath})`);
+      }
+    }
   }
   const legacy = options.inheritedLegacy ?? parsed.legacy;
   assertSafeNonSecretLayer(parsed.data, filePath, {
@@ -293,6 +313,13 @@ function normalizeResolvedConfigPaths(
 
   const runsRoot = expandHome(next.runs.root);
   next.runs.root = path.isAbsolute(runsRoot) ? runsRoot : path.resolve(cwd, runsRoot);
+
+  for (const key of ["pythonExecutable", "checkoutRoot"] as const) {
+    const configured = next.institutional[key];
+    if (!configured) continue;
+    const expanded = expandHome(configured);
+    next.institutional[key] = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+  }
 
   return next;
 }

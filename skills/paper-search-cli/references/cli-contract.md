@@ -215,6 +215,25 @@ selection.
 
 For DOI inputs, `artifact download` accepts `--resolver <id>` and the canonical tool accepts `resolverId`/`resolver_id`. DOI dry-run plans list resolver loading and invocation before the download steps, and resolver failures are typed as `no_resolver`, `no_candidates`, or `resolver_error` in envelope diagnostics.
 
+`artifact download <DOI> --institutional [--institution-profile <id>]` keeps the
+ordinary resolver/downloader path first and creates a local continuation job
+only after it fails. `institutional status|show` and canonical/MCP
+`institutional_job_show` expose sanitized state. Human continuation uses local
+interactive `institutional continue <job-id>`. Agent-assisted non-TTY continuation
+uses only the CLI `--agent-assisted` path and user-level
+`institutional.agentControl`: `ask` consumes a short-lived one-attempt grant,
+`allow` requires an explicit profile allowlist, and `off` blocks only the agent
+path. Manage it with `institutional agent-policy show|set ask|allow|off
+[--profile <id>]`, `institutional agent-grant issue <job-id> [--ttl <seconds>]`,
+and `institutional agent-grant revoke <id>|--all`. These receipts authorize but
+do not supply browser capability: only OS-level Computer Use that can control the
+standalone InstSci window is adequate; Browser/Chrome connectors are not. Login,
+MFA, CAPTCHA, consent, payment, entitlement, and account-choice interactions
+always stop for the user. Probe, disabled/unconfigured paths, dry runs, canonical,
+and MCP do not launch or authorize continuation. Cancel refuses running or
+acquired jobs. Policy mutation and grant issuance are user actions in a local
+interactive TTY; an agent must not issue its own grant.
+
 For a direct HTTPS URL, `material_ingest` dry-run may expose an
 `exactUrlFallback` plan. Execution enters `exact_url_extraction` only after
 `direct-url-downloader` reports HTTP 401, 403, or 429. Its success data has `artifact: null`,

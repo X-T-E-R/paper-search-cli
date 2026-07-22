@@ -7,7 +7,7 @@ import {
 } from "../material/artifactStore.js";
 import {
   planArtifactDownload,
-  runArtifactDownload,
+  runArtifactDownloadWithInstitutionalFallback,
   AcquireResolverError,
   type ArtifactDownloadData,
 } from "../material/artifactDownload.js";
@@ -23,6 +23,8 @@ interface ArtifactDownloadOptions {
   download?: boolean;
   dryRun?: boolean;
   json?: boolean;
+  institutional?: boolean;
+  institutionProfile?: string;
 }
 
 interface ArtifactListOptions {
@@ -66,6 +68,8 @@ export function registerArtifactCommands(program: Command, io: Io): void {
     .option("--download", "download artifact bytes into the local workspace", true)
     .option("--no-download", "record a requested artifact without fetching bytes")
     .option("--dry-run", "return the shared acquisition plan without writing files or records")
+    .option("--institutional", "offer a local visible-browser continuation only if ordinary DOI acquisition fails")
+    .option("--institution-profile <id>", "named local institutional session profile")
     .option("--json", "emit machine-readable JSON envelope")
     .action(async (input: string, options: ArtifactDownloadOptions, command: Command) => {
       const started = Date.now();
@@ -81,10 +85,12 @@ export function registerArtifactCommands(program: Command, io: Io): void {
           resolverProviderId: options.resolver,
           policy: options.policy,
           download: options.download !== false,
+          institutional: options.institutional === true,
+          institutionProfile: options.institutionProfile,
         };
         envelope = options.dryRun
           ? await planArtifactDownload(materialOptions)
-          : await runArtifactDownload(materialOptions);
+          : await runArtifactDownloadWithInstitutionalFallback(materialOptions);
       } catch (error) {
         envelope = failEnvelope({
           capability: "acquire",

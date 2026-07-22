@@ -725,6 +725,53 @@ candidate feeds the normal download path in order. Dry-run plans list the
 `no_resolver`, `no_candidates`, or `resolver_error`, and resolved acquisitions
 record `resolverProviderId` and `resolverSource` in artifact provenance.
 
+### Optional institutional browser continuation
+
+Institutional acquisition is a user-mediated DOI fallback. It is disabled by
+default and configured only in `~/.paper-search/config.toml`:
+
+```toml
+[institutional]
+enabled = true
+pythonExecutable = "C:/absolute/path/to/python.exe"
+checkoutRoot = "C:/absolute/path/to/pinned/instsci-checkout"
+timeoutMs = 900000
+maxPdfBytes = 104857600
+
+[institutional.agentControl]
+mode = "ask"
+allowedProfiles = []
+```
+
+`artifact download <DOI> --institutional [--institution-profile <id>]` always
+tries the normal resolver/downloader first. If it produces no artifact, the
+command creates a continuation job without opening a browser. Inspect it with
+`institutional status|show`, check prerequisites with `institutional probe`,
+and run `institutional continue <job-id>` in a local interactive terminal.
+
+Agent-assisted continuation is a separate local authority. `ask` (the default)
+requires the user to approve and issue a short-lived, one-attempt receipt with
+`institutional agent-grant issue <job-id>`; pass it with
+`institutional continue <job-id> --agent-assisted --grant <id>`. `allow`
+requires an explicit profile allowlist set by
+`institutional agent-policy set allow --profile <id>` and does not ask again for
+that profile. `off` blocks agent-assisted attempts but never blocks the human TTY
+command. Inspect or change the durable user policy with
+`institutional agent-policy show|set`; revoke receipts with
+`institutional agent-grant revoke <id>|--all`. These controls authorize a
+continuation but do not provide browser-control capability. Policy mutation and
+grant issuance must be performed by the user in a local interactive TTY.
+
+Canonical and MCP callers may create and inspect sanitized jobs through
+`artifact_download` and `institutional_job_show`, but cannot continue them. A
+verified PDF is committed through the normal artifact, selection,
+Paperflow-root, and configured Zotero projection behavior. Cookies, browser
+profile paths, page content, signed URLs, and raw adapter diagnostics are not
+persisted. Paper Search does not install Python packages or browser runtimes.
+Committed artifact identity is allocated in the job before the sidecar runs, so
+a retry after a crash reconciles the same artifact, selection, and Zotero
+projection rather than creating a duplicate.
+
 The official material-provider registry includes `direct-url-downloader` for
 explicit HTTPS artifact URLs. It uses the injected material HTTP runtime's
 bounded Base64 response mode, so downloaded bytes retain provider provenance

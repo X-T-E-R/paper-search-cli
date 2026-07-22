@@ -472,8 +472,32 @@ const RAW_TOOL_DEFINITIONS: RawToolSchema[] = [
           type: "boolean",
           description: "Snake-case alias for dryRun.",
         },
+        institutional: {
+          type: "boolean",
+          description: "After ordinary DOI acquisition fails, create a local institutional continuation job. Never launches a browser from canonical/MCP execution.",
+        },
+        institutionProfile: {
+          type: "string",
+          description: "Named local institutional session profile id stored with the continuation job.",
+        },
+        institution_profile: {
+          type: "string",
+          description: "Snake-case alias for institutionProfile.",
+        },
       },
       required: ["input"],
+    },
+  },
+  {
+    name: "institutional_job_show",
+    description: "Inspect sanitized state for one institutional continuation job. This surface cannot launch the browser.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        jobId: { type: "string", description: "Institutional continuation job id." },
+        job_id: { type: "string", description: "Snake-case alias for jobId." },
+        id: { type: "string", description: "Alias for jobId." },
+      },
     },
   },
   {
@@ -856,6 +880,7 @@ const TOOL_CAPABILITIES: Record<string, CapabilityGroup> = {
   workspace_export: "organize",
   resource_pdf: "acquire",
   artifact_download: "acquire",
+  institutional_job_show: "acquire",
   artifact_list: "acquire",
   artifact_show: "acquire",
   extract: "extract",

@@ -113,6 +113,7 @@ describe("artifact resolver acquire funnel", () => {
       "artifact",
       "download",
       doi,
+      "--institutional",
       "--policy",
       "resolver-funnel",
       "--json",
@@ -120,6 +121,7 @@ describe("artifact resolver acquire funnel", () => {
 
     expect(result.stderr).toBe("");
     expect(result.envelope.ok).toBe(true);
+    expect(result.envelope.actions).toBeUndefined();
     const data = result.envelope.data as ArtifactDownloadData;
     expect(data.input).toMatchObject({ kind: "identifier", value: doi });
     expect(data.record.provenance).toMatchObject({

@@ -34,7 +34,7 @@ export interface ResultProvenance {
  * the MVP; the target/id shape deliberately leaves room for future
  * browser-session start/resume actions without embedding credentials.
  */
-export interface ResultAction {
+export interface ConfigureProviderResultAction {
   id: string;
   kind: "configure_provider";
   target: { kind: "provider"; id: string };
@@ -46,6 +46,15 @@ export interface ResultAction {
     required: boolean;
   }>;
 }
+
+export interface ContinueInstitutionalResultAction {
+  id: string;
+  kind: "continue_institutional";
+  target: { kind: "institutional_job"; id: string };
+  command: string;
+}
+
+export type ResultAction = ConfigureProviderResultAction | ContinueInstitutionalResultAction;
 
 export type ResultState = "action_required";
 

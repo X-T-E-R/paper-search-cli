@@ -9,6 +9,7 @@ import { registerCitationCommands } from "./commands/citation.js";
 import { registerDiscoveryCommands } from "./commands/discovery.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerExtractCommand } from "./commands/extract.js";
+import { registerInstitutionalCommands } from "./commands/institutional.js";
 import { registerMaterialCommands } from "./commands/material.js";
 import { registerMcpCommands } from "./commands/mcp.js";
 import { registerMigrateCommand } from "./commands/migrate.js";
@@ -59,6 +60,7 @@ export function buildProgram(streams: IoStreams = {}): Command {
   registerCitationCommands(program, io);
   registerAssessmentCommands(program, io);
   registerArtifactCommands(program, io);
+  registerInstitutionalCommands(program, io);
   registerBatchCommands(program, io);
   registerWorkspaceCommands(program, io);
   registerPdfCommands(program, io);
