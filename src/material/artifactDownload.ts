@@ -707,12 +707,14 @@ async function downloadWithResolverFunnel(options: {
   attempts: ArtifactAttempt[];
   chosenCandidate?: MaterialResolverCandidateLocation;
   sourceUrl: string;
+  warnings: string[];
 }> {
   let candidates: MaterialResolverCandidateLocation[] = [];
   let resolver: ResolverProviderSummary | undefined;
   let resolverSource: string | undefined;
   let priorAttempts: ArtifactAttempt[] = [];
   let sourceUrl = options.resolvedInput.sourceUrl;
+  let warnings: string[] = [];
 
   if (options.resolvedInput.resolverRequired) {
     if (!options.resolvedInput.identifier) {
@@ -729,6 +731,7 @@ async function downloadWithResolverFunnel(options: {
     resolverSource = resolved.resolverResult.provenance.source;
     candidates = resolved.candidates;
     priorAttempts = resolved.attempts;
+    warnings = resolved.warnings;
     sourceUrl = candidates[0]!.url;
   } else if (!sourceUrl) {
     fail("Artifact download input did not resolve to a source URL");
@@ -772,6 +775,7 @@ async function downloadWithResolverFunnel(options: {
         attempts,
         chosenCandidate: candidate,
         sourceUrl: candidate.url,
+        warnings,
       };
     } catch (error) {
       const message = formatError(error);
@@ -954,6 +958,7 @@ export async function runArtifactDownload(
   const attachTo = normalizeAttachTo(options.attachTo);
   const policy = normalizePolicy(options.policy);
   const download = options.download !== false;
+  let warnings: string[] = [];
   let resolvedInput = await resolveDownloadInput(options.config, options.input, attachTo);
   const providerPackage = await selectDownloaderProvider({
     installDir: options.config.providers.installDir,
@@ -981,6 +986,7 @@ export async function runArtifactDownload(
       resolver = resolved.resolver;
       resolverSource = resolved.resolverResult.provenance.source;
       priorAttempts = resolved.attempts;
+      warnings = resolved.warnings;
       sourceUrl = resolved.candidates[0]?.url;
     }
     record = await createArtifactRecord(
@@ -1028,6 +1034,7 @@ export async function runArtifactDownload(
       provider,
       downloadMethod,
     });
+    warnings = funnelResult.warnings;
     let filename = sanitizeArtifactFilename(options.filename ?? funnelResult.providerResult.filename);
     if (options.filename && funnelResult.providerResult.kind === "pdf" && !/\.pdf$/iu.test(filename)) {
       filename = `${filename}.pdf`;
@@ -1108,6 +1115,7 @@ export async function runArtifactDownload(
           policy,
           configPaths: options.config.meta.loadedFiles,
         },
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
     }
   }
@@ -1147,6 +1155,7 @@ export async function runArtifactDownload(
       policy,
       configPaths: options.config.meta.loadedFiles,
     },
+    warnings,
   });
 }
 

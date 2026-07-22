@@ -45,7 +45,12 @@ async function prepareInstallDir(): Promise<string> {
   return dir;
 }
 
-async function writeProjectConfig(root: string, workspaceRoot: string, installDir: string): Promise<void> {
+async function writeProjectConfig(
+  root: string,
+  workspaceRoot: string,
+  installDir: string,
+  options: { configureEmail?: boolean } = {},
+): Promise<void> {
   const { writeFile } = await import("node:fs/promises");
   await writeFile(
     path.join(root, "paper-search.toml"),
@@ -60,9 +65,9 @@ async function writeProjectConfig(root: string, workspaceRoot: string, installDi
       "[platform.fixture-artifact-downloader]",
       'mode = "integration"',
       "",
-      "[platform.unpaywall]",
-      'email = "offline-unpaywall@research.tools"',
-      "",
+      ...(options.configureEmail === false
+        ? []
+        : ["[platform.unpaywall]", 'email = "offline-unpaywall@research.tools"', ""]),
     ].join("\n"),
     "utf8",
   );
@@ -157,6 +162,7 @@ describe("unpaywall distributable resolver acquire funnel", () => {
 
     expect(result.stderr).toBe("");
     expect(result.envelope.ok).toBe(true);
+    expect(result.envelope.warnings).toBeUndefined();
     const data = result.envelope.data as ArtifactDownloadData;
     expect(data.input).toMatchObject({ kind: "identifier", value: doi });
     expect(data.record.provenance).toMatchObject({
@@ -172,5 +178,31 @@ describe("unpaywall distributable resolver acquire funnel", () => {
     );
     expect(data.record.remoteUrl).toBe(candidateUrl);
     await expect(readArtifactRecord(workspaceRoot, data.record.id)).resolves.toBeDefined();
+  });
+
+  it("warns without blocking when the Unpaywall email is still the placeholder", async () => {
+    const installDir = await prepareInstallDir();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-unpaywall-placeholder-"));
+    tempDirs.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    await writeProjectConfig(root, workspaceRoot, installDir, { configureEmail: false });
+
+    const doi = "10.1234/unpaywall-placeholder";
+    stubUnpaywallFetch(doi, "https://example.test/unpaywall-placeholder.pdf");
+
+    const result = await runArtifactCommand(root, [
+      "artifact",
+      "download",
+      doi,
+      "--resolver",
+      "unpaywall",
+      "--json",
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.envelope.ok).toBe(true);
+    expect(result.envelope.warnings).toEqual([
+      "Unpaywall is using placeholder email xxx@example.com; set platform.unpaywall.email or UNPAYWALL_EMAIL.",
+    ]);
   });
 });

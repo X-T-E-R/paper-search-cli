@@ -150,6 +150,26 @@ export interface ResolvedAcquireCandidates {
   candidates: MaterialResolverCandidateLocation[];
   resolverResult: MaterialResolverResult;
   attempts: ArtifactAttempt[];
+  warnings: string[];
+}
+
+async function inspectProviderWarnings(
+  provider: Record<string, (...args: unknown[]) => Promise<unknown>>,
+): Promise<string[]> {
+  if (!provider.inspect) return [];
+  try {
+    const inspection = await provider.inspect();
+    if (typeof inspection !== "object" || inspection === null || !("warnings" in inspection)) {
+      return [];
+    }
+    const warnings = (inspection as { warnings?: unknown }).warnings;
+    if (!Array.isArray(warnings)) return [];
+    return [...new Set(warnings
+      .filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
+      .map((warning) => warning.trim().slice(0, 1_024)))];
+  } catch (error) {
+    return [`Material resolver configuration inspection failed: ${formatError(error)}`];
+  }
 }
 
 export async function resolveAcquireCandidates(options: {
@@ -181,6 +201,7 @@ export async function resolveAcquireCandidates(options: {
     providerPackage.manifest,
     runtimeContext,
   );
+  const warnings = await inspectProviderWarnings(loadedProvider.provider);
   const resolveMethod = loadedProvider.provider.resolve;
   if (!resolveMethod) {
     throw new AcquireResolverError(
@@ -250,6 +271,7 @@ export async function resolveAcquireCandidates(options: {
     candidates: resolverResult.candidates,
     resolverResult,
     attempts,
+    warnings,
   };
 }
 

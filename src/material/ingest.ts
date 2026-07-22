@@ -1750,6 +1750,7 @@ export async function runMaterialIngest(
   let artifact: MaterialIngestArtifactExecution;
   let extractionInput: string;
   let extractionInputKind: MaterialInputKind;
+  const warnings: string[] = [];
 
   if (plan.artifact.mode === "download") {
     let artifactEnvelope: Awaited<ReturnType<typeof runArtifactDownload>>;
@@ -1777,6 +1778,7 @@ export async function runMaterialIngest(
     if (!artifactEnvelope.data) {
       fail("Artifact download did not return execution data");
     }
+    warnings.push(...(artifactEnvelope.warnings ?? []));
     artifact = buildArtifactExecutionFromDownload({
       plan,
       data: artifactEnvelope.data,
@@ -1853,6 +1855,7 @@ export async function runMaterialIngest(
       extractionInputKind,
       started,
       error: error instanceof Error ? error.message : String(error),
+      warnings,
     });
   }
   if (!extractionEnvelope.data) {
@@ -1865,7 +1868,7 @@ export async function runMaterialIngest(
       started,
       error: extractionEnvelope.errors?.join("; ") ?? "Material extraction did not return execution data",
       extractionOrphan: extractionEnvelope.orphan,
-      warnings: extractionEnvelope.warnings,
+      warnings: [...new Set([...warnings, ...(extractionEnvelope.warnings ?? [])])],
     });
   }
   const extraction = buildExtractionExecution({
@@ -1934,5 +1937,6 @@ export async function runMaterialIngest(
       providerIds: providerIds(providers.selected),
       policy,
     },
+    warnings: [...new Set([...warnings, ...(extractionEnvelope.warnings ?? [])])],
   });
 }
