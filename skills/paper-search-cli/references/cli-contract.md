@@ -41,6 +41,8 @@ interface ResultEnvelope<T = unknown> {
   tool: string;
   planned?: boolean;
   data: T | null;
+  state?: "action_required";
+  actions?: Array<{ id: string; kind: "configure_provider"; target: { kind: "provider"; id: string }; command: string }>;
   diagnostics?: Record<string, unknown>;
   warnings?: string[];
   errors?: string[];
@@ -48,7 +50,7 @@ interface ResultEnvelope<T = unknown> {
 }
 ```
 
-Use `ok`, `planned`, `errors`, and `warnings` for control flow. Parse capability payloads from `data`. Treat `diagnostics` and `provenance` as evidence, not as the primary payload.
+Use `ok`, `planned`, `state`, `actions`, `errors`, and `warnings` for control flow. Parse capability payloads from `data`. Treat `diagnostics` and `provenance` as evidence, not as the primary payload. `state` and `actions` are omitted when no intervention is needed; configuration actions never carry credential values.
 
 Some discovery surfaces such as `tools --json`, `help`, and `providers registry-candidates --json` expose catalog metadata rather than literature/material payloads. Use them to choose a supported command, then parse the command or canonical tool envelope.
 

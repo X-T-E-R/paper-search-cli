@@ -15,6 +15,7 @@ import type {
 import {
   getProviderConfig,
   resolveProviderAvailability,
+  providerConfigurationAction,
 } from "../providers/runtime/availability.js";
 import {
   resolveExplicitProvider,
@@ -269,6 +270,7 @@ function toSkippedProviderResult(
   request: ProviderSearchRequest,
   providerId: string,
   reasons: readonly string[],
+  action?: SearchResult["action"],
 ): SearchResult {
   return {
     platform: providerId,
@@ -278,6 +280,7 @@ function toSkippedProviderResult(
     page: request.page ?? 1,
     skipped: true,
     error: reasons.length > 0 ? reasons.join("; ") : "provider is not runnable",
+    ...(action ? { action } : {}),
   };
 }
 
@@ -345,7 +348,20 @@ export async function runProviderSearch(
   const settled = await Promise.allSettled(
     selectedEntries.map(async (entry): Promise<SearchResult> => {
       if (!entry.runnable) {
-        return toSkippedProviderResult(request, entry.id, entry.readinessReasons);
+        const manifest = providersById.get(entry.id)?.manifest;
+        const explicitlyRequested = entry.selectionReasons.some((reason) => (
+          reason.startsWith("request source:") && reason !== "request source:all"
+        ));
+        const needsMissingConfig = entry.enabled && entry.missingConfigKeys.length > 0;
+        const needsExplicitEnable = entry.intent === "auto" && !entry.enabled && explicitlyRequested;
+        const action = manifest && (needsMissingConfig || needsExplicitEnable)
+          ? providerConfigurationAction({
+              providerId: entry.id,
+              schema: manifest.configSchema,
+              missingConfigKeys: entry.missingConfigKeys,
+            })
+          : undefined;
+        return toSkippedProviderResult(request, entry.id, entry.readinessReasons, action);
       }
       const provider = providersById.get(entry.id);
       if (!provider) {

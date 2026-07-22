@@ -44,7 +44,7 @@ async function writeSearchProvider(
   providerPath: string,
   version: string,
   platform: string,
-  options: { id?: string; inventory?: ProviderInventoryEntry } = {},
+  options: { id?: string; inventory?: ProviderInventoryEntry; configSchema?: ProviderManifest["configSchema"] } = {},
 ): Promise<void> {
   const id = options.id ?? "alpha";
   await mkdir(providerPath, { recursive: true });
@@ -56,6 +56,7 @@ async function writeSearchProvider(
       version,
       sourceType: "academic",
       permissions: { urls: ["https://example.test/*"] },
+      ...(options.configSchema ? { configSchema: options.configSchema } : {}),
       ...(options.inventory ? { inventory: options.inventory } : {}),
     }),
     "utf8",
@@ -177,6 +178,45 @@ describe("search ordering defaults", () => {
 
     expect(result.items.map((item) => item.title)).toEqual(["first", "second"]);
     expect(result.ordering).toMatchObject({ mode: "unsupported", applied: false, missingCount: 2 });
+  });
+});
+
+describe("exact default-disabled provider intervention", () => {
+  it("offers enable action for auto/default-off but stays silent for explicit disabled", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-runtime-default-off-"));
+    tempDirs.push(root);
+    const config = createConfig(root);
+    await writeSearchProvider(
+      path.join(config.providers.installDir, "search", "googlescholar"),
+      "1.0.0",
+      "googlescholar",
+      {
+        id: "googlescholar",
+        configSchema: { enabled: { type: "boolean", default: false } },
+      },
+    );
+
+    await expect(runProviderSearch(config, "academic", {
+      query: "graph",
+      platform: "googlescholar",
+    })).resolves.toMatchObject({
+      skipped: true,
+      action: { command: "paper-search configure googlescholar" },
+    });
+
+    const broadSearch = await runProviderSearch(config, "academic", {
+      query: "graph",
+      platform: "all",
+    });
+    expect(broadSearch).not.toHaveProperty("action");
+
+    config.platform.googlescholar = { enabled: false };
+    const explicitlyDisabled = await runProviderSearch(config, "academic", {
+      query: "graph",
+      platform: "googlescholar",
+    });
+    expect(explicitlyDisabled).toMatchObject({ skipped: true });
+    expect(explicitlyDisabled).not.toHaveProperty("action");
   });
 });
 

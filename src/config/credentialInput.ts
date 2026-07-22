@@ -8,11 +8,12 @@ export interface CredentialInputOptions {
 export async function readHiddenCredential(
   input: ReadStream = process.stdin,
   output: WriteStream = process.stderr,
+  label = "Credential",
 ): Promise<string> {
   if (!input.isTTY || typeof input.setRawMode !== "function" || !output.isTTY) {
     throw new Error("Interactive credential input requires a TTY; use --stdin or --from-env <name>");
   }
-  output.write("Credential: ");
+  output.write(`${label}: `);
   input.setEncoding("utf8");
   input.setRawMode(true);
   input.resume();

@@ -96,6 +96,9 @@ export function registerArtifactCommands(program: Command, io: Io): void {
               ? { failureKind: error.failureKind, attempts: error.attempts }
               : {}),
           },
+          ...(error instanceof AcquireResolverError && error.actions.length > 0
+            ? { state: "action_required", actions: error.actions }
+            : {}),
         });
       }
 

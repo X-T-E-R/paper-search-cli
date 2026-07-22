@@ -111,7 +111,7 @@ function validateConfigSchema(value: unknown): Record<string, MaterialConfigFiel
         fail(`configSchema.${key}.env must be string[]`);
       }
     }
-    for (const field of ["label", "description"] as const) {
+    for (const field of ["label", "description", "placeholder"] as const) {
       if (raw[field] !== undefined && typeof raw[field] !== "string") {
         fail(`configSchema.${key}.${field} must be a string`);
       }
@@ -125,6 +125,7 @@ function validateConfigSchema(value: unknown): Record<string, MaterialConfigFiel
       ...(raw.env !== undefined ? { env: raw.env as string[] } : {}),
       ...(typeof raw.label === "string" ? { label: raw.label } : {}),
       ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+      ...(typeof raw.placeholder === "string" ? { placeholder: raw.placeholder } : {}),
       ...(raw.required !== undefined ? { required: raw.required as boolean } : {}),
     };
   }

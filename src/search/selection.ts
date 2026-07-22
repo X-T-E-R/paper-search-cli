@@ -6,6 +6,7 @@ import {
   type ResolvedConfig,
 } from "../config/schema.js";
 import { resolveProviderAvailability } from "../providers/runtime/availability.js";
+import type { ProviderIntent } from "../providers/runtime/availability.js";
 import type { ProviderManifest, SourceType } from "../providers/sdk/types.js";
 
 export const BUILTIN_PRESET_NAMES = BUILT_IN_SEARCH_PRESET_NAMES;
@@ -45,6 +46,7 @@ export interface ProviderSelectionPlanEntry {
   runnable: boolean;
   configured: boolean;
   enabled: boolean;
+  intent: ProviderIntent;
   selectionReasons: string[];
   exclusionReasons: string[];
   readinessReasons: string[];
@@ -565,6 +567,7 @@ function readinessReasons(
   provider: ProviderSelectionCandidate,
 ): {
   enabled: boolean;
+  intent: ProviderIntent;
   configured: boolean;
   runnable: boolean;
   missingConfigKeys: string[];
@@ -574,6 +577,7 @@ function readinessReasons(
     const availability = resolveProviderAvailability(config, provider.manifest);
     return {
       enabled: availability.enabled,
+      intent: availability.intent,
       configured: false,
       runnable: false,
       missingConfigKeys: [],
@@ -587,6 +591,7 @@ function readinessReasons(
   if (!provider.valid || !provider.manifest) {
     return {
       enabled: false,
+      intent: "disabled",
       configured: false,
       runnable: false,
       missingConfigKeys: [],
@@ -601,6 +606,7 @@ function readinessReasons(
   }
   return {
     enabled: availability.enabled,
+    intent: availability.intent,
     configured: availability.configured,
     runnable: provider.valid && availability.available,
     missingConfigKeys: availability.missingConfigKeys,
@@ -742,6 +748,7 @@ export function resolveProviderSelection(
       runnable: selectedByRequest && readiness.runnable,
       configured: readiness.configured,
       enabled: readiness.enabled,
+      intent: readiness.intent,
       selectionReasons: uniqueSorted(selected.reasons.get(provider.id) ?? []),
       exclusionReasons: uniqueSorted(providerExclusionReasons),
       readinessReasons: readiness.reasons,

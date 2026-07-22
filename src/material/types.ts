@@ -54,6 +54,8 @@ export interface MaterialConfigFieldSchema {
   label?: string;
   description?: string;
   required?: boolean;
+  /** Example/sentinel value that must not satisfy provider readiness. */
+  placeholder?: string;
 }
 
 export interface MaterialProviderPermissions {

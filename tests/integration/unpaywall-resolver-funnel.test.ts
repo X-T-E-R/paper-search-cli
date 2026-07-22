@@ -1,4 +1,4 @@
-import { cp, mkdtemp } from "node:fs/promises";
+import { cp, mkdtemp, copyFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,6 +42,12 @@ async function prepareInstallDir(): Promise<string> {
   tempDirs.push(dir);
   await cp(downloaderFixture, path.join(dir, "fixture-artifact-downloader"), { recursive: true });
   await cp(unpaywallPackageDir, path.join(dir, "unpaywall"), { recursive: true });
+  // The repository dist can be stale during focused source tests; pair its
+  // built provider.js with the authoritative source manifest under test.
+  await copyFile(
+    path.resolve("..", "material-providers", "src", "providers", "packages", "unpaywall", "manifest.json"),
+    path.join(dir, "unpaywall", "manifest.json"),
+  );
   return dir;
 }
 
@@ -180,7 +186,7 @@ describe("unpaywall distributable resolver acquire funnel", () => {
     await expect(readArtifactRecord(workspaceRoot, data.record.id)).resolves.toBeDefined();
   });
 
-  it("warns without blocking when the Unpaywall email is still the placeholder", async () => {
+  it("returns action_required without network for an exact Unpaywall request with placeholder email", async () => {
     const installDir = await prepareInstallDir();
     const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-unpaywall-placeholder-"));
     tempDirs.push(root);
@@ -188,7 +194,8 @@ describe("unpaywall distributable resolver acquire funnel", () => {
     await writeProjectConfig(root, workspaceRoot, installDir, { configureEmail: false });
 
     const doi = "10.1234/unpaywall-placeholder";
-    stubUnpaywallFetch(doi, "https://example.test/unpaywall-placeholder.pdf");
+    const fetchSpy = vi.fn(async () => { throw new Error("network must not run"); });
+    vi.stubGlobal("fetch", fetchSpy);
 
     const result = await runArtifactCommand(root, [
       "artifact",
@@ -200,9 +207,29 @@ describe("unpaywall distributable resolver acquire funnel", () => {
     ]);
 
     expect(result.stderr).toBe("");
-    expect(result.envelope.ok).toBe(true);
-    expect(result.envelope.warnings).toEqual([
-      "Unpaywall is using placeholder email xxx@example.com; set platform.unpaywall.email or UNPAYWALL_EMAIL.",
-    ]);
+    expect(result.envelope).toMatchObject({
+      ok: false,
+      state: "action_required",
+      actions: [{
+        kind: "configure_provider",
+        target: { kind: "provider", id: "unpaywall" },
+        command: "paper-search configure unpaywall",
+      }],
+      diagnostics: { failureKind: "action_required" },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("auto resolver selection also skips placeholder Unpaywall without network", async () => {
+    const installDir = await prepareInstallDir();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paper-search-unpaywall-auto-placeholder-"));
+    tempDirs.push(root);
+    await writeProjectConfig(root, path.join(root, "workspace"), installDir, { configureEmail: false });
+    const fetchSpy = vi.fn(async () => { throw new Error("network must not run"); });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await runArtifactCommand(root, ["artifact", "download", "10.1234/unpaywall-auto", "--json"]);
+    expect(result.envelope).toMatchObject({ ok: false, state: "action_required" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

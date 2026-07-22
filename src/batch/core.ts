@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
 import type { ResolvedConfig } from "../config/schema.js";
-import { planArtifactDownload, runArtifactDownload } from "../material/artifactDownload.js";
+import { AcquireResolverError, planArtifactDownload, runArtifactDownload } from "../material/artifactDownload.js";
 import { planMaterialExtraction, runMaterialExtraction } from "../material/extract.js";
 import { planMaterialIngest, runMaterialIngest } from "../material/ingest.js";
 import { planResourcePdfCompatibility, runResourcePdfCompatibility } from "../material/resourcePdf.js";
@@ -76,6 +76,8 @@ export interface BatchResult {
   selected?: Record<string, unknown>;
   add?: unknown;
   planned?: boolean;
+  state?: ResultEnvelope["state"];
+  actions?: ResultEnvelope["actions"];
   diagnostics?: ResultEnvelope["diagnostics"];
   warnings?: string[];
   errors?: string[];
@@ -556,6 +558,7 @@ async function executeMaterialTool(
       attachTo: stringArg(args, "attachTo"),
       providerId: stringArg(args, "providerId"),
       policy: stringArg(args, "policy"),
+      resolverProviderId: stringArg(args, "resolverId") ?? stringArg(args, "resolverProviderId"),
       download: booleanArg(args, "download"),
     };
     return dryRun
@@ -603,6 +606,8 @@ function envelopeBatchResult(
     tool: envelope.tool,
     data: envelope.data,
     planned: envelope.planned,
+    state: envelope.state,
+    actions: envelope.actions,
     diagnostics: envelope.diagnostics,
     warnings: envelope.warnings,
     errors: envelope.errors,
@@ -617,6 +622,9 @@ function materialFailureEnvelope(tool: BatchMaterialTool, error: unknown): Resul
     capability: materialToolCapability(tool),
     tool,
     errors: [error instanceof Error ? error.message : String(error)],
+    ...(error instanceof AcquireResolverError && error.actions.length > 0
+      ? { state: "action_required", actions: error.actions }
+      : {}),
   });
 }
 

@@ -85,6 +85,8 @@ export interface SearchResult {
   /** The provider was selected but was not executed because a runtime gate failed. */
   skipped?: boolean;
   error?: string;
+  /** Host-only follow-up projected into the canonical envelope, then removed from data. */
+  action?: import("../../surface/resultEnvelope.js").ResultAction;
   /** Host-resolved ordering semantics for this provider result group. */
   ordering?: SearchResultOrdering;
 }

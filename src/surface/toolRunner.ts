@@ -5,6 +5,7 @@ import {
   type ArtifactRecord,
 } from "../material/artifactStore.js";
 import {
+  AcquireResolverError,
   planArtifactDownload,
   runArtifactDownload,
 } from "../material/artifactDownload.js";
@@ -339,6 +340,9 @@ async function captureFailure(
       capability,
       tool,
       errors: [errorMessage(error)],
+      ...(error instanceof AcquireResolverError && error.actions.length > 0
+        ? { state: "action_required", actions: error.actions }
+        : {}),
     });
   }
 }

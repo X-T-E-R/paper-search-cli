@@ -11,7 +11,7 @@ export function buildSearchEnvelope(
   data: SearchResult | SearchResult[],
 ): ResultEnvelope<SearchResult | SearchResult[] | null> {
   const results = Array.isArray(data) ? data : [data];
-  const publicResults = results.map(({ ordering: _ordering, ...result }) => result);
+  const publicResults = results.map(({ ordering: _ordering, action: _action, ...result }) => result);
   const publicData = Array.isArray(data) ? publicResults : publicResults[0]!;
   const skipped = results.filter((entry) => entry.skipped === true);
   const failed = results.filter((entry) => Boolean(entry.error) && entry.skipped !== true);
@@ -21,6 +21,7 @@ export function buildSearchEnvelope(
   );
   const failedSources = failed.map((entry) => entry.platform);
   const skippedSources = skipped.map((entry) => entry.platform);
+  const actions = [...new Map(results.flatMap((entry) => entry.action ? [[entry.action.id, entry.action] as const] : [])).values()];
   const elapsedValues = results
     .map((entry) => entry.elapsed)
     .filter(
@@ -56,6 +57,7 @@ export function buildSearchEnvelope(
           : ["Search did not produce a successful provider result"],
       diagnostics,
       provenance,
+      ...(actions.length > 0 ? { state: "action_required", actions } : {}),
     });
   }
 
@@ -75,5 +77,6 @@ export function buildSearchEnvelope(
     diagnostics,
     ...(warnings.length > 0 ? { warnings } : {}),
     provenance,
+    ...(actions.length > 0 ? { actions } : {}),
   });
 }

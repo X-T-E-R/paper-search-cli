@@ -319,6 +319,13 @@ paper-search academic "formal verification" --platform all
 paper-search search-plan --type academic --preset general --category domain:computer-science
 ```
 
+Use `paper-search configure --json` to list only pending provider setup. Target
+one provider with `paper-search configure <id>` for the concise
+configure-now/later/disable flow. Non-interactive and JSON invocations never
+prompt; they return a credential-free command action instead. An absent
+`platform.<id>.enabled` means `auto`, `true` means explicitly enabled, and
+`false` disables both execution and setup reminders.
+
 ### Search ordering and defaults
 
 Academic searches accept `--sort-by relevance|date|citations`; patent searches
@@ -518,6 +525,8 @@ interface ResultEnvelope<T> {
   tool: string;
   planned?: boolean;
   data: T | null;
+  state?: "action_required";
+  actions?: Array<{ id: string; kind: "configure_provider"; target: { kind: "provider"; id: string }; command: string }>;
   diagnostics?: Record<string, unknown>;
   warnings?: string[];
   errors?: string[];
@@ -530,6 +539,9 @@ with `planned: true`, carries the payload under `data`, and keeps operational
 details in `diagnostics`, `warnings`, `errors`, and `provenance`. Provider ids,
 policies, config paths, source counts, failed sources, elapsed time, and target
 paths belong in these envelope fields instead of ad-hoc command output.
+`state` and `actions` are omitted in ordinary terminal results. When setup is
+needed, actions contain no credential values and point to `paper-search
+configure <id>`.
 
 ## Providers
 

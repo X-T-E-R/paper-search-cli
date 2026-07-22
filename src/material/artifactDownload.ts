@@ -824,9 +824,10 @@ export async function planArtifactDownload(
   const download = options.download !== false;
   const resolvedInput = await resolveDownloadInput(options.config, options.input, attachTo);
   const resolverPlan = resolvedInput.resolverRequired
-    ? await planResolverProvider({
+      ? await planResolverProvider({
         installDir: options.config.providers.installDir,
         resolverProviderId: options.resolverProviderId,
+        config: options.config,
       })
     : undefined;
   const providerPackage = await selectDownloaderProvider({

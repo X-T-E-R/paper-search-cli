@@ -142,7 +142,15 @@ node scripts/paper-search.mjs config credentials get platform.wos.apiKey
 node scripts/paper-search.mjs config credentials unset platform.wos.apiKey
 node scripts/paper-search.mjs config import-env ./.env
 node scripts/paper-search.mjs config import-env ./.env --apply
+node scripts/paper-search.mjs configure --json
+node scripts/paper-search.mjs configure unpaywall
 ```
+
+`configure` defaults to pending/relevant provider setup rather than walking
+every installed provider. JSON and non-interactive invocations never read
+stdin; interactive non-secret fields are visible, while manifest-declared
+secrets alone use hidden credential input. Choosing later preserves `auto`
+(no `enabled` value); disable writes `enabled = false`.
 
 Search-source selection uses the same layered configuration. Academic search
 defaults to `general`; patent search defaults to `patents`. Repeat selectors to

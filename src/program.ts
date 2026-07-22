@@ -3,6 +3,7 @@ import { registerArtifactCommands } from "./commands/artifact.js";
 import { registerAssessmentCommands } from "./commands/assessment.js";
 import { registerBatchCommands } from "./commands/batch.js";
 import { registerConfigCommands } from "./commands/config.js";
+import { registerConfigureCommand } from "./commands/configure.js";
 import { registerContextCommands } from "./commands/context.js";
 import { registerCitationCommands } from "./commands/citation.js";
 import { registerDiscoveryCommands } from "./commands/discovery.js";
@@ -47,6 +48,7 @@ export function buildProgram(streams: IoStreams = {}): Command {
   registerSelfCommands(program, io);
   registerDoctorCommand(program, io);
   registerConfigCommands(program, io);
+  registerConfigureCommand(program, io);
   registerContextCommands(program, io);
   registerMigrateCommand(program, io);
   registerRegistriesCommands(program, io);

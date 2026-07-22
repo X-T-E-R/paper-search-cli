@@ -71,6 +71,41 @@ describe("search result envelope", () => {
     expect(Array.isArray(envelope.data)).toBe(true);
   });
 
+  it("adds configuration actions for skipped sources while preserving partial success", () => {
+    const action = {
+      id: "configure-provider:beta",
+      kind: "configure_provider" as const,
+      target: { kind: "provider" as const, id: "beta" },
+      command: "paper-search configure beta",
+    };
+    const envelope = buildSearchEnvelope("academic_search", [
+      result("alpha", { items: [{ itemType: "journalArticle", title: "Found" }] }),
+      result("beta", { skipped: true, error: "missing required config: email", action }),
+    ]);
+    expect(envelope).toMatchObject({ ok: true, actions: [action] });
+    expect((envelope.data as SearchResult[])[1]).not.toHaveProperty("action");
+  });
+
+  it("returns action_required when an exact-only skipped source cannot run", () => {
+    const action = {
+      id: "configure-provider:beta",
+      kind: "configure_provider" as const,
+      target: { kind: "provider" as const, id: "beta" },
+      command: "paper-search configure beta",
+    };
+    expect(buildSearchEnvelope("academic_search", result("beta", {
+      skipped: true,
+      error: "missing required config: email",
+      action,
+    }))).toMatchObject({ ok: false, state: "action_required", actions: [action] });
+  });
+
+  it("omits state and actions from ordinary envelopes", () => {
+    const envelope = buildSearchEnvelope("academic_search", result("alpha"));
+    expect(envelope).not.toHaveProperty("state");
+    expect(envelope).not.toHaveProperty("actions");
+  });
+
   it("projects per-source ordering diagnostics and warns on unverified ordering", () => {
     const envelope = buildSearchEnvelope("academic_search", [
       result("alpha", {
